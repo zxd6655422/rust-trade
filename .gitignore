@@ -1,5 +1,7 @@
 /target
 .env
+.env.*
+!*.example
 config/local.toml
 Cargo.lock
 .idea

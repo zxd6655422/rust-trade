@@ -11,10 +11,17 @@ use commands::*;
 use state::AppState;
 
 fn main() {
-    if let Err(_) = dotenvy::dotenv() {
-        println!("Warning: .env file not found, using environment variables");
+    let env_file = determine_env_file();
+
+    println!("Loading config: {}", env_file);
+
+    if let Err(_) = dotenvy::from_filename(env_file) {
+        println!("Warning: {} not found, trying .env", env_file);
+        if let Err(_) = dotenvy::dotenv() {
+            println!("Warning: No .env file found");
+        }
     }
-    
+
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
         .with_file(true)
@@ -84,5 +91,23 @@ fn main() {
             tracing::error!("Application error: {}", e);
             std::process::exit(1);
         }
+    }
+}
+
+fn determine_env_file() -> &'static str {
+    // 1. 优先使用 RUN_MODE 环境变量
+    if let Ok(mode) = std::env::var("RUN_MODE") {
+        return match mode.as_str() {
+            "production" | "prod" => ".env.production",
+            "test" => ".env.test",
+            _ => ".env.development",
+        };
+    }
+
+    // 2. 根据编译模式自动选择
+    if cfg!(debug_assertions) {
+        ".env.development"  // cargo run → dev
+    } else {
+        ".env.production"   // cargo run --release → prod
     }
 }

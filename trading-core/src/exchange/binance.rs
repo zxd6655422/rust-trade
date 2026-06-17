@@ -137,6 +137,7 @@ impl BinanceExchange {
         mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
     ) -> Result<(), ExchangeError> {
         // Establish WebSocket connection
+        // tokio-tungstenite respects system proxy settings via environment variables
         let (ws_stream, _) = connect_async(&self.ws_url)
             .await
             .map_err(|e| ExchangeError::WebSocketError(format!("Failed to connect: {}", e)))?;

@@ -1,11 +1,10 @@
 use async_trait::async_trait;
-use redis::{Client as RedisClient, Commands, Connection};
+use redis::{Client as RedisClient, Commands};
 use serde_json;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
-use tokio::sync::Mutex;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 use super::types::{DataError, DataResult, TickData};
 
@@ -193,13 +192,13 @@ impl TickDataCache for InMemoryTickCache {
 // Redis Cache Implementation
 // =================================================================
 
-/// Redis cache implementation
+/// Redis cache implementation with connection pooling and retry logic
 pub struct RedisTickCache {
-    #[allow(dead_code)] // Keep client alive to maintain connection
     client: RedisClient,
-    connection: Arc<Mutex<Connection>>,
     max_ticks_per_symbol: usize,
     ttl_seconds: u64,
+    max_retries: u32,
+    retry_delay: Duration,
 }
 
 impl RedisTickCache {
@@ -211,22 +210,109 @@ impl RedisTickCache {
         let client = RedisClient::open(redis_url)
             .map_err(|e| DataError::Cache(format!("Failed to create Redis client: {}", e)))?;
 
-        let connection = client
+        // Test connection
+        let mut conn = client
             .get_connection()
             .map_err(|e| DataError::Cache(format!("Failed to connect to Redis: {}", e)))?;
 
-        debug!("Connected to Redis at: {}", redis_url);
+        // Test ping
+        redis::cmd("PING")
+            .query::<String>(&mut conn)
+            .map_err(|e| DataError::Cache(format!("Redis PING failed: {}", e)))?;
+
+        info!("✅ Connected to Redis at: {}", redis_url);
 
         Ok(Self {
             client,
-            connection: Arc::new(Mutex::new(connection)),
             max_ticks_per_symbol,
             ttl_seconds,
+            max_retries: 3,
+            retry_delay: Duration::from_millis(100),
         })
     }
 
     fn get_cache_key(&self, symbol: &str) -> String {
         format!("tick:{}", symbol)
+    }
+
+    /// Get a connection from the pool with retry logic
+    fn get_connection_with_retry(&self) -> DataResult<redis::Connection> {
+        let mut last_error = None;
+
+        for attempt in 0..self.max_retries {
+            match self.client.get_connection() {
+                Ok(conn) => return Ok(conn),
+                Err(e) => {
+                    warn!(
+                        "Redis connection attempt {}/{} failed: {}",
+                        attempt + 1,
+                        self.max_retries,
+                        e
+                    );
+                    last_error = Some(e);
+                    if attempt < self.max_retries - 1 {
+                        std::thread::sleep(self.retry_delay);
+                    }
+                }
+            }
+        }
+
+        Err(DataError::Cache(format!(
+            "Failed to connect to Redis after {} attempts: {}",
+            self.max_retries,
+            last_error.unwrap_or_else(|| redis::RedisError::from((redis::ErrorKind::IoError, "Unknown error")))
+        )))
+    }
+
+    /// Execute a Redis command with automatic reconnection
+    fn execute_with_retry<F, T>(&self, mut f: F) -> DataResult<T>
+    where
+        F: FnMut(&mut redis::Connection) -> redis::RedisResult<T>,
+    {
+        let mut last_error = None;
+
+        for attempt in 0..self.max_retries {
+            let mut conn = match self.get_connection_with_retry() {
+                Ok(c) => c,
+                Err(e) => {
+                    last_error = Some(e);
+                    if attempt < self.max_retries - 1 {
+                        std::thread::sleep(self.retry_delay);
+                    }
+                    continue;
+                }
+            };
+
+            match f(&mut conn) {
+                Ok(result) => return Ok(result),
+                Err(e) => {
+                    // Check if it's a connection error (needs reconnect) or command error
+                    let error_msg = e.to_string();
+                    let is_connection_error = error_msg.contains("closed")
+                        || error_msg.contains("10058")
+                        || error_msg.contains("connection refused")
+                        || error_msg.contains("broken pipe");
+
+                    if is_connection_error {
+                        warn!(
+                            "Redis connection error (attempt {}/{}): {}",
+                            attempt + 1,
+                            self.max_retries,
+                            e
+                        );
+                        last_error = Some(DataError::Cache(format!("Redis error: {}", e)));
+                        if attempt < self.max_retries - 1 {
+                            std::thread::sleep(self.retry_delay);
+                        }
+                    } else {
+                        // Non-connection error, don't retry
+                        return Err(DataError::Cache(format!("Redis command failed: {}", e)));
+                    }
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| DataError::Cache("Redis operation failed after retries".to_string())))
     }
 }
 
@@ -237,22 +323,18 @@ impl TickDataCache for RedisTickCache {
         let tick_json = serde_json::to_string(tick)
             .map_err(|e| DataError::Cache(format!("Failed to serialize tick: {}", e)))?;
 
-        let mut conn = self.connection.lock().await;
+        self.execute_with_retry(|conn| {
+            // Use LPUSH to add to list head (latest first)
+            let _: () = conn.lpush(&key, &tick_json)?;
 
-        // Use LPUSH to add to list head (latest first)
-        let _: () = conn
-            .lpush(&key, &tick_json)
-            .map_err(|e| DataError::Cache(format!("Redis LPUSH failed: {}", e)))?;
+            // Limit list length
+            let _: () = conn.ltrim(&key, 0, self.max_ticks_per_symbol as isize - 1)?;
 
-        // Limit list length
-        let _: () = conn
-            .ltrim(&key, 0, self.max_ticks_per_symbol as isize - 1)
-            .map_err(|e| DataError::Cache(format!("Redis LTRIM failed: {}", e)))?;
+            // Set TTL
+            let _: () = conn.expire(&key, self.ttl_seconds as usize)?;
 
-        // Set TTL
-        let _: () = conn
-            .expire(&key, self.ttl_seconds as usize)
-            .map_err(|e| DataError::Cache(format!("Redis EXPIRE failed: {}", e)))?;
+            Ok(())
+        })?;
 
         debug!(
             "Added tick to Redis cache: symbol={}, price={}",
@@ -263,12 +345,11 @@ impl TickDataCache for RedisTickCache {
 
     async fn get_recent_ticks(&self, symbol: &str, limit: usize) -> DataResult<Vec<TickData>> {
         let key = self.get_cache_key(symbol);
-        let mut conn = self.connection.lock().await;
 
-        // Use LRANGE to get latest N records
-        let tick_jsons: Vec<String> = conn
-            .lrange(&key, 0, limit as isize - 1)
-            .map_err(|e| DataError::Cache(format!("Redis LRANGE failed: {}", e)))?;
+        let tick_jsons: Vec<String> = self.execute_with_retry(|conn| {
+            // Use LRANGE to get latest N records
+            conn.lrange(&key, 0, limit as isize - 1)
+        })?;
 
         let mut ticks = Vec::with_capacity(tick_jsons.len());
         for tick_json in tick_jsons {
@@ -290,11 +371,7 @@ impl TickDataCache for RedisTickCache {
     }
 
     async fn get_symbols(&self) -> DataResult<Vec<String>> {
-        let mut conn = self.connection.lock().await;
-
-        let keys: Vec<String> = conn
-            .keys("tick:*")
-            .map_err(|e| DataError::Cache(format!("Redis KEYS failed: {}", e)))?;
+        let keys: Vec<String> = self.execute_with_retry(|conn| conn.keys("tick:*"))?;
 
         let symbols: Vec<String> = keys
             .into_iter()
@@ -312,11 +389,11 @@ impl TickDataCache for RedisTickCache {
 
     async fn clear_symbol(&self, symbol: &str) -> DataResult<()> {
         let key = self.get_cache_key(symbol);
-        let mut conn = self.connection.lock().await;
 
-        let _: () = conn
-            .del(&key)
-            .map_err(|e| DataError::Cache(format!("Redis DEL failed: {}", e)))?;
+        self.execute_with_retry(|conn| {
+            let _: () = conn.del(&key)?;
+            Ok(())
+        })?;
 
         debug!("Cleared Redis cache for symbol: {}", symbol);
         Ok(())

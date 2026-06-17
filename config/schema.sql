@@ -10,41 +10,41 @@ CREATE TABLE tick_data (
     -- 2. Supports millisecond-level precision for high-frequency trading needs
     -- 3. Time zone info avoids issues like daylight saving time
     timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
-    
+
     -- 【Trading Pair】e.g., 'BTCUSDT', 'ETHUSDT'
     -- Why use VARCHAR(20):
     -- 1. Cryptocurrency trading pairs are typically 8-15 characters
     -- 2. Reserved space for future new trading pairs
     -- 3. Fixed length storage offers better performance
     symbol VARCHAR(20) NOT NULL,
-    
+
     -- 【Trade Price】Use DECIMAL to ensure precision
     -- Why use DECIMAL(20, 8):
     -- 1. Total 20 digits: supports prices in the trillions
     -- 2. 8 decimal places: meets cryptocurrency precision requirements (Bitcoin has 8 decimals)
     -- 3. Avoids floating point precision loss
     price DECIMAL(20, 8) NOT NULL,
-    
+
     -- 【Trade Quantity】Also uses DECIMAL to ensure precision
     -- Why use DECIMAL(20, 8):
     -- 1. Trade volume calculations require high precision
     -- 2. Consistent precision with price
     quantity DECIMAL(20, 8) NOT NULL,
-    
+
     -- 【Trade Side】Buy or Sell
     -- Why use VARCHAR(4) + CHECK constraint:
     -- 1. 'BUY'/'SELL' is more intuitive than boolean
     -- 2. CHECK constraint enforces data validity
     -- 3. Facilitates SQL querying and reporting
     side VARCHAR(4) NOT NULL CHECK (side IN ('BUY', 'SELL')),
-    
+
     -- 【Trade ID】Original trade identifier from exchange
     -- Why use VARCHAR(50):
     -- 1. Different exchanges have different ID formats (numeric, alphanumeric, UUID, etc.)
     -- 2. Used for deduplication and traceability
     -- 3. Supports various exchange ID lengths
     trade_id VARCHAR(50) NOT NULL,
-    
+
     -- 【Maker Flag】Whether the buyer is the maker (order placer)
     -- Why this field is needed:
     -- 1. Distinguish between aggressive and passive trades
@@ -95,30 +95,30 @@ CREATE INDEX idx_tick_timestamp ON tick_data(timestamp);
 -- =================================================================
 
 -- Verify table structure
-\d tick_data
+-- \d tick_data
 
 -- View index information and sizes
-SELECT 
-    indexname,
-    indexdef,
-    pg_size_pretty(pg_relation_size(indexname::regclass)) AS size
-FROM pg_indexes 
-WHERE tablename = 'tick_data'
-ORDER BY indexname;
+-- SELECT
+--     indexname,
+--     indexdef,
+--     pg_size_pretty(pg_relation_size(indexname::regclass)) AS size
+-- FROM pg_indexes
+-- WHERE tablename = 'tick_data'
+-- ORDER BY indexname;
 
 -- Performance test queries (run after data is inserted)
 /*
 -- Real-time query test
-EXPLAIN (ANALYZE, BUFFERS) 
-SELECT * FROM tick_data 
-WHERE symbol = 'BTCUSDT' 
-ORDER BY timestamp DESC 
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT * FROM tick_data
+WHERE symbol = 'BTCUSDT'
+ORDER BY timestamp DESC
 LIMIT 10;
 
 -- Backtesting query test
 EXPLAIN (ANALYZE, BUFFERS)
-SELECT COUNT(*), AVG(price) 
-FROM tick_data 
+SELECT COUNT(*), AVG(price)
+FROM tick_data
 WHERE timestamp BETWEEN NOW() - INTERVAL '1 day' AND NOW()
 AND symbol IN ('BTCUSDT', 'ETHUSDT');
 */

@@ -1,0 +1,26 @@
+# 生产环境配置
+symbols = ["BTCUSDT", "ETHUSDT"]
+
+[server]
+host = "0.0.0.0"
+port = 8080
+
+[database]
+max_connections = 10
+min_connections = 2
+max_lifetime = 1800
+
+[cache]
+[cache.memory]
+max_ticks_per_symbol = 2000
+ttl_seconds = 600
+
+[cache.redis]
+pool_size = 20
+ttl_seconds = 7200
+max_ticks_per_symbol = 20000
+
+[paper_trading]
+enabled = false
+strategy = "rsi"
+initial_capital = 50000.0

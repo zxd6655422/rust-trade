@@ -47,8 +47,15 @@ impl Settings {
     pub fn new() -> Result<Self, ConfigError> {
         let run_mode = std::env::var("RUN_MODE").unwrap_or_else(|_| "development".into());
 
+        // 配置文件路径：优先从当前目录的 config/ 加载，否则从 ../config/ 加载
+        let config_path = if std::path::Path::new("config").exists() {
+            format!("config/{}", run_mode)
+        } else {
+            format!("../config/{}", run_mode)
+        };
+
         let mut builder = Config::builder()
-            .add_source(File::with_name(&format!("../config/{}", run_mode)).required(true));
+            .add_source(File::with_name(&config_path).required(true));
 
         if let Ok(database_url) = std::env::var("DATABASE_URL") {
             builder = builder.set_override("database.url", database_url)?;

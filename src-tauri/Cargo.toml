@@ -24,3 +24,6 @@ dotenvy = "0.15"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]
+prod = []   # cargo run --features prod
+dev = []    # cargo run --features dev
+test = []   # cargo run --features test

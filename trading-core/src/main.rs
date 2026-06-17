@@ -123,7 +123,7 @@ async fn run_live_with_paper_trading() -> Result<(), Box<dyn std::error::Error>>
 
     // Create exchange connection
     info!("📡 Initializing exchange connection...");
-    let exchange = Arc::new(BinanceExchange::new());
+    let exchange: Arc<dyn exchange::Exchange> = Arc::new(BinanceExchange::new());
     info!("✅ Exchange connection ready");
 
     // Create strategy
@@ -544,8 +544,31 @@ async fn run_backtest_interactive(
 
 /// Initialize application environment and logging
 async fn init_application() -> Result<(), Box<dyn std::error::Error>> {
+    // 根据编译模式自动选择环境:
+    // - cargo run (debug) → development环境
+    // - cargo run --release (release) → production环境
+    let env_file = if cfg!(debug_assertions) {
+        ".env.development"
+    } else {
+        ".env.production"
+    };
+
+    // 允许通过 RUN_MODE 环境变量覆盖
+    let override_mode = std::env::var("RUN_MODE").ok();
+    let env_file = match override_mode.as_deref() {
+        Some("production") | Some("prod") => ".env.production",
+        Some("test") => ".env.test",
+        Some("development") | Some("dev") => ".env.development",
+        _ => env_file,
+    };
+
+    println!("Loading config: {}", env_file);
+
     // Load environment variables from .env file
-    dotenv::dotenv().ok();
+    if let Err(_) = dotenv::from_filename(env_file) {
+        println!("Warning: {} not found, trying .env", env_file);
+        dotenv::dotenv().ok();
+    }
 
     // Initialize tracing/logging
     init_tracing()?;
@@ -608,7 +631,7 @@ async fn run_live_application(settings: Settings) -> Result<(), Box<dyn std::err
 
     // Create exchange
     info!("📡 Initializing exchange connection...");
-    let exchange = Arc::new(BinanceExchange::new());
+    let exchange: Arc<dyn exchange::Exchange> = Arc::new(BinanceExchange::new());
     info!("✅ Exchange connection ready");
 
     // Create market data service
