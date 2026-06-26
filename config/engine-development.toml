@@ -1,0 +1,41 @@
+# Trading Engine 开发环境配置
+
+[database]
+url = "postgresql://mydb:zxd6655422@localhost:5432/trading_core"
+max_connections = 5
+min_connections = 2
+max_lifetime = 1800
+
+[cache]
+url = "redis://:zxd6655422@localhost:6379"
+ttl_seconds = 300
+max_ticks_per_symbol = 1000
+
+[exchange]
+id = "binance"
+testnet = true
+
+[trading]
+mode = "testnet"
+strategy = "rsi"
+symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+poll_interval_ms = 100
+
+[risk_control]
+# 基础风控
+max_position_size = 500.0        # 单笔最大仓位 500 USDT (开发环境用小额)
+max_order_size = 0.001           # 单笔最大 0.001 BTC
+stop_loss_pct = 0.02             # 2% 止损
+take_profit_pct = 0.04           # 4% 止盈
+
+# 中级风控
+max_daily_loss = 100.0           # 日最大亏损 100 USDT
+max_drawdown_pct = 0.10          # 最大回撤 10%
+max_exposure_pct = 0.6           # 最大曝光度 60%
+
+# 高级风控
+kelly_fraction = 0.25            # 1/4 Kelly
+volatility_lookback = 20         # 20 个 tick 计算波动率
+volatility_target = 0.15         # 目标波动率 15%
+black_swan_threshold = 0.05      # 5% 瞬间波动触发黑天鹅保护
+circuit_breaker_cooldown = 3600  # 熔断冷却 1 小时

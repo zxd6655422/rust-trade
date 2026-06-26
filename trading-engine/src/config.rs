@@ -1,0 +1,129 @@
+// config.rs
+// 交易引擎配置
+
+use config::{Config, ConfigError, File};
+use serde::Deserialize;
+
+use crate::risk::RiskConfig;
+
+/// 数据库配置
+#[derive(Debug, Deserialize, Clone)]
+pub struct DatabaseConfig {
+    pub url: String,
+    pub max_connections: u32,
+    pub min_connections: u32,
+    pub max_lifetime: u64,
+}
+
+/// 缓存配置
+#[derive(Debug, Deserialize, Clone)]
+pub struct CacheConfig {
+    pub url: String,
+    pub ttl_seconds: u64,
+    pub max_ticks_per_symbol: usize,
+}
+
+/// 交易所配置
+#[derive(Debug, Deserialize, Clone)]
+pub struct ExchangeConfig {
+    pub id: String,
+    pub testnet: bool,
+}
+
+/// 交易配置
+#[derive(Debug, Deserialize, Clone)]
+pub struct TradingConfig {
+    pub mode: String, // testnet / live
+    pub strategy: String,
+    pub symbols: Vec<String>,
+    pub poll_interval_ms: u64,
+}
+
+/// 应用设置
+#[derive(Debug, Deserialize, Clone)]
+pub struct Settings {
+    pub database: DatabaseConfig,
+    pub cache: CacheConfig,
+    pub exchange: ExchangeConfig,
+    pub trading: TradingConfig,
+    pub risk_control: RiskConfig,
+}
+
+impl Settings {
+    /// 从配置文件加载设置
+    pub fn new() -> Result<Self, ConfigError> {
+        let run_mode = std::env::var("RUN_MODE").unwrap_or_else(|_| "development".into());
+
+        // 配置文件路径
+        let config_path = if std::path::Path::new("config").exists() {
+            format!("config/engine-{}", run_mode)
+        } else {
+            format!("../config/engine-{}", run_mode)
+        };
+
+        let mut builder = Config::builder()
+            .add_source(File::with_name(&config_path).required(true));
+
+        // 从环境变量覆盖数据库配置
+        if let Ok(database_url) = std::env::var("DATABASE_URL") {
+            builder = builder.set_override("database.url", database_url)?;
+        }
+
+        // 从环境变量覆盖 Redis 配置
+        if let Ok(redis_url) = std::env::var("REDIS_URL") {
+            builder = builder.set_override("cache.url", redis_url)?;
+        }
+
+        // 从环境变量覆盖 API Key (不存储在配置文件中)
+        // API Key 应该通过环境变量传入
+        if std::env::var("BINANCE_API_KEY").is_ok() {
+            tracing::info!("Binance API key loaded from environment");
+        }
+
+        let s = builder.build()?;
+        s.try_deserialize()
+    }
+
+    /// 检查是否为测试网模式
+    pub fn is_testnet(&self) -> bool {
+        self.exchange.testnet || self.trading.mode == "testnet"
+    }
+
+    /// 获取交易所 ID
+    pub fn exchange_id(&self) -> &str {
+        &self.exchange.id
+    }
+}
+
+/// 加载环境变量
+pub fn load_env() {
+    let env_file = determine_env_file();
+
+    if std::env::var("DATABASE_URL").is_err() {
+        if let Err(_) = dotenvy::from_filename(&env_file) {
+            println!("Warning: {} not found, trying .env", env_file);
+            if let Err(_) = dotenvy::dotenv() {
+                println!("Warning: No .env file found");
+            }
+        }
+    }
+}
+
+/// 确定环境文件
+fn determine_env_file() -> String {
+    // 检查 RUN_MODE 环境变量
+    if let Ok(mode) = std::env::var("RUN_MODE") {
+        match mode.as_str() {
+            "test" => return ".env.development".to_string(),
+            "development" => return ".env.development".to_string(),
+            "production" => return ".env.production".to_string(),
+            _ => {}
+        }
+    }
+
+    if cfg!(debug_assertions) {
+        ".env.development".to_string()
+    } else {
+        ".env.production".to_string()
+    }
+}

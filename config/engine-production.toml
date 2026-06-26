@@ -1,0 +1,41 @@
+# Trading Engine 生产环境配置
+
+[database]
+url = ""  # 从环境变量 DATABASE_URL 加载
+max_connections = 10
+min_connections = 5
+max_lifetime = 1800
+
+[cache]
+url = ""  # 从环境变量 REDIS_URL 加载
+ttl_seconds = 300
+max_ticks_per_symbol = 1000
+
+[exchange]
+id = "binance"
+testnet = false
+
+[trading]
+mode = "live"
+strategy = "rsi"
+symbols = ["BTCUSDT", "ETHUSDT"]
+poll_interval_ms = 100
+
+[risk_control]
+# 基础风控
+max_position_size = 2000.0       # 单笔最大仓位 2000 USDT
+max_order_size = 0.01            # 单笔最大 0.01 BTC
+stop_loss_pct = 0.02             # 2% 止损
+take_profit_pct = 0.04           # 4% 止盈
+
+# 中级风控
+max_daily_loss = 500.0           # 日最大亏损 500 USDT
+max_drawdown_pct = 0.15          # 最大回撤 15%
+max_exposure_pct = 0.8           # 最大曝光度 80%
+
+# 高级风控
+kelly_fraction = 0.25            # 1/4 Kelly
+volatility_lookback = 20         # 20 个 tick 计算波动率
+volatility_target = 0.15         # 目标波动率 15%
+black_swan_threshold = 0.05      # 5% 瞬间波动触发黑天鹅保护
+circuit_breaker_cooldown = 3600  # 熔断冷却 1 小时

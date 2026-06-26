@@ -1,0 +1,70 @@
+[package]
+name = "trading-engine"
+edition = "2021"
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+# Workspace dependencies
+trading-common = { path = "../trading-common" }
+
+# Async runtime
+tokio = { version = "1.0", features = ["full"] }
+
+# HTTP client
+reqwest = { version = "0.11", features = ["json", "rustls-tls"], default-features = false }
+
+# WebSocket
+tokio-tungstenite = { version = "0.20", features = ["native-tls"] }
+futures-util = "0.3"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Database
+sqlx = { version = "0.7", features = ["runtime-tokio", "tls-rustls", "postgres", "chrono", "rust_decimal", "uuid"] }
+
+# Redis
+redis = { version = "0.23", features = ["tokio-comp", "connection-manager"] }
+
+# Cryptography (HMAC-SHA256 for API signing)
+hmac = "0.12"
+sha2 = "0.10"
+base64 = "0.21"
+hex = "0.4"
+
+# Date/Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Decimal
+rust_decimal = { version = "1.32", features = ["serde"] }
+rust_decimal_macros = "1.8"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Async traits
+async-trait = "0.1"
+
+# UUID
+uuid = { version = "1.0", features = ["v4", "serde", "fast-rng"] }
+
+# Environment variables
+dotenvy = "0.15"
+
+# Config
+config = "0.13"
+
+# Signal handling
+tokio-util = "0.7"
+
+[[bin]]
+name = "trading-engine"
+path = "src/main.rs"

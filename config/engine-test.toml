@@ -1,0 +1,41 @@
+# Trading Engine 测试环境配置
+
+[database]
+url = ""  # 从环境变量 DATABASE_URL 加载
+max_connections = 5
+min_connections = 2
+max_lifetime = 1800
+
+[cache]
+url = ""  # 从环境变量 REDIS_URL 加载
+ttl_seconds = 300
+max_ticks_per_symbol = 1000
+
+[exchange]
+id = "binance"
+testnet = true
+
+[trading]
+mode = "testnet"
+strategy = "rsi"
+symbols = ["BTCUSDT", "ETHUSDT"]
+poll_interval_ms = 100
+
+[risk_control]
+# 基础风控
+max_position_size = 500.0
+max_order_size = 0.001
+stop_loss_pct = 0.02
+take_profit_pct = 0.04
+
+# 中级风控
+max_daily_loss = 100.0
+max_drawdown_pct = 0.10
+max_exposure_pct = 0.6
+
+# 高级风控
+kelly_fraction = 0.25
+volatility_lookback = 20
+volatility_target = 0.15
+black_swan_threshold = 0.05
+circuit_breaker_cooldown = 3600

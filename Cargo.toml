@@ -3,7 +3,7 @@ members = [
     "trading-common",
     "trading-core",
     "src-tauri"
-]
+, "trading-engine"]
 resolver = "2"
 
 [workspace.package]
