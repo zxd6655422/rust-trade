@@ -9,7 +9,7 @@
 
 ### 测试环境
 - **数据库**: PostgreSQL 14 (远程测试服务器)
-- **地址**: 117.72.220.253:5432
+- **地址**: localhost:5432
 - **数据库名**: mydb
 - **现有数据**: 190,275 条 tick 数据
 
@@ -208,8 +208,8 @@ cargo run --bin test_full    # 完整功能测试
 export BINANCE_API_KEY=your_api_key
 export BINANCE_API_SECRET=your_api_secret
 export BINANCE_TESTNET=true
-export DATABASE_URL=postgresql://mydb:zxd6655422@117.72.220.253:5432/mydb
-export REDIS_URL=redis://:zxd6655422@117.72.220.253:6379
+export DATABASE_URL=postgresql://user:password@localhost:5432/mydb
+export REDIS_URL=redis://:password@localhost:6379
 
 # 运行
 cargo run -p trading-engine

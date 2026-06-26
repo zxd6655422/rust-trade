@@ -1,13 +1,13 @@
 # Trading Engine 开发环境配置
 
 [database]
-url = "postgresql://mydb:zxd6655422@localhost:5432/trading_core"
+url = ""  # 从环境变量 DATABASE_URL 加载
 max_connections = 5
 min_connections = 2
 max_lifetime = 1800
 
 [cache]
-url = "redis://:zxd6655422@localhost:6379"
+url = ""  # 从环境变量 REDIS_URL 加载
 ttl_seconds = 300
 max_ticks_per_symbol = 1000
 

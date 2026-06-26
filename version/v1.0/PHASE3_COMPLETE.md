@@ -115,8 +115,8 @@ cargo run -p trading-engine
 ### 环境变量配置
 ```bash
 # .env.development
-DATABASE_URL=postgresql://mydb:zxd6655422@117.72.220.253:5432/mydb
-REDIS_URL=redis://:zxd6655422@117.72.220.253:6379
+DATABASE_URL=postgresql://user:password@localhost:5432/mydb
+REDIS_URL=redis://:password@localhost:6379
 RUN_MODE=development
 
 # Binance API

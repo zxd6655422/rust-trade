@@ -42,9 +42,7 @@ RUN_MODE=test cargo run
 | REDIS_URL | Redis 连接字符串 | redis://:password@host:port |
 | RUN_MODE | 运行模式（可选，默认自动） | development / test / production |
 
-## Redis 密码
-
-所有环境使用相同密码：`zxd6655422`
+**注意**: 敏感信息（密码、API Key 等）请勿提交到版本控制，使用 `.env` 文件管理。
 
 ## 配置文件加载优先级
 
