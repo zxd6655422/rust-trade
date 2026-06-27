@@ -9,13 +9,14 @@ use tracing::{info, warn};
 
 use crate::exchange::traits::Exchange;
 use crate::exchange::types::*;
-use crate::risk::{RiskDecision, RiskEngine};
+use crate::risk::{RiskDecision, RiskEngine, StopLossConfig, StopLossManager, StopAction};
 use trading_common::backtest::strategy::Signal;
 
 /// 订单管理器
 pub struct OrderManager {
     exchange: Arc<dyn Exchange>,
     risk_engine: Arc<RiskEngine>,
+    stop_loss_manager: Arc<StopLossManager>,
     active_orders: Arc<Mutex<HashMap<String, OrderInfo>>>,
 }
 
@@ -24,12 +25,19 @@ impl OrderManager {
     pub fn new(
         exchange: Arc<dyn Exchange>,
         risk_engine: Arc<RiskEngine>,
+        stop_loss_config: StopLossConfig,
     ) -> Self {
         Self {
             exchange,
             risk_engine,
+            stop_loss_manager: Arc::new(StopLossManager::new(stop_loss_config)),
             active_orders: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// 获取止损止盈管理器
+    pub fn stop_loss_manager(&self) -> &Arc<StopLossManager> {
+        &self.stop_loss_manager
     }
 
     /// 执行交易信号
@@ -143,6 +151,21 @@ impl OrderManager {
                         )
                         .await;
 
+                    // 自动创建止损止盈订单
+                    let entry_price = update.avg_price.unwrap_or_default();
+                    if entry_price > Decimal::ZERO {
+                        self.stop_loss_manager
+                            .create_stop_order(
+                                &update.symbol,
+                                update.side.clone(),
+                                update.filled_quantity,
+                                entry_price,
+                                None, // 使用默认止损
+                                None, // 使用默认止盈
+                            )
+                            .await;
+                    }
+
                     // 从活动订单中移除
                     active_orders.remove(&update.order_id);
                 }
@@ -164,6 +187,26 @@ impl OrderManager {
         } else {
             warn!("Received update for unknown order: {}", update.order_id);
         }
+    }
+
+    /// 检查止损止盈
+    pub async fn check_stop_orders(&self, symbol: &str, current_price: Decimal) -> Option<StopAction> {
+        self.stop_loss_manager.check_price(symbol, current_price).await
+    }
+
+    /// 执行止损止盈动作
+    pub async fn execute_stop_action(&self, action: StopAction) -> Result<OrderResult, OrderError> {
+        let order_request = action.to_order_request();
+        info!(
+            "Executing stop action: {} {} {}",
+            order_request.symbol, order_request.side, order_request.quantity
+        );
+
+        // 移除止损止盈订单
+        self.stop_loss_manager.remove_stop_order(&order_request.symbol).await;
+
+        // 执行平仓订单
+        self.place_and_track_order(order_request).await
     }
 
     /// 获取活动订单

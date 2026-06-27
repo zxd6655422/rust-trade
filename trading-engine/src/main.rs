@@ -8,6 +8,7 @@ mod config;
 mod engine;
 mod exchange;
 mod order;
+mod portfolio;
 mod risk;
 mod storage;
 mod utils;
@@ -16,7 +17,8 @@ use config::Settings;
 use engine::trading_loop::TradingLoop;
 use exchange::ExchangeFactory;
 use order::OrderManager;
-use risk::RiskEngine;
+use portfolio::{PortfolioManager, PositionReconciler};
+use risk::{RiskEngine, StopLossConfig};
 use storage::{Database, OrderRepository, PositionRepository, RedisCache};
 use trading_common::backtest::strategy;
 
@@ -111,7 +113,7 @@ async fn run_live_mode(_args: &[String]) -> Result<(), Box<dyn std::error::Error
     info!("✅ Database connected");
 
     // 创建 Redis 缓存
-    let cache = RedisCache::new(&settings.cache).await?;
+    let cache = Arc::new(RedisCache::new(&settings.cache).await?);
     info!("✅ Redis connected");
 
     // 创建仓储
@@ -123,18 +125,51 @@ async fn run_live_mode(_args: &[String]) -> Result<(), Box<dyn std::error::Error
     let strategy = strategy::create_strategy(&settings.trading.strategy)?;
     info!("✅ Strategy created: {}", strategy.name());
 
+    // 创建止损止盈配置
+    let stop_loss_config = StopLossConfig {
+        default_stop_loss_pct: settings.risk_control.stop_loss_pct,
+        default_take_profit_pct: settings.risk_control.take_profit_pct,
+        enable_trailing_stop: false,
+        trailing_stop_pct: rust_decimal::Decimal::from(1) / rust_decimal::Decimal::from(100),
+    };
+
     // 创建订单管理器
     let order_manager = Arc::new(OrderManager::new(
         exchange.clone(),
         risk_engine.clone(),
+        stop_loss_config,
     ));
     info!("✅ Order manager created");
+
+    // 创建持仓管理器
+    let portfolio_manager = Arc::new(PortfolioManager::new(
+        exchange.clone(),
+        position_repo.clone(),
+        cache.clone(),
+    ));
+
+    // 同步初始持仓
+    match portfolio_manager.sync_positions().await {
+        Ok(count) => info!("✅ Initial positions synced: {}", count),
+        Err(e) => warn!("⚠️  Failed to sync initial positions: {}", e),
+    }
+
+    // 创建对账器
+    let reconciler = Arc::new(PositionReconciler::new(
+        exchange.clone(),
+        position_repo.clone(),
+        portfolio_manager.clone(),
+    ));
+    info!("✅ Portfolio manager and reconciler created");
 
     // 创建交易循环
     let trading_loop = TradingLoop::new(
         exchange.clone(),
         order_manager.clone(),
         risk_engine.clone(),
+        portfolio_manager.clone(),
+        reconciler.clone(),
+        cache.clone(),
         strategy,
         &settings,
     );

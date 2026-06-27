@@ -10,6 +10,7 @@ use tracing::{debug, info};
 use crate::config::CacheConfig;
 
 /// Redis 缓存
+#[derive(Clone)]
 pub struct RedisCache {
     manager: ConnectionManager,
     ttl_seconds: u64,

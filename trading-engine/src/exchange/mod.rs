@@ -6,7 +6,7 @@ pub mod errors;
 pub mod traits;
 pub mod types;
 
-pub use adapters::{BinanceAdapter, OkxAdapter};
+pub use adapters::{BinanceAdapter, OkxAdapter, RedisDataSource, RedisDataSourceConfig};
 pub use errors::ExchangeError;
 pub use traits::Exchange;
 
