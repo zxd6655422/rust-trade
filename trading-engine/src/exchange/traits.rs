@@ -7,9 +7,7 @@ use rust_decimal::Decimal;
 use tokio::sync::broadcast;
 
 use super::errors::ExchangeError;
-use super::types::{
-    AccountInfo, OrderInfo, OrderRequest, OrderResult, OrderUpdate, PositionInfo,
-};
+use super::types::*;
 use trading_common::data::types::TickData;
 
 /// 交易所 trait - 定义所有交易所必须实现的接口
@@ -75,6 +73,45 @@ pub trait Exchange: Send + Sync {
 
     /// 获取交易对精度
     async fn get_symbol_precision(&self, symbol: &str) -> Result<SymbolPrecision, ExchangeError>;
+
+    // ===== 合约交易接口 =====
+
+    /// 设置杠杆倍数
+    async fn set_leverage(&self, symbol: &str, leverage: u32) -> Result<(), ExchangeError>;
+
+    /// 设置保证金模式 (逐仓/全仓)
+    async fn set_margin_type(&self, symbol: &str, margin_type: MarginType) -> Result<(), ExchangeError>;
+
+    /// 获取所有订单 (包括历史)
+    async fn get_all_orders(&self, symbol: &str, limit: Option<u32>) -> Result<Vec<OrderInfo>, ExchangeError>;
+
+    /// 获取成交历史
+    async fn get_trade_history(&self, symbol: &str, limit: Option<u32>) -> Result<Vec<TradeInfo>, ExchangeError>;
+
+    // ===== 行情数据接口 =====
+
+    /// 获取标记价格
+    async fn get_mark_price(&self, symbol: &str) -> Result<MarkPrice, ExchangeError>;
+
+    /// 获取资金费率
+    async fn get_funding_rate(&self, symbol: &str, limit: Option<u32>) -> Result<Vec<FundingRate>, ExchangeError>;
+
+    /// 获取K线数据
+    async fn get_klines(&self, symbol: &str, interval: &str, limit: Option<u32>) -> Result<Vec<Kline>, ExchangeError>;
+
+    /// 获取订单簿深度
+    async fn get_order_book(&self, symbol: &str, limit: Option<u32>) -> Result<OrderBook, ExchangeError>;
+
+    /// 批量下单
+    async fn batch_place_orders(&self, orders: Vec<BatchOrderRequest>) -> Result<Vec<BatchOrderResult>, ExchangeError>;
+
+    /// 批量撤单
+    async fn batch_cancel_orders(&self, symbol: &str, order_ids: Vec<String>) -> Result<Vec<BatchOrderResult>, ExchangeError>;
+
+    // ===== 账户扩展接口 =====
+
+    /// 获取合约账户信息
+    async fn get_futures_account(&self) -> Result<FuturesAccountInfo, ExchangeError>;
 }
 
 /// 交易对精度信息

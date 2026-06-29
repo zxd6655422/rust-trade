@@ -20,6 +20,7 @@ mode = "testnet"
 strategy = "rsi"
 symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
 poll_interval_ms = 100
+data_source = "trades"  # trades / tickers / candle1m
 
 [risk_control]
 # 基础风控

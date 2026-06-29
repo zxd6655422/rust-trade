@@ -40,6 +40,8 @@ pub enum OrderType {
     TakeProfit,
     #[serde(rename = "TAKE_PROFIT_LIMIT")]
     TakeProfitLimit,
+    #[serde(rename = "LIMIT_MAKER")]
+    LimitMaker,
 }
 
 impl std::fmt::Display for OrderType {
@@ -51,6 +53,7 @@ impl std::fmt::Display for OrderType {
             OrderType::StopLossLimit => write!(f, "STOP_LOSS_LIMIT"),
             OrderType::TakeProfit => write!(f, "TAKE_PROFIT"),
             OrderType::TakeProfitLimit => write!(f, "TAKE_PROFIT_LIMIT"),
+            OrderType::LimitMaker => write!(f, "LIMIT_MAKER"),
         }
     }
 }
@@ -230,4 +233,140 @@ pub struct ExchangeTime {
     pub server_time: DateTime<Utc>,
     pub local_time: DateTime<Utc>,
     pub offset_ms: i64,
+}
+
+// ===== 合约交易扩展类型 =====
+
+/// 保证金模式
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum MarginType {
+    #[serde(rename = "ISOLATED")]
+    Isolated,
+    #[serde(rename = "CROSSED")]
+    Crossed,
+}
+
+impl std::fmt::Display for MarginType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MarginType::Isolated => write!(f, "ISOLATED"),
+            MarginType::Crossed => write!(f, "CROSSED"),
+        }
+    }
+}
+
+/// 持仓模式
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum PositionMode {
+    /// 单向持仓模式
+    OneWay,
+    /// 双向持仓模式
+    Hedge,
+}
+
+/// 资金费率
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FundingRate {
+    pub symbol: String,
+    pub funding_rate: Decimal,
+    pub funding_time: DateTime<Utc>,
+    pub next_funding_time: Option<DateTime<Utc>>,
+}
+
+/// K线数据
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Kline {
+    pub open_time: DateTime<Utc>,
+    pub open: Decimal,
+    pub high: Decimal,
+    pub low: Decimal,
+    pub close: Decimal,
+    pub volume: Decimal,
+    pub close_time: DateTime<Utc>,
+    pub quote_volume: Decimal,
+    pub trades_count: u64,
+}
+
+/// 订单簿条目
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrderBookEntry {
+    pub price: Decimal,
+    pub quantity: Decimal,
+}
+
+/// 订单簿
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrderBook {
+    pub symbol: String,
+    pub bids: Vec<OrderBookEntry>,
+    pub asks: Vec<OrderBookEntry>,
+    pub last_update_id: u64,
+}
+
+/// 标记价格信息
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarkPrice {
+    pub symbol: String,
+    pub mark_price: Decimal,
+    pub index_price: Decimal,
+    pub estimated_settle_price: Option<Decimal>,
+    pub last_funding_rate: Decimal,
+    pub next_funding_time: DateTime<Utc>,
+    pub interest_rate: Decimal,
+    pub time: DateTime<Utc>,
+}
+
+/// 成交信息
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TradeInfo {
+    pub id: String,
+    pub symbol: String,
+    pub price: Decimal,
+    pub quantity: Decimal,
+    pub quote_quantity: Decimal,
+    pub commission: Decimal,
+    pub commission_asset: String,
+    pub time: DateTime<Utc>,
+    pub is_buyer: bool,
+    pub is_maker: bool,
+    pub realized_pnl: Decimal,
+}
+
+/// 批量订单请求
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchOrderRequest {
+    pub symbol: String,
+    pub side: OrderSide,
+    pub order_type: OrderType,
+    pub quantity: Decimal,
+    pub price: Option<Decimal>,
+    pub stop_price: Option<Decimal>,
+    pub time_in_force: Option<TimeInForce>,
+    pub client_order_id: Option<String>,
+}
+
+/// 批量订单结果
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchOrderResult {
+    pub order_id: String,
+    pub client_order_id: Option<String>,
+    pub symbol: String,
+    pub status: OrderStatus,
+    pub error_code: Option<i64>,
+    pub error_message: Option<String>,
+}
+
+/// 合约账户信息 (扩展)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FuturesAccountInfo {
+    pub account_info: AccountInfo,
+    pub can_trade: bool,
+    pub can_withdraw: bool,
+    pub fee_tier: u32,
+    pub max_withdraw_amount: Decimal,
+    pub total_initial_margin: Decimal,
+    pub total_maint_margin: Decimal,
+    pub total_wallet_balance: Decimal,
+    pub total_unrealized_pnl: Decimal,
+    pub total_margin_balance: Decimal,
 }

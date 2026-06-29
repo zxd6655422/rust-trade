@@ -20,6 +20,7 @@ mode = "live"
 strategy = "rsi"
 symbols = ["BTCUSDT", "ETHUSDT"]
 poll_interval_ms = 100
+data_source = "candle1m"  # trades / tickers / candle1m (生产环境推荐 candle1m)
 
 [risk_control]
 # 基础风控

@@ -30,6 +30,34 @@ pub struct ExchangeConfig {
     pub testnet: bool,
 }
 
+/// 数据源类型
+#[derive(Debug, Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum DataSourceType {
+    /// 逐笔成交 (高频，资源消耗大)
+    Trades,
+    /// 行情快照 (中频)
+    Tickers,
+    /// K线推送 (低频，资源消耗最小)
+    Candle1m,
+}
+
+impl Default for DataSourceType {
+    fn default() -> Self {
+        DataSourceType::Trades
+    }
+}
+
+impl std::fmt::Display for DataSourceType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DataSourceType::Trades => write!(f, "trades"),
+            DataSourceType::Tickers => write!(f, "tickers"),
+            DataSourceType::Candle1m => write!(f, "candle1m"),
+        }
+    }
+}
+
 /// 交易配置
 #[derive(Debug, Deserialize, Clone)]
 pub struct TradingConfig {
@@ -37,6 +65,9 @@ pub struct TradingConfig {
     pub strategy: String,
     pub symbols: Vec<String>,
     pub poll_interval_ms: u64,
+    /// 数据源类型: trades / tickers / candle1m (默认 trades)
+    #[serde(default)]
+    pub data_source: DataSourceType,
 }
 
 /// 应用设置

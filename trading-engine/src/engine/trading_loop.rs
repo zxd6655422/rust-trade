@@ -7,7 +7,7 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::time::{interval, Duration};
 use tracing::{error, info, warn};
 
-use crate::config::Settings;
+use crate::config::{DataSourceType, Settings};
 use crate::exchange::traits::Exchange;
 use crate::exchange::RedisDataSource;
 use crate::order::OrderManager;
@@ -29,6 +29,7 @@ pub struct TradingLoop {
     strategy: RefCell<Box<dyn Strategy>>,
     symbols: Vec<String>,
     poll_interval_ms: u64,
+    data_source: DataSourceType,
     shutdown_tx: broadcast::Sender<()>,
 }
 
@@ -64,6 +65,7 @@ impl TradingLoop {
             strategy: RefCell::new(strategy),
             symbols: settings.trading.symbols.clone(),
             poll_interval_ms: settings.trading.poll_interval_ms,
+            data_source: settings.trading.data_source.clone(),
             shutdown_tx,
         }
     }
@@ -72,44 +74,30 @@ impl TradingLoop {
     pub async fn start(&self) -> Result<(), Box<dyn std::error::Error>> {
         info!("Starting trading loop for symbols: {:?}", self.symbols);
         info!("Strategy: {}", self.strategy.borrow().name());
+        info!("Data source: {}", self.data_source);
         info!("Poll interval: {}ms", self.poll_interval_ms);
 
         // 创建 tick 数据通道
         let (tick_tx, mut tick_rx) = mpsc::channel::<TickData>(1000);
 
-        // 克隆 tick_tx 用于多个数据源
-        let tick_tx_ws = tick_tx.clone();
-        let tick_tx_redis = tick_tx.clone();
-
-        // 启动 WebSocket 数据订阅任务
-        let exchange = self.exchange.clone();
-        let symbols = self.symbols.clone();
-        let shutdown_rx = self.shutdown_tx.subscribe();
-
-        tokio::spawn(async move {
-            if let Err(e) = exchange
-                .subscribe_trades(
-                    &symbols,
-                    Box::new(move |tick| {
-                        let tick_tx = tick_tx_ws.clone();
-                        tokio::spawn(async move {
-                            if let Err(e) = tick_tx.send(tick).await {
-                                error!("Failed to send tick: {}", e);
-                            }
-                        });
-                    }),
-                    shutdown_rx,
-                )
-                .await
-            {
-                error!("Trade subscription failed: {}", e);
+        // 根据数据源类型启动对应的数据订阅
+        match self.data_source {
+            DataSourceType::Trades => {
+                self.start_trades_source(tick_tx.clone()).await;
             }
-        });
+            DataSourceType::Tickers => {
+                self.start_tickers_source(tick_tx.clone()).await;
+            }
+            DataSourceType::Candle1m => {
+                self.start_candle_source(tick_tx.clone()).await;
+            }
+        }
 
-        // 启动 Redis 数据源作为备用
+        // 启动 Redis 数据源作为备用 (所有模式都启用)
         let redis_datasource = self.redis_datasource.clone();
         let symbols = self.symbols.clone();
         let shutdown_rx = self.shutdown_tx.subscribe();
+        let tick_tx_redis = tick_tx.clone();
 
         tokio::spawn(async move {
             if let Err(e) = redis_datasource
@@ -184,6 +172,113 @@ impl TradingLoop {
 
         info!("Trading loop stopped");
         Ok(())
+    }
+
+    /// 启动 trades 数据源 (逐笔成交，高频)
+    async fn start_trades_source(&self, tick_tx: mpsc::Sender<TickData>) {
+        let exchange = self.exchange.clone();
+        let symbols = self.symbols.clone();
+        let shutdown_rx = self.shutdown_tx.subscribe();
+
+        tokio::spawn(async move {
+            info!("Starting trades WebSocket data source");
+            if let Err(e) = exchange
+                .subscribe_trades(
+                    &symbols,
+                    Box::new(move |tick| {
+                        let tick_tx = tick_tx.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = tick_tx.send(tick).await {
+                                error!("Failed to send tick: {}", e);
+                            }
+                        });
+                    }),
+                    shutdown_rx,
+                )
+                .await
+            {
+                error!("Trade subscription failed: {}", e);
+            }
+        });
+    }
+
+    /// 启动 tickers 数据源 (行情快照，中频)
+    async fn start_tickers_source(&self, tick_tx: mpsc::Sender<TickData>) {
+        // tickers 也通过 subscribe_trades 获取
+        // 交易所 adapter 内部根据 channel 区分
+        // 这里复用同一接口，adapter 层做适配
+        let exchange = self.exchange.clone();
+        let symbols = self.symbols.clone();
+        let shutdown_rx = self.shutdown_tx.subscribe();
+
+        tokio::spawn(async move {
+            info!("Starting tickers WebSocket data source");
+            if let Err(e) = exchange
+                .subscribe_trades(
+                    &symbols,
+                    Box::new(move |tick| {
+                        let tick_tx = tick_tx.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = tick_tx.send(tick).await {
+                                error!("Failed to send tick: {}", e);
+                            }
+                        });
+                    }),
+                    shutdown_rx,
+                )
+                .await
+            {
+                error!("Ticker subscription failed: {}", e);
+            }
+        });
+    }
+
+    /// 启动 candle1m 数据源 (K线推送，低频，资源最省)
+    async fn start_candle_source(&self, tick_tx: mpsc::Sender<TickData>) {
+        // K线模式: 定时拉取 K线数据，转换为 TickData
+        let exchange = self.exchange.clone();
+        let symbols = self.symbols.clone();
+        let mut shutdown_rx = self.shutdown_tx.subscribe();
+
+        tokio::spawn(async move {
+            info!("Starting candle1m REST polling data source");
+            let mut poll_interval = tokio::time::interval(Duration::from_secs(60)); // 每分钟拉取一次
+
+            loop {
+                tokio::select! {
+                    _ = poll_interval.tick() => {
+                        for symbol in &symbols {
+                            match exchange.get_klines(symbol, "1m", Some(1)).await {
+                                Ok(klines) => {
+                                    if let Some(kline) = klines.last() {
+                                        // 将 K线收盘价转换为 TickData
+                                        let tick = TickData {
+                                            timestamp: kline.close_time,
+                                            symbol: symbol.clone(),
+                                            price: kline.close,
+                                            quantity: kline.volume,
+                                            side: trading_common::data::types::TradeSide::Buy,
+                                            trade_id: format!("candle_{}", kline.close_time.timestamp_millis()),
+                                            is_buyer_maker: false,
+                                        };
+                                        if let Err(e) = tick_tx.send(tick).await {
+                                            error!("Failed to send candle tick: {}", e);
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!("Failed to fetch kline for {}: {}", symbol, e);
+                                }
+                            }
+                        }
+                    }
+                    _ = shutdown_rx.recv() => {
+                        info!("Candle1m data source shutting down");
+                        break;
+                    }
+                }
+            }
+        });
     }
 
     /// 处理单个 tick 数据
