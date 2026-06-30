@@ -782,3 +782,227 @@ pub async fn run_out_of_sample_backtest(
         })),
     }
 }
+
+// =================================================================
+// 多交易对回测 + 市场状态分析
+// =================================================================
+
+/// 多交易对回测请求
+#[derive(Debug, Deserialize)]
+pub struct MultiSymbolBacktestRequest {
+    pub strategy: String,
+    /// 交易对列表，为空则自动获取所有可用交易对
+    #[serde(default)]
+    pub symbols: Vec<String>,
+    #[serde(default = "default_capital")]
+    pub capital: f64,
+    #[serde(default = "default_commission")]
+    pub commission_rate: f64,
+    /// 每个 symbol 的数据量
+    #[serde(default = "default_wf_data_count")]
+    pub data_count: u32,
+    /// 市场状态分析窗口大小
+    #[serde(default = "default_market_window")]
+    pub market_state_window: usize,
+    /// 策略参数 (可选)
+    #[serde(default)]
+    pub strategy_params: Option<std::collections::HashMap<String, String>>,
+}
+
+fn default_market_window() -> usize {
+    50
+}
+
+/// 市场状态分析请求
+#[derive(Debug, Deserialize)]
+pub struct MarketStateRequest {
+    pub symbol: String,
+    /// 数据量
+    #[serde(default = "default_wf_data_count")]
+    pub data_count: u32,
+    /// 分析窗口大小
+    #[serde(default = "default_market_window")]
+    pub window: usize,
+}
+
+/// 执行多交易对回测
+pub async fn run_multi_symbol_backtest(
+    data: web::Data<AppState>,
+    req: web::Json<MultiSymbolBacktestRequest>,
+) -> HttpResponse {
+    info!("Multi-symbol backtest request: {:?}", req);
+
+    if !is_multi_timeframe_strategy(&req.strategy) {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "success": false,
+            "message": format!("Strategy '{}' is not a multi-timeframe strategy", req.strategy)
+        }));
+    }
+
+    let _lock = match data.backtest_lock.try_lock() {
+        Ok(lock) => lock,
+        Err(_) => {
+            return HttpResponse::Conflict().json(serde_json::json!({
+                "success": false,
+                "message": "Another backtest is running. Please wait."
+            }));
+        }
+    };
+
+    // 确定 symbol 列表
+    let symbols = if req.symbols.is_empty() {
+        match data.repository.get_backtest_data_info().await {
+            Ok(info) => info.get_available_symbols(),
+            Err(e) => {
+                return HttpResponse::InternalServerError().json(serde_json::json!({
+                    "success": false,
+                    "message": format!("Failed to get available symbols: {}", e)
+                }));
+            }
+        }
+    } else {
+        req.symbols.clone()
+    };
+
+    if symbols.is_empty() {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "success": false,
+            "message": "No symbols available for backtest"
+        }));
+    }
+
+    info!("Multi-symbol backtest with {} symbols: {:?}", symbols.len(), symbols);
+
+    // 加载每个 symbol 的数据
+    let mut symbol_data = std::collections::HashMap::new();
+    for symbol in &symbols {
+        match data.repository.get_klines(symbol, req.data_count).await {
+            Ok(klines) if !klines.is_empty() => {
+                info!("Loaded {} klines for {}", klines.len(), symbol);
+                symbol_data.insert(symbol.clone(), klines);
+            }
+            _ => {
+                info!("No kline data for {}, skipping", symbol);
+            }
+        }
+    }
+
+    if symbol_data.is_empty() {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "success": false,
+            "message": "No kline data available for any symbol"
+        }));
+    }
+
+    let initial_capital = Decimal::from_str(&req.capital.to_string()).unwrap_or(Decimal::from(10000));
+    let commission_rate = Decimal::from_str(&(req.commission_rate / 100.0).to_string())
+        .unwrap_or(Decimal::from_str("0.001").unwrap());
+    let mut bt_config = trading_common::backtest::BacktestConfig::new(initial_capital)
+        .with_commission_rate(commission_rate);
+    if let Some(params) = &req.strategy_params {
+        for (key, value) in params {
+            bt_config = bt_config.with_param(key, value);
+        }
+    }
+
+    let strategy_id = req.strategy.clone();
+    let result = trading_common::backtest::MultiSymbolBacktestEngine::run(
+        || trading_common::backtest::strategy::create_multi_timeframe_strategy(&strategy_id).unwrap(),
+        &bt_config,
+        &symbol_data,
+        req.market_state_window,
+    );
+
+    match result {
+        Ok(ms_result) => {
+            let symbols_json: Vec<serde_json::Value> = ms_result
+                .results
+                .iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "symbol": r.symbol,
+                        "return_pct": format!("{:.2}%", r.result.return_percentage),
+                        "sharpe": format!("{:.2}", r.result.sharpe_ratio),
+                        "win_rate": format!("{:.2}%", r.result.win_rate),
+                        "max_drawdown": format!("{:.2}%", r.result.max_drawdown),
+                        "total_trades": r.result.total_trades,
+                        "profit_factor": format!("{:.2}", r.result.profit_factor),
+                        "market_state": r.market_state.summary,
+                        "data_quality": format!("{:.0}/100", r.market_state.data_quality_score),
+                    })
+                })
+                .collect();
+
+            HttpResponse::Ok().json(serde_json::json!({
+                "success": true,
+                "message": "Multi-symbol backtest completed",
+                "data": {
+                    "total_symbols": ms_result.total_symbols,
+                    "profitable_symbols": ms_result.profitable_symbols,
+                    "losing_symbols": ms_result.losing_symbols,
+                    "avg_return_pct": format!("{:.2}%", ms_result.avg_return_pct),
+                    "avg_sharpe": format!("{:.2}", ms_result.avg_sharpe),
+                    "avg_win_rate": format!("{:.2}%", ms_result.avg_win_rate),
+                    "avg_max_drawdown": format!("{:.2}%", ms_result.avg_max_drawdown),
+                    "total_trades": ms_result.total_trades,
+                    "best_symbol": ms_result.best_symbol,
+                    "best_return_pct": format!("{:.2}%", ms_result.best_return_pct),
+                    "worst_symbol": ms_result.worst_symbol,
+                    "worst_return_pct": format!("{:.2}%", ms_result.worst_return_pct),
+                    "cross_symbol_correlation": format!("{:.2}", ms_result.cross_symbol_correlation),
+                    "symbols": symbols_json
+                }
+            }))
+        }
+        Err(e) => HttpResponse::BadRequest().json(serde_json::json!({
+            "success": false,
+            "message": format!("Multi-symbol backtest failed: {}", e)
+        })),
+    }
+}
+
+/// 分析市场状态
+pub async fn analyze_market_state(
+    data: web::Data<AppState>,
+    req: web::Json<MarketStateRequest>,
+) -> HttpResponse {
+    info!("Market state analysis request: {:?}", req);
+
+    let klines_1m = match data.repository.get_klines(&req.symbol, req.data_count).await {
+        Ok(klines) if !klines.is_empty() => klines,
+        _ => {
+            return HttpResponse::BadRequest().json(serde_json::json!({
+                "success": false,
+                "message": format!("No kline data available for {}", req.symbol)
+            }));
+        }
+    };
+
+    info!("Loaded {} klines for market state analysis", klines_1m.len());
+
+    let report = trading_common::backtest::MarketStateAnalyzer::analyze(&klines_1m, req.window);
+
+    let state_dist_json: serde_json::Value = report
+        .state_percentages
+        .iter()
+        .map(|(k, v)| (k.clone(), serde_json::json!(format!("{:.1}%", v))))
+        .collect::<serde_json::Map<_, _>>()
+        .into();
+
+    HttpResponse::Ok().json(serde_json::json!({
+        "success": true,
+        "message": "Market state analysis completed",
+        "data": {
+            "symbol": req.symbol,
+            "total_candles": report.total_candles,
+            "analysis_window": report.analysis_window,
+            "state_distribution": state_dist_json,
+            "avg_volatility": format!("{:.2}%", report.avg_volatility),
+            "avg_trend_strength": format!("{:.2}", report.avg_trend_strength),
+            "trend_ratio": format!("{:.1}%", report.trend_ratio),
+            "ranging_ratio": format!("{:.1}%", report.ranging_ratio),
+            "data_quality_score": format!("{:.0}/100", report.data_quality_score),
+            "summary": report.summary
+        }
+    }))
+}

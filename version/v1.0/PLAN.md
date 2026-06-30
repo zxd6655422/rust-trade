@@ -513,7 +513,7 @@ candle1m 数据源:
 | ~~P4~~ | ~~多时间框架策略接口~~ | ~~中~~ | ✅ 已完成：MultiTimeframeStrategy trait + TrendStrategy |
 | ~~P5~~ | ~~多时间框架回测支持~~ | ~~中~~ | ✅ 已完成：MultiTimeframeBacktestEngine + 做空支持 |
 | ~~P6~~ | ~~回测增强 - 样本外测试 + 滚动前进测试~~ | ~~中~~ | ✅ 已完成：WalkForwardEngine + 过拟合检测 |
-| P7 | 回测增强 - 多交易对 + 市场状态分析 | 中 | 提高回测可信度 |
+| ~~P7~~ | ~~回测增强 - 多交易对 + 市场状态分析~~ | ~~中~~ | ✅ 已完成：MultiSymbolBacktestEngine + MarketStateAnalyzer |
 | P8 | 监控桌面应用 - 实时行情图表 | 大 | src-tauri 新增 WebSocket 直连行情 |
 | P9 | 监控桌面应用 - 持仓/交易记录 | 中 | 读 trading_positions + trade_logs |
 | P10 | 监控桌面应用 - 统计分析 | 中 | 复用 trading-common::backtest::metrics |

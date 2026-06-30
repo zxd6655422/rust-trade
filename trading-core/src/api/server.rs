@@ -87,7 +87,9 @@ impl ApiServer {
                         .route("/backtest", web::post().to(handlers::run_backtest))
                         .route("/backtest/multi-timeframe", web::post().to(handlers::run_multi_timeframe_backtest))
                         .route("/backtest/walk-forward", web::post().to(handlers::run_walk_forward_backtest))
-                        .route("/backtest/out-of-sample", web::post().to(handlers::run_out_of_sample_backtest)),
+                        .route("/backtest/out-of-sample", web::post().to(handlers::run_out_of_sample_backtest))
+                        .route("/backtest/multi-symbol", web::post().to(handlers::run_multi_symbol_backtest))
+                        .route("/analysis/market-state", web::post().to(handlers::analyze_market_state)),
                 )
                 // WebSocket
                 .route("/ws", web::get().to(websocket::ws_handler))

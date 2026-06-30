@@ -14,6 +14,7 @@
 | 历史数据回填 (Backfill) | ✅ | 服务启动自动拉取历史数据 + 缺失 gap 检测补齐 |
 | 多时间框架回测引擎 | ✅ | 逐 bar 模拟交易 + 做多做空 + 完整 BacktestResult |
 | 样本外测试 + 滚动前进测试 | ✅ | WalkForwardEngine + 过拟合检测 |
+| 多交易对回测 + 市场状态分析 | ✅ | MultiSymbolBacktestEngine + MarketStateAnalyzer |
 
 ### 🔄 进行中
 
@@ -23,7 +24,6 @@
 
 | 任务 | 优先级 | 说明 |
 |------|--------|------|
-| 多交易对回测 | 中 | 多交易对 + 市场状态分析 (P7) |
 | 监控桌面应用 | 低 | Tauri 桌面端 (P8-P10) |
 
 ### 关键文件
@@ -45,6 +45,92 @@ trading-common/
 config/
 ├── schema.sql                     # 原始表 (tick_data)
 └── schema_v2.sql                  # 新增表 (kline_1m 等)
+```
+
+---
+
+## [2026-07-01] 多交易对回测 + 市场状态分析 (P7)
+
+### 问题
+
+- 回测只能在单个交易对上运行，无法验证策略在不同标的上的鲁棒性
+- 缺乏对回测数据质量的评估（数据是否覆盖了多种市场状态）
+
+### 实现
+
+#### 1. MarketStateAnalyzer (`market_state.rs`)
+
+分析 K 线数据的市场状态分布：
+
+- **ATR (Average True Range)** — 衡量波动率
+- **ADX (Average Directional Index)** — 衡量趋势强度
+- **+DI / -DI** — 判断趋势方向
+- 滑动窗口分析，输出各状态占比
+
+市场状态分类：
+- `StrongUptrend` — ADX > 25, +DI > -DI
+- `Uptrend` — 趋势强度 > 0.2
+- `Ranging` — 震荡/横盘
+- `Downtrend` — 趋势强度 < -0.2
+- `StrongDowntrend` — ADX > 25, -DI > +DI
+- `HighVolatility` — ATR 百分位 > 3%
+
+数据质量评分：趋势和震荡都有覆盖 = 好数据
+
+#### 2. MultiSymbolBacktestEngine (`multi_symbol.rs`)
+
+多交易对回测编排器：
+
+```
+for each symbol in symbols:
+  1. 加载 1m K 线数据
+  2. 运行 MultiTimeframeBacktestEngine
+  3. 运行 MarketStateAnalyzer
+  4. 收集结果
+
+汇总：
+  - 盈利/亏损 symbol 比例
+  - 平均收益率/Sharpe/胜率
+  - 最佳/最差 symbol
+  - 跨 symbol 相关性
+```
+
+#### 3. API 端点
+
+- `POST /api/backtest/multi-symbol` — 多交易对回测
+- `POST /api/analysis/market-state` — 市场状态分析
+
+### 文件改动
+
+| 文件 | 改动 |
+|------|------|
+| `trading-common/src/backtest/market_state.rs` | **新建** 市场状态分析器 |
+| `trading-common/src/backtest/multi_symbol.rs` | **新建** 多交易对回测编排器 |
+| `trading-common/src/backtest/mod.rs` | 导出新模块 |
+| `trading-core/src/api/handlers.rs` | 新增 2 个 API handler |
+| `trading-core/src/api/server.rs` | 注册新路由 |
+
+### API 使用示例
+
+```bash
+# 多交易对回测（自动获取所有可用 symbol）
+curl -X POST http://localhost:8080/api/backtest/multi-symbol \
+  -H "Content-Type: application/json" \
+  -d '{
+    "strategy": "trend",
+    "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT"],
+    "capital": 10000,
+    "data_count": 50000
+  }'
+
+# 市场状态分析
+curl -X POST http://localhost:8080/api/analysis/market-state \
+  -H "Content-Type: application/json" \
+  -d '{
+    "symbol": "BTCUSDT",
+    "data_count": 50000,
+    "window": 50
+  }'
 ```
 
 ---
