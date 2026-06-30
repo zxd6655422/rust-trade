@@ -1,6 +1,8 @@
 # rust-trade v1.0 开发计划
 
-## 当前进度
+## 当前进度 (2026-07-01 更新)
+
+### ✅ 核心模块
 
 | 模块 | 状态 | 说明 |
 |------|------|------|
@@ -12,8 +14,40 @@
 | K线聚合器 | ✅ 完成 | 1m → 5m/15m/30m/1h/4h/1d |
 | 多时间框架策略框架 | ✅ 完成 | MultiTimeframeStrategy trait + TrendStrategy |
 | 数据库 Schema V2 | ✅ 完成 | kline_1m, backtest_results, strategy_signals 等表 |
-| 多时间框架回测引擎 | ✅ 完成 | 逐 bar 模拟交易 + 做多做空 + 完整 BacktestResult |
-| 监控桌面应用 | 📋 规划完成 | 待开发 |
+| trading-core 服务化 | ✅ 完成 | HTTP API + WebSocket + 数据采集 |
+
+### ✅ 回测引擎
+
+| 模块 | 状态 | 说明 |
+|------|------|------|
+| 多时间框架回测引擎 | ✅ 完成 | MultiTimeframeBacktestEngine，逐 bar 模拟交易，支持做多做空 |
+| Portfolio 做空支持 | ✅ 完成 | PositionSide 枚举，execute_short_open/close |
+| 样本外测试 | ✅ 完成 | 70/30 单次划分，训练/测试分别回测 |
+| 滚动前进测试 | ✅ 完成 | WalkForwardEngine，滚动窗口训练+测试 |
+| 过拟合检测 | ✅ 完成 | 过拟合比率 = (train_sharpe - test_sharpe) / train_sharpe |
+| 多交易对回测 | ✅ 完成 | MultiSymbolBacktestEngine，批量 symbol 回测汇总 |
+| 市场状态分析 | ✅ 完成 | MarketStateAnalyzer，ATR/ADX 分析趋势/震荡/波动分布 |
+
+### ✅ API 端点
+
+| 端点 | 方法 | 功能 |
+|------|------|------|
+| `/health` | GET | 健康检查 |
+| `/api/data/info` | GET | 数据信息 |
+| `/api/strategies` | GET | 策略列表 |
+| `/api/backtest` | POST | 单时间框架回测 |
+| `/api/backtest/multi-timeframe` | POST | 多时间框架回测（逐 bar 模拟） |
+| `/api/backtest/walk-forward` | POST | 滚动前进测试（抗过拟合） |
+| `/api/backtest/out-of-sample` | POST | 样本外测试（抗过拟合） |
+| `/api/backtest/multi-symbol` | POST | 多交易对回测 |
+| `/api/analysis/market-state` | POST | 市场状态分析 |
+
+### 📋 待开发
+
+| 模块 | 状态 | 说明 |
+|------|------|------|
+| 监控桌面应用 | 📋 规划完成 | P8-P10，Tauri 桌面端 |
+| Exchange trait 分层重构 | 📋 可选 | P11，MarketDataProvider / TradingOperations 分离 |
 
 ---
 
@@ -348,14 +382,14 @@ trading-core 改造为按需工具：批量拉取历史 K 线补充数据。
 
 在 `trading-common::backtest::engine` 中新增：
 
-| 功能 | 说明 | 优先级 |
-|------|------|--------|
-| 样本外测试 | 自动划分训练集/测试集，分别回测 | P1 |
-| 滚动前进测试 | 滚动窗口训练+测试，输出每轮结果 | P1 |
-| 多交易对回测 | 批量运行多个 symbol，汇总统计 | P2 |
-| 市场状态分析 | 分析数据中的趋势/震荡/波动分布 | P2 |
-| 过拟合检测 | 训练集 vs 测试集表现差异告警 | P1 |
-| 多时间框架回测 | 支持 1m→4h 综合分析策略的回测 | P1 |
+| 功能 | 说明 | 状态 |
+|------|------|------|
+| 样本外测试 | 自动划分训练集/测试集，分别回测 | ✅ 已完成 |
+| 滚动前进测试 | 滚动窗口训练+测试，输出每轮结果 | ✅ 已完成 |
+| 多交易对回测 | 批量运行多个 symbol，汇总统计 | ✅ 已完成 |
+| 市场状态分析 | 分析数据中的趋势/震荡/波动分布 | ✅ 已完成 |
+| 过拟合检测 | 训练集 vs 测试集表现差异告警 | ✅ 已完成 |
+| 多时间框架回测 | 支持 1m→4h 综合分析策略的回测 | ✅ 已完成 |
 
 ---
 
@@ -504,20 +538,22 @@ candle1m 数据源:
 
 ## 六、实施优先级
 
-| 优先级 | 任务 | 预计工作量 | 说明 |
-|--------|------|-----------|------|
-| ~~P0~~ | ~~OkxAdapter 6 项修复~~ | ~~中~~ | ✅ 已完成 |
-| ~~P1~~ | ~~数据源可配置（candle1m 优先）~~ | ~~小~~ | ✅ 已完成 |
-| ~~P2~~ | ~~K 线聚合器~~ | ~~小~~ | ✅ 已完成 |
-| ~~P3~~ | ~~K 线存储 + 自动积累 + 历史回填~~ | ~~中~~ | ✅ 已完成：REST 轮询 + backfill + gap 检测补齐 |
-| ~~P4~~ | ~~多时间框架策略接口~~ | ~~中~~ | ✅ 已完成：MultiTimeframeStrategy trait + TrendStrategy |
-| ~~P5~~ | ~~多时间框架回测支持~~ | ~~中~~ | ✅ 已完成：MultiTimeframeBacktestEngine + 做空支持 |
-| ~~P6~~ | ~~回测增强 - 样本外测试 + 滚动前进测试~~ | ~~中~~ | ✅ 已完成：WalkForwardEngine + 过拟合检测 |
-| ~~P7~~ | ~~回测增强 - 多交易对 + 市场状态分析~~ | ~~中~~ | ✅ 已完成：MultiSymbolBacktestEngine + MarketStateAnalyzer |
-| P8 | 监控桌面应用 - 实时行情图表 | 大 | src-tauri 新增 WebSocket 直连行情 |
-| P9 | 监控桌面应用 - 持仓/交易记录 | 中 | 读 trading_positions + trade_logs |
-| P10 | 监控桌面应用 - 统计分析 | 中 | 复用 trading-common::backtest::metrics |
-| P11 | Exchange trait 分层重构（可选） | 大 | MarketDataProvider / TradingOperations 分离 |
+| 优先级 | 任务 | 状态 | 说明 |
+|--------|------|------|------|
+| P0 | OkxAdapter 6 项修复 | ✅ 已完成 | |
+| P1 | 数据源可配置（candle1m 优先） | ✅ 已完成 | |
+| P2 | K 线聚合器 | ✅ 已完成 | |
+| P3 | K 线存储 + 自动积累 + 历史回填 | ✅ 已完成 | REST 轮询 + backfill + gap 检测补齐 |
+| P4 | 多时间框架策略接口 | ✅ 已完成 | MultiTimeframeStrategy trait + TrendStrategy |
+| P5 | 多时间框架回测支持 | ✅ 已完成 | MultiTimeframeBacktestEngine + 做空支持 |
+| P6 | 回测增强 - 样本外测试 + 滚动前进测试 | ✅ 已完成 | WalkForwardEngine + 过拟合检测 |
+| P7 | 回测增强 - 多交易对 + 市场状态分析 | ✅ 已完成 | MultiSymbolBacktestEngine + MarketStateAnalyzer |
+| P8 | 监控桌面应用 - 实时行情图表 | ⏳ 待开发 | src-tauri 新增 WebSocket 直连行情 |
+| P9 | 监控桌面应用 - 持仓/交易记录 | ⏳ 待开发 | 读 trading_positions + trade_logs |
+| P10 | 监控桌面应用 - 统计分析 | ⏳ 待开发 | 复用 trading-common::backtest::metrics |
+| P11 | Exchange trait 分层重构（可选） | 📋 可选 | MarketDataProvider / TradingOperations 分离 |
+
+**完成进度：P0-P7 ✅ (8/11)，P8-P10 待开发，P11 可选**
 
 ---
 
