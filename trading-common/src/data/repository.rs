@@ -628,8 +628,8 @@ impl TickDataRepository {
     pub async fn insert_live_strategy_log(&self, log: &LiveStrategyLog) -> DataResult<()> {
         sqlx::query!(
             r#"
-            INSERT INTO live_strategy_log 
-            (timestamp, strategy_id, symbol, current_price, signal_type, 
+            INSERT INTO live_strategy_log
+            (timestamp, strategy_id, symbol, current_price, signal_type,
              portfolio_value, total_pnl, cache_hit, processing_time_us)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             "#,
@@ -647,6 +647,203 @@ impl TickDataRepository {
         .await?;
 
         Ok(())
+    }
+
+    // =================================================================
+    // K-line (kline_1m) Operations
+    // =================================================================
+
+    /// Insert a single kline into kline_1m table (upsert)
+    pub async fn insert_kline(&self, kline: &OHLCData) -> DataResult<()> {
+        debug!(
+            "Inserting kline: symbol={}, timestamp={}, close={}",
+            kline.symbol, kline.timestamp, kline.close
+        );
+
+        let mut query_builder = QueryBuilder::new(
+            "INSERT INTO kline_1m (timestamp, symbol, open, high, low, close, volume, trade_count) "
+        );
+
+        query_builder.push_values(std::slice::from_ref(kline), |mut b, k| {
+            b.push_bind(k.timestamp)
+                .push_bind(&k.symbol)
+                .push_bind(k.open)
+                .push_bind(k.high)
+                .push_bind(k.low)
+                .push_bind(k.close)
+                .push_bind(k.volume)
+                .push_bind(k.trade_count as i32);
+        });
+
+        query_builder.push(
+            " ON CONFLICT (symbol, timestamp) DO UPDATE SET \
+              open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low, \
+              close = EXCLUDED.close, volume = EXCLUDED.volume, trade_count = EXCLUDED.trade_count"
+        );
+
+        query_builder.build().execute(&self.pool).await.map_err(|e| {
+            error!("Failed to insert kline: {}", e);
+            DataError::Database(e)
+        })?;
+
+        debug!("Successfully inserted kline for {} at {}", kline.symbol, kline.timestamp);
+        Ok(())
+    }
+
+    /// Batch insert klines into kline_1m table (upsert)
+    pub async fn batch_insert_klines(&self, klines: Vec<OHLCData>) -> DataResult<usize> {
+        if klines.is_empty() {
+            return Ok(0);
+        }
+
+        let total_count = klines.len();
+        debug!("Batch inserting {} kline records", total_count);
+
+        let mut total_inserted = 0;
+        for chunk in klines.chunks(MAX_BATCH_SIZE) {
+            let mut query_builder = QueryBuilder::new(
+                "INSERT INTO kline_1m (timestamp, symbol, open, high, low, close, volume, trade_count) "
+            );
+
+            query_builder.push_values(chunk, |mut b, kline| {
+                b.push_bind(kline.timestamp)
+                    .push_bind(&kline.symbol)
+                    .push_bind(kline.open)
+                    .push_bind(kline.high)
+                    .push_bind(kline.low)
+                    .push_bind(kline.close)
+                    .push_bind(kline.volume)
+                    .push_bind(kline.trade_count as i32);
+            });
+
+            query_builder.push(
+                " ON CONFLICT (symbol, timestamp) DO UPDATE SET \
+                  open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low, \
+                  close = EXCLUDED.close, volume = EXCLUDED.volume, trade_count = EXCLUDED.trade_count"
+            );
+
+            let result = query_builder.build().execute(&self.pool).await?;
+            total_inserted += result.rows_affected() as usize;
+        }
+
+        info!(
+            "Successfully batch upserted {} out of {} kline records",
+            total_inserted, total_count
+        );
+        Ok(total_inserted)
+    }
+
+    /// Get klines from kline_1m table
+    pub async fn get_klines(
+        &self,
+        symbol: &str,
+        limit: u32,
+    ) -> DataResult<Vec<OHLCData>> {
+        let limit = limit.min(MAX_QUERY_LIMIT);
+
+        let mut query_builder = QueryBuilder::new(
+            "SELECT timestamp, symbol, open, high, low, close, volume, trade_count \
+             FROM kline_1m WHERE symbol = "
+        );
+        query_builder.push_bind(symbol);
+        query_builder.push(" ORDER BY timestamp DESC LIMIT ");
+        query_builder.push_bind(limit as i64);
+
+        let rows = query_builder.build().fetch_all(&self.pool).await?;
+
+        let klines: Vec<OHLCData> = rows
+            .iter()
+            .map(|row| OHLCData {
+                timestamp: row.get("timestamp"),
+                symbol: row.get("symbol"),
+                timeframe: Timeframe::OneMinute,
+                open: row.get("open"),
+                high: row.get("high"),
+                low: row.get("low"),
+                close: row.get("close"),
+                volume: row.get("volume"),
+                trade_count: row.get::<i32, _>("trade_count") as u64,
+            })
+            .collect();
+
+        debug!("Retrieved {} klines for {}", klines.len(), symbol);
+        Ok(klines)
+    }
+
+    /// Get the earliest kline timestamp for a symbol
+    pub async fn get_kline_earliest(
+        &self,
+        symbol: &str,
+    ) -> DataResult<Option<DateTime<Utc>>> {
+        let mut query_builder = QueryBuilder::new(
+            "SELECT MIN(timestamp) AS earliest FROM kline_1m WHERE symbol = "
+        );
+        query_builder.push_bind(symbol);
+
+        let row = query_builder.build().fetch_optional(&self.pool).await?;
+
+        let earliest = row.and_then(|r| r.get::<Option<DateTime<Utc>>, _>("earliest"));
+        debug!("Earliest kline for {}: {:?}", symbol, earliest);
+        Ok(earliest)
+    }
+
+    /// Get the latest kline timestamp for a symbol
+    pub async fn get_kline_latest(
+        &self,
+        symbol: &str,
+    ) -> DataResult<Option<DateTime<Utc>>> {
+        let mut query_builder = QueryBuilder::new(
+            "SELECT MAX(timestamp) AS latest FROM kline_1m WHERE symbol = "
+        );
+        query_builder.push_bind(symbol);
+
+        let row = query_builder.build().fetch_optional(&self.pool).await?;
+
+        let latest = row.and_then(|r| r.get::<Option<DateTime<Utc>>, _>("latest"));
+        debug!("Latest kline for {}: {:?}", symbol, latest);
+        Ok(latest)
+    }
+
+    /// Find gaps in kline data within a time range.
+    /// Returns Vec<(gap_start, gap_end)> where each gap is > 2 minutes.
+    pub async fn find_kline_gaps(
+        &self,
+        symbol: &str,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> DataResult<Vec<(DateTime<Utc>, DateTime<Utc>)>> {
+        let rows = sqlx::query(
+            r#"
+            WITH ordered AS (
+                SELECT timestamp,
+                       LAG(timestamp) OVER (ORDER BY timestamp) AS prev_ts
+                FROM kline_1m
+                WHERE symbol = $1 AND timestamp BETWEEN $2 AND $3
+            )
+            SELECT prev_ts AS gap_start, timestamp AS gap_end
+            FROM ordered
+            WHERE prev_ts IS NOT NULL
+              AND timestamp - prev_ts > INTERVAL '2 minutes'
+            ORDER BY gap_start
+            "#
+        )
+        .bind(symbol)
+        .bind(start)
+        .bind(end)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let gaps: Vec<(DateTime<Utc>, DateTime<Utc>)> = rows
+            .iter()
+            .filter_map(|row| {
+                let gap_start: DateTime<Utc> = row.get("gap_start");
+                let gap_end: DateTime<Utc> = row.get("gap_end");
+                Some((gap_start, gap_end))
+            })
+            .collect();
+
+        info!("Found {} gaps for {} between {} and {}", gaps.len(), symbol, start, end);
+        Ok(gaps)
     }
 
     /// Generate OHLC data from tick data for a specific time range

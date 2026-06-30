@@ -24,3 +24,22 @@ max_ticks_per_symbol = 10000
 enabled = true
 strategy = "rsi"
 initial_capital = 10000.0
+
+# Data collector configuration
+[collector]
+# Mode: "disabled" / "tick" / "candle1m"
+# - disabled: No data collection (backtest only)
+# - tick: Collect tick data (high frequency, ~5000 records/minute/symbol)
+# - candle1m: Collect 1m candle data (low frequency, 1 record/minute/symbol, RECOMMENDED)
+mode = "candle1m"
+
+# Enable tick data collection in parallel (for high-frequency analysis)
+# This will use more resources but provides more detailed data
+enable_tick = false
+
+# Poll interval in seconds (only for candle1m mode)
+poll_interval_secs = 10
+
+# Historical data backfill (runs once on startup)
+backfill_enabled = true
+backfill_start_date = "2018-01-01"

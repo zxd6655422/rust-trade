@@ -104,18 +104,53 @@ Database → Repository → Backtest Engine → Strategy → Portfolio → Metri
 
 ### **Running the Application**
 
-#### **Live Data Collection**
+#### **Service Mode (Recommended for 24/7)**
 ```bash
-# Start real-time data collection
-cargo run
-# or explicitly
-cargo run live
+# Start full service with data collection + API + WebSocket
+cargo run service
 ```
 
-#### **Backtesting**
+This will start:
+- Data collection (candle1m/tick based on config)
+- HTTP API server on port 8080
+- WebSocket for real-time data
+
+#### **API Endpoints**
+```bash
+# Health check
+curl http://localhost:8080/health
+
+# Get strategies
+curl http://localhost:8080/api/strategies
+
+# Get data info
+curl http://localhost:8080/api/data/info
+
+# Run backtest
+curl -X POST http://localhost:8080/api/backtest \
+  -H "Content-Type: application/json" \
+  -d '{"strategy": "rsi", "symbol": "BTCUSDT", "capital": 10000, "data_count": 10000}'
+
+# WebSocket connection
+ws://localhost:8080/ws
+```
+
+#### **Collector Mode (Data Collection Only)**
+```bash
+# Start data collector only
+cargo run collector
+```
+
+#### **Backtesting (CLI)**
 ```bash
 # Start interactive backtesting
 cargo run backtest
+```
+
+#### **Live Mode (Legacy)**
+```bash
+# Start real-time data collection (legacy)
+cargo run live
 ```
 
 #### **Help**

@@ -1,3 +1,4 @@
+use chrono::NaiveDate;
 use rust_decimal::Decimal;
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -7,6 +8,7 @@ use tracing::{error, info, warn};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 // CLI-specific modules
+mod api;
 mod config;
 mod exchange;
 mod live_trading;
@@ -16,11 +18,12 @@ mod service;
 use trading_common::backtest;
 use trading_common::data;
 
-use config::Settings;
+use config::{CollectorMode, Settings};
 use data::{cache::TieredCache, repository::TickDataRepository};
 use exchange::BinanceExchange;
 use live_trading::PaperTradingProcessor;
-use service::MarketDataService;
+use service::{BackfillService, MarketDataService};
+use trading_common::data::types::{OHLCData, Timeframe};
 
 use data::cache::TickDataCache;
 
@@ -29,6 +32,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
 
     match args.get(1).map(|s| s.as_str()) {
+        Some("service") => run_service_mode().await,
+        Some("collector") => run_collector_mode().await,
         Some("backtest") => run_backtest_mode().await,
         Some("live") => {
             // Check if paper trading is enabled
@@ -38,7 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 run_live_mode().await
             }
         }
-        None => run_live_mode().await,
+        None => run_service_mode().await,
         Some("--help") | Some("-h") => {
             print_usage();
             Ok(())
@@ -55,10 +60,21 @@ fn print_usage() {
     println!("Trading Core - Cryptocurrency Data Collection & Backtesting System");
     println!();
     println!("Usage:");
-    println!("  cargo run                # Run live data collection");
-    println!("  cargo run live           # Run live data collection");
-    println!("  cargo run backtest       # Run backtesting mode");
+    println!("  cargo run service        # Run full service (collector + API + backtest)");
+    println!("  cargo run collector      # Run data collector only");
+    println!("  cargo run live           # Run live data collection (legacy)");
+    println!("  cargo run backtest       # Run backtesting mode (CLI)");
     println!("  cargo run --help         # Show this help message");
+    println!();
+    println!("Service mode (recommended for 24/7):");
+    println!("  - Data collection (candle1m/tick based on config)");
+    println!("  - HTTP API for backtest and monitoring");
+    println!("  - WebSocket for real-time data");
+    println!();
+    println!("Collector modes (configured in config file):");
+    println!("  disabled  - No data collection (backtest only)");
+    println!("  tick      - Collect tick data (high frequency, high resource usage)");
+    println!("  candle1m  - Collect 1m candle data (low frequency, minimal resources)");
     println!();
 }
 
@@ -186,6 +202,276 @@ async fn run_live_application_with_service(
         }
         Err(e) => {
             error!("Service stopped with error: {}", e);
+            Err(Box::new(e))
+        }
+    }
+}
+
+/// Service mode - full service with data collection + API + backtest
+async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
+    init_application().await?;
+
+    info!("🚀 Starting Trading Core Service Mode");
+
+    // Load configuration
+    let settings = Settings::new()?;
+
+    info!("📋 Configuration loaded successfully");
+    info!("📊 Monitoring symbols: {:?}", settings.symbols);
+    info!(
+        "🗄️  Database: {} connections",
+        settings.database.max_connections
+    );
+
+    // Create database connection pool
+    info!("🔌 Connecting to database...");
+    let pool = create_database_pool(&settings).await?;
+    test_database_connection(&pool).await?;
+    info!("✅ Database connection established");
+
+    // Create cache
+    info!("💾 Initializing cache...");
+    let cache = create_cache(&settings).await?;
+    info!("✅ Cache initialized");
+
+    // Create repository
+    let repository = Arc::new(TickDataRepository::new(pool, cache));
+
+    // Create broadcast channel for real-time data
+    let (tick_tx, _) = tokio::sync::broadcast::channel::<trading_common::data::types::TickData>(1000);
+
+    // Start data collection based on config
+    let collection_handle = match settings.collector.mode {
+        CollectorMode::Disabled => {
+            info!("⚠️ Data collection is disabled");
+            None
+        }
+        CollectorMode::Tick => {
+            info!("📊 Starting tick data collection (high frequency)");
+            let exchange: Arc<dyn exchange::Exchange> = Arc::new(BinanceExchange::new());
+            let symbols = settings.symbols.clone();
+            let tick_tx_clone = tick_tx.clone();
+            let shutdown_rx = tick_tx.subscribe();
+
+            Some(tokio::spawn(async move {
+                let service = MarketDataService::new(exchange, Arc::new(TickDataRepository::new(
+                    // This is a bit of a hack - we need a separate repository for the collection task
+                    // In production, you'd want to share the same pool
+                    create_database_pool_for_service().await.unwrap(),
+                    create_cache_for_service().await.unwrap(),
+                )), symbols);
+
+                if let Err(e) = service.start().await {
+                    error!("Data collection error: {}", e);
+                }
+            }))
+        }
+        CollectorMode::Candle1m => {
+            let poll_interval = settings.collector.poll_interval_secs;
+            let backfill_enabled = settings.collector.backfill_enabled;
+            let backfill_start = settings.collector.backfill_start_date.clone();
+            info!("📊 Starting candle1m data collection (REST polling every {}s)", poll_interval);
+            let exchange: Arc<dyn exchange::Exchange> = Arc::new(BinanceExchange::new());
+            let symbols = settings.symbols.clone();
+
+            Some(tokio::spawn(async move {
+                let repo = Arc::new(TickDataRepository::new(
+                    create_database_pool_for_service().await.unwrap(),
+                    create_cache_for_service().await.unwrap(),
+                ));
+
+                // Step 1: Backfill historical data (if enabled)
+                if backfill_enabled {
+                    match NaiveDate::parse_from_str(&backfill_start, "%Y-%m-%d") {
+                        Ok(date) => {
+                            let start_dt = date.and_hms_opt(0, 0, 0).unwrap().and_utc();
+                            let backfill = BackfillService::new(
+                                exchange.clone(),
+                                repo.clone(),
+                                symbols.clone(),
+                                start_dt,
+                            );
+                            backfill.run().await;
+                        }
+                        Err(e) => {
+                            error!("Invalid backfill_start_date '{}': {}", backfill_start, e);
+                        }
+                    }
+                }
+
+                // Step 2: Start periodic polling
+                let mut poll_timer = tokio::time::interval(Duration::from_secs(poll_interval));
+                poll_timer.tick().await; // skip first immediate tick
+
+                loop {
+                    poll_timer.tick().await;
+
+                    for symbol in &symbols {
+                        match exchange.fetch_klines(symbol, "1m", 100).await {
+                            Ok(klines) => {
+                                let ohlc_list: Vec<OHLCData> = klines
+                                    .into_iter()
+                                    .map(|k| OHLCData {
+                                        timestamp: k.timestamp,
+                                        symbol: k.symbol,
+                                        timeframe: Timeframe::OneMinute,
+                                        open: k.open,
+                                        high: k.high,
+                                        low: k.low,
+                                        close: k.close,
+                                        volume: k.volume,
+                                        trade_count: k.trade_count,
+                                    })
+                                    .collect();
+
+                                let count = ohlc_list.len();
+                                match repo.batch_insert_klines(ohlc_list).await {
+                                    Ok(inserted) => {
+                                        info!(
+                                            "✅ {} kline_1m: fetched {}, upserted {}",
+                                            symbol, count, inserted
+                                        );
+                                    }
+                                    Err(e) => {
+                                        error!("Failed to insert klines for {}: {}", symbol, e);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                error!("Failed to fetch klines for {}: {}", symbol, e);
+                            }
+                        }
+                    }
+                }
+            }))
+        }
+    };
+
+    // Start API server
+    let api_config = api::server::ApiServerConfig {
+        host: "0.0.0.0".to_string(),
+        port: 8080,
+    };
+    let api_server = api::ApiServer::new(api_config, repository.clone(), tick_tx.clone());
+
+    info!("🌐 Starting API server on port 8080");
+    info!("📡 WebSocket available at ws://0.0.0.0:8080/ws");
+    info!("🔗 REST API available at http://0.0.0.0:8080/api");
+
+    println!("{}", "=".repeat(80));
+    println!("🚀 Trading Core Service is running!");
+    println!("   Data collection: {}", settings.collector.mode);
+    println!("   API server: http://0.0.0.0:8080");
+    println!("   WebSocket: ws://0.0.0.0:8080/ws");
+    println!("   Press Ctrl+C to stop");
+    println!("{}", "=".repeat(80));
+
+    // 等待关闭信号或服务退出
+    tokio::select! {
+        _ = signal::ctrl_c() => {
+            info!("Received Ctrl+C signal, shutting down...");
+        }
+        result = api_server.start() => {
+            match result {
+                Ok(_) => info!("API server stopped"),
+                Err(e) => error!("API server error: {}", e),
+            }
+        }
+    }
+
+    // 清理
+    if let Some(handle) = collection_handle {
+        handle.abort();
+    }
+
+    info!("✅ Trading Core Service stopped");
+    Ok(())
+}
+
+/// Collector mode - dedicated data collection for 24/7 operation
+async fn run_collector_mode() -> Result<(), Box<dyn std::error::Error>> {
+    init_application().await?;
+
+    info!("🚀 Starting Trading Core Collector Mode");
+
+    // Load configuration
+    let settings = Settings::new()?;
+
+    // Check collector mode
+    match settings.collector.mode {
+        config::CollectorMode::Disabled => {
+            info!("⚠️ Collector is disabled in config. Exiting.");
+            info!("💡 Set collector.mode = 'candle1m' or 'tick' in config file to enable");
+            return Ok(());
+        }
+        config::CollectorMode::Tick => {
+            info!("📊 Collector mode: Tick (high frequency)");
+            info!("⚠️ This mode consumes significant resources");
+        }
+        config::CollectorMode::Candle1m => {
+            info!("📊 Collector mode: Candle1m (low frequency)");
+            info!("✅ Resource usage: minimal (1 request/minute/symbol)");
+        }
+    }
+
+    info!("📋 Configuration loaded successfully");
+    info!("📊 Monitoring symbols: {:?}", settings.symbols);
+    info!(
+        "🗄️  Database: {} connections",
+        settings.database.max_connections
+    );
+
+    // Create database connection pool
+    info!("🔌 Connecting to database...");
+    let pool = create_database_pool(&settings).await?;
+    test_database_connection(&pool).await?;
+    info!("✅ Database connection established");
+
+    // Create cache
+    info!("💾 Initializing cache...");
+    let cache = create_cache(&settings).await?;
+    info!("✅ Cache initialized");
+
+    // Create repository
+    let repository = Arc::new(TickDataRepository::new(pool, cache));
+
+    // Create exchange connection
+    info!("📡 Initializing exchange connection...");
+    let exchange: Arc<dyn exchange::Exchange> = Arc::new(BinanceExchange::new());
+    info!("✅ Exchange connection ready");
+
+    // Create market data service (no paper trading in collector mode)
+    let service = MarketDataService::new(exchange, repository, settings.symbols.clone());
+
+    info!(
+        "🎯 Starting data collection for {} symbols (mode: {})",
+        settings.symbols.len(),
+        settings.collector.mode
+    );
+    println!("🚀 Data collector is now active!");
+    println!(
+        "📈 Mode: {} | Symbols: {:?}",
+        settings.collector.mode, settings.symbols
+    );
+    println!("{}", "=".repeat(80));
+
+    // Setup signal forwarding
+    let service_shutdown_tx = service.get_shutdown_tx();
+    tokio::spawn(async move {
+        signal::ctrl_c().await.expect("Failed to listen for ctrl-c");
+        println!("\nReceived Ctrl+C signal, forwarding to collector...");
+        info!("Received Ctrl+C signal, forwarding to collector");
+        let _ = service_shutdown_tx.send(());
+    });
+
+    // Start service
+    match service.start().await {
+        Ok(()) => {
+            info!("✅ Collector stopped successfully");
+            Ok(())
+        }
+        Err(e) => {
+            error!("❌ Collector stopped with error: {}", e);
             Err(Box::new(e))
         }
     }
@@ -749,4 +1035,16 @@ async fn test_cache_connection(cache: &TieredCache) -> Result<(), Box<dyn std::e
     cache.get_symbols().await?;
     info!("✅ Cache connectivity test passed");
     Ok(())
+}
+
+/// Create database pool for service mode (separate instance)
+async fn create_database_pool_for_service() -> Result<PgPool, Box<dyn std::error::Error>> {
+    let settings = Settings::new()?;
+    create_database_pool(&settings).await
+}
+
+/// Create cache for service mode (separate instance)
+async fn create_cache_for_service() -> Result<TieredCache, Box<dyn std::error::Error>> {
+    let settings = Settings::new()?;
+    create_cache(&settings).await
 }

@@ -6,13 +6,18 @@
 |------|------|------|
 | BinanceAdapter (合约) | ✅ 完成 | `/fapi/v1/...` `/fapi/v2/...`，独立文件 |
 | BinanceSpotAdapter (现货) | ✅ 完成 | `/api/v3/...`，独立文件 |
-| OkxAdapter | ⚠️ 待升级 | 基础框架已有，6个问题待修复 |
-| Exchange trait | ✅ 完成 | 统一接口，覆盖现货/合约 |
+| OkxAdapter | ✅ 完成 | 6项修复已完成，可配置数据源 |
+| Exchange trait | ✅ 完成 | 统一接口，覆盖现货/合约，含 fetch_klines / fetch_klines_with_time |
+| 数据采集 (candle1m) | ✅ 完成 | REST 轮询拉取 + kline_1m 写入 + 历史数据回填 + 缺失补齐 |
+| K线聚合器 | ✅ 完成 | 1m → 5m/15m/30m/1h/4h/1d |
+| 多时间框架策略框架 | ✅ 完成 | MultiTimeframeStrategy trait + TrendStrategy |
+| 数据库 Schema V2 | ✅ 完成 | kline_1m, backtest_results, strategy_signals 等表 |
+| 多时间框架回测引擎 | ✅ 完成 | 逐 bar 模拟交易 + 做多做空 + 完整 BacktestResult |
 | 监控桌面应用 | 📋 规划完成 | 待开发 |
 
 ---
 
-## 一、OkxAdapter 升级（下一步）
+## 一、OkxAdapter 升级（✅ 已完成）
 
 ### 1.1 修复 subscribe_trades
 
@@ -259,20 +264,264 @@ src-tauri/src/commands.rs
 
 ---
 
-## 五、实施优先级
+## 五、数据积累与回测抗过拟合
 
-| 优先级 | 任务 | 预计工作量 | 说明 |
-|--------|------|-----------|------|
-| P0 | OkxAdapter 6 项修复 | 中 | subscribe_trades/user_data/batch/account/tdMode/ping |
-| P1 | 数据源可配置（candle1m 优先） | 小 | 配置文件指定 trades/tickers/candle1m |
-| P2 | 监控桌面应用 - 实时行情图表 | 大 | src-tauri 新增 WebSocket 直连行情 |
-| P3 | 监控桌面应用 - 持仓/交易记录 | 中 | 读 trading_positions + trade_logs |
-| P4 | 监控桌面应用 - 统计分析 | 中 | 复用 trading-common::backtest::metrics |
-| P5 | Exchange trait 分层重构（可选） | 大 | MarketDataProvider / TradingOperations 分离 |
+### 5.1 数据积累方案
+
+trading-engine (candle1m 模式) 边跑边存，自然积累：
+
+```
+trading-engine 每分钟:
+  ├── 拉取 K 线 → 策略执行
+  └── 写入 PostgreSQL → 积累历史数据
+
+第 1 天:    1,440 根 K 线 → 策略预热
+第 7 天:    10,080 根 K 线 → 短期回测
+第 30 天:   43,200 根 K 线 → 中期回测
+第 365 天:  525,600 根 K 线 → 完整年回测
+
+存储成本: ~100 MB/年/交易对，3 个交易对 ≈ 300 MB/年
+```
+
+trading-core 改造为按需工具：批量拉取历史 K 线补充数据。
+
+### 5.2 抗过拟合措施
+
+**核心原则：数据多样性 > 数据数量**
+
+#### 5.2.1 样本外测试 (Out-of-Sample)
+
+```
+数据划分:
+  训练集 (70%): 用于策略参数优化
+  测试集 (30%): 用于验证，不参与优化
+
+|████████████████████████░░░░░░░░░|
+|←── 训练集 (优化) ──→|←─ 测试集 ─→|
+                       从未被策略"看过"
+
+验证标准:
+  训练集表现好 + 测试集表现好 → 策略可能有效
+  训练集表现好 + 测试集表现差 → 过拟合，策略无效
+```
+
+#### 5.2.2 滚动前进测试 (Walk-Forward Analysis)
+
+```
+第 1 轮: 训练 [1月-3月] → 测试 [4月]
+第 2 轮: 训练 [2月-4月] → 测试 [5月]
+第 3 轮: 训练 [3月-5月] → 测试 [6月]
+...
+
+优点:
+  - 更接近真实运行方式
+  - 检测策略在不同市场状态下的适应性
+  - 避免单次划分的偶然性
+```
+
+#### 5.2.3 多交易对验证
+
+```
+同一策略在多个交易对上测试:
+  BTC-USDT:  回测结果
+  ETH-USDT:  回测结果
+  SOL-USDT:  回测结果
+
+如果都有效 → 更可能是真规律
+如果只对一个有效 → 可能是过拟合
+```
+
+#### 5.2.4 市场状态覆盖检查
+
+```
+好的数据:                          差的数据:
+├── 上涨趋势 (牛市)                ├── 只有横盘震荡
+├── 下跌趋势 (熊市)                ├── 市场状态单一
+├── 横盘震荡
+├── 剧烈波动 (黑天鹅)
+└── 快速反弹
+
+检查方法: 回测前分析数据中的波动率分布、趋势分布
+```
+
+### 5.3 回测模块增强计划
+
+在 `trading-common::backtest::engine` 中新增：
+
+| 功能 | 说明 | 优先级 |
+|------|------|--------|
+| 样本外测试 | 自动划分训练集/测试集，分别回测 | P1 |
+| 滚动前进测试 | 滚动窗口训练+测试，输出每轮结果 | P1 |
+| 多交易对回测 | 批量运行多个 symbol，汇总统计 | P2 |
+| 市场状态分析 | 分析数据中的趋势/震荡/波动分布 | P2 |
+| 过拟合检测 | 训练集 vs 测试集表现差异告警 | P1 |
+| 多时间框架回测 | 支持 1m→4h 综合分析策略的回测 | P1 |
 
 ---
 
-## 六、API 文档位置
+## 六、多时间框架趋势策略
+
+### 6.1 策略设计
+
+```
+分析链: 1m → 5m → 15m → 30m → 1h → 2h → 4h
+
+各时间框架职责:
+  4h:  判断大趋势方向 (主趋势)
+  2h:  确认中期趋势
+  1h:  趋势强度判断
+  30m: 寻找回调/反弹区域
+  15m: 确认入场区域
+  5m:  精确入场信号
+  1m:  执行入场/出场
+
+示例逻辑:
+  4h 趋势向上 + 1h 回调到支撑位 + 15m 出现反转信号 → 做多
+  4h 趋势向下 + 1h 反弹到阻力位 + 15m 出现反转信号 → 做空
+```
+
+### 6.2 数据架构
+
+**只存储 1m K 线，其他时间框架实时聚合生成：**
+
+```
+存储层: PostgreSQL
+  kline_data 表 (只存 1m K 线)
+    symbol, timestamp, open, high, low, close, volume
+
+聚合层: trading-common::data::aggregator (新增)
+  输入: Vec<OHLCData> (1m K线)
+  输出: HashMap<Timeframe, Vec<OHLCData>>
+    5m  = 5 根 1m 聚合
+    15m = 15 根 1m 聚合
+    30m = 30 根 1m 聚合
+    1h  = 60 根 1m 聚合
+    2h  = 120 根 1m 聚合
+    4h  = 240 根 1m 聚合
+
+缓存层: Redis
+  缓存最近 N 根各时间框架 K 线 (避免重复聚合)
+```
+
+### 6.3 需要新增的模块
+
+#### 6.3.1 K 线聚合器 (trading-common)
+
+```
+文件: trading-common/src/data/aggregator.rs (新增)
+
+功能:
+  pub struct CandleAggregator;
+  impl CandleAggregator {
+      /// 从 1m K 线聚合生成指定时间框架
+      pub fn aggregate(candles_1m: &[OHLCData], target: Timeframe) -> Vec<OHLCData>;
+
+      /// 从 1m K 线生成所有时间框架
+      pub fn aggregate_all(candles_1m: &[OHLCData]) -> HashMap<Timeframe, Vec<OHLCData>>;
+  }
+
+聚合规则:
+  - open = 第一根的 open
+  - high = 所有中的最高价
+  - low = 所有中的最低价
+  - close = 最后一根的 close
+  - volume = 所有之和
+  - timestamp = 第一根的 open_time
+```
+
+#### 6.3.2 多时间框架策略接口 (trading-common)
+
+```
+文件: trading-common/src/backtest/strategy/base.rs (扩展)
+
+新增 trait:
+  pub trait MultiTimeframeStrategy: Strategy {
+      /// 策略需要哪些时间框架
+      fn required_timeframes(&self) -> Vec<Timeframe>;
+
+      /// 多时间框架数据回调
+      fn on_multi_timeframe(
+          &mut self,
+          data: &HashMap<Timeframe, Vec<OHLCData>>,
+      ) -> Signal;
+  }
+```
+
+#### 6.3.3 K 线存储 (trading-engine)
+
+```
+文件: trading-engine/src/storage/ (扩展)
+
+新增: kline_repository.rs
+  - store_kline(symbol, timeframe, ohlc) → INSERT
+  - get_klines(symbol, timeframe, limit) → SELECT
+  - get_latest_kline(symbol, timeframe) → SELECT
+```
+
+#### 6.3.4 trading-engine 数据流改造
+
+```
+candle1m 数据源:
+  交易所 REST → 1m K线
+      │
+      ├──▶ 存储 PostgreSQL (kline_data 表)
+      │
+      ├──▶ 聚合器 → 5m/15m/30m/1h/2h/4h
+      │       │
+      │       ▼
+      │   多时间框架策略分析
+      │       │
+      │       ▼
+      │   信号生成 → 下单
+      │
+      └──▶ Redis 缓存 (各时间框架最新 K 线)
+```
+
+### 6.4 回测支持
+
+```
+回测流程:
+  1. 从 PostgreSQL 加载 1m K 线
+  2. 聚合器生成所有时间框架
+  3. 逐根遍历，每到一根完整的 1m K 线:
+     a. 更新对应时间框架的 K 线
+     b. 如果有新的 5m/15m/30m/1h/2h/4h K 线完成
+     c. 调用策略 on_multi_timeframe()
+     d. 根据信号模拟成交
+  4. 输出回测结果
+
+数据库需求:
+  - kline_1m 表存储所有 1m K 线
+  - 回测时按时间范围加载
+  - 内存中聚合生成高时间框架
+```
+
+---
+
+## 七、实施优先级
+
+---
+
+## 六、实施优先级
+
+| 优先级 | 任务 | 预计工作量 | 说明 |
+|--------|------|-----------|------|
+| ~~P0~~ | ~~OkxAdapter 6 项修复~~ | ~~中~~ | ✅ 已完成 |
+| ~~P1~~ | ~~数据源可配置（candle1m 优先）~~ | ~~小~~ | ✅ 已完成 |
+| ~~P2~~ | ~~K 线聚合器~~ | ~~小~~ | ✅ 已完成 |
+| ~~P3~~ | ~~K 线存储 + 自动积累 + 历史回填~~ | ~~中~~ | ✅ 已完成：REST 轮询 + backfill + gap 检测补齐 |
+| ~~P4~~ | ~~多时间框架策略接口~~ | ~~中~~ | ✅ 已完成：MultiTimeframeStrategy trait + TrendStrategy |
+| ~~P5~~ | ~~多时间框架回测支持~~ | ~~中~~ | ✅ 已完成：MultiTimeframeBacktestEngine + 做空支持 |
+| ~~P6~~ | ~~回测增强 - 样本外测试 + 滚动前进测试~~ | ~~中~~ | ✅ 已完成：WalkForwardEngine + 过拟合检测 |
+| P7 | 回测增强 - 多交易对 + 市场状态分析 | 中 | 提高回测可信度 |
+| P8 | 监控桌面应用 - 实时行情图表 | 大 | src-tauri 新增 WebSocket 直连行情 |
+| P9 | 监控桌面应用 - 持仓/交易记录 | 中 | 读 trading_positions + trade_logs |
+| P10 | 监控桌面应用 - 统计分析 | 中 | 复用 trading-common::backtest::metrics |
+| P11 | Exchange trait 分层重构（可选） | 大 | MarketDataProvider / TradingOperations 分离 |
+
+---
+
+## 八、API 文档位置
 
 | 文档 | 路径 |
 |------|------|

@@ -206,7 +206,7 @@ pub struct LiveStrategyLog {
 }
 
 /// Time frame for OHLC data
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Timeframe {
     OneMinute,
     FiveMinutes,

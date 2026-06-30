@@ -177,22 +177,48 @@ cd frontend && npm run tauri build
 cd frontend && cargo tauri build
 ```
 
-### 方式二：核心交易系统（CLI）
+### 方式二：核心交易系统（推荐 24/7 运行）
 
 ```bash
 cd trading-core
 
-# 启动实时数据采集
-cargo run live
+# 启动完整服务（数据采集 + HTTP API + WebSocket）
+cargo run service
 
-# 启动实时数据采集并开启模拟交易
-cargo run live --paper-trading
+# 仅启动数据采集
+cargo run collector
 
-# 运行回测界面
+# 运行回测界面（CLI）
 cargo run backtest
+
+# 启动实时数据采集（旧模式）
+cargo run live
 
 # 查看帮助
 cargo run -- --help
+```
+
+#### **HTTP API 端点**
+
+服务启动后，可以通过以下 API 访问：
+
+```bash
+# 健康检查
+curl http://localhost:8080/health
+
+# 获取策略列表
+curl http://localhost:8080/api/strategies
+
+# 获取数据信息
+curl http://localhost:8080/api/data/info
+
+# 执行回测
+curl -X POST http://localhost:8080/api/backtest \
+  -H "Content-Type: application/json" \
+  -d '{"strategy": "rsi", "symbol": "BTCUSDT", "capital": 10000, "data_count": 10000}'
+
+# WebSocket 实时数据
+ws://localhost:8080/ws
 ```
 
 ### 方式三：仅 Web 界面
@@ -267,6 +293,21 @@ ttl_seconds = 300
 pool_size = 10
 ttl_seconds = 3600
 max_ticks_per_symbol = 10000
+
+# 数据采集配置
+[collector]
+# 采集模式: disabled / tick / candle1m
+# - disabled: 禁用数据采集（仅回测）
+# - tick: 采集 tick 数据（高频，资源消耗大）
+# - candle1m: 采集 1m K线数据（低频，资源消耗最小，推荐）
+mode = "candle1m"
+
+# 是否同时启用 tick 采集（用于高频分析）
+# 启用后会消耗更多资源，但提供更详细的数据
+enable_tick = false
+
+# 采集间隔（秒），仅对 candle1m 模式有效
+poll_interval_secs = 60
 ```
 
 ### 日志配置

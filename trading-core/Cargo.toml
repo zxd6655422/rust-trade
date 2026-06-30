@@ -24,7 +24,12 @@ thiserror = "1.0"
 async-trait = "0.1"
 clap = { version = "4.4", features = ["derive"] }
 rust_decimal_macros = "1.8"
-redis = "0.23.0" 
+redis = "0.23.0"
+actix-web = "4"
+actix-ws = "0.2"
+actix-web-actors = "4"
+actix = "0.13"
+actix-cors = "0.7"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["async_tokio"] }

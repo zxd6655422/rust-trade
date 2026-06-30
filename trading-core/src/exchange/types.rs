@@ -1,6 +1,29 @@
 // exchange/types.rs
 
+use chrono::{DateTime, Utc};
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
+
+/// K 线数据结构（从交易所 REST API 获取）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KlineData {
+    /// K 线开始时间（UTC）
+    pub timestamp: DateTime<Utc>,
+    /// 交易对
+    pub symbol: String,
+    /// 开盘价
+    pub open: Decimal,
+    /// 最高价
+    pub high: Decimal,
+    /// 最低价
+    pub low: Decimal,
+    /// 收盘价
+    pub close: Decimal,
+    /// 成交量
+    pub volume: Decimal,
+    /// 成交笔数
+    pub trade_count: u64,
+}
 
 /// Binance specific trade message format
 #[derive(Debug, Deserialize, Clone)]

@@ -1,0 +1,784 @@
+// api/handlers.rs
+// HTTP API handlers
+
+use actix_web::{web, HttpResponse};
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use tracing::{error, info};
+
+use trading_common::backtest::{
+    engine::{BacktestConfig, BacktestEngine},
+    strategy::{create_strategy, list_strategies, is_multi_timeframe_strategy},
+};
+use trading_common::data::repository::TickDataRepository;
+use rust_decimal::Decimal;
+use std::str::FromStr;
+
+/// 应用状态
+pub struct AppState {
+    pub repository: Arc<TickDataRepository>,
+    pub backtest_lock: Arc<Mutex<()>>,
+}
+
+/// 回测请求
+#[derive(Debug, Deserialize)]
+pub struct BacktestRequest {
+    pub strategy: String,
+    pub symbol: String,
+    #[serde(default = "default_capital")]
+    pub capital: f64,
+    #[serde(default = "default_data_count")]
+    pub data_count: i64,
+    #[serde(default = "default_commission")]
+    pub commission_rate: f64,
+    /// 是否使用 OHLC 数据（如果策略支持）
+    #[serde(default)]
+    pub use_ohlc: bool,
+}
+
+fn default_capital() -> f64 {
+    10000.0
+}
+
+fn default_data_count() -> i64 {
+    10000
+}
+
+fn default_commission() -> f64 {
+    0.1
+}
+
+/// 回测响应
+#[derive(Debug, Serialize)]
+pub struct BacktestResponse {
+    pub success: bool,
+    pub message: String,
+    pub data: Option<BacktestResult>,
+}
+
+/// 回测结果
+#[derive(Debug, Serialize)]
+pub struct BacktestResult {
+    pub strategy: String,
+    pub symbol: String,
+    pub initial_capital: String,
+    pub final_capital: String,
+    pub total_return_pct: String,
+    pub total_trades: usize,
+    pub winning_trades: usize,
+    pub losing_trades: usize,
+    pub win_rate: String,
+    pub max_drawdown: String,
+    pub sharpe_ratio: String,
+    pub profit_factor: String,
+    pub data_points: usize,
+    pub data_range_start: String,
+    pub data_range_end: String,
+}
+
+/// 数据信息响应
+#[derive(Debug, Serialize)]
+pub struct DataInfoResponse {
+    pub total_records: u64,
+    pub symbols_count: u64,
+    pub earliest_time: Option<String>,
+    pub latest_time: Option<String>,
+    pub symbol_info: Vec<SymbolInfo>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SymbolInfo {
+    pub symbol: String,
+    pub records_count: u64,
+}
+
+/// 策略列表响应
+#[derive(Debug, Serialize)]
+pub struct StrategiesResponse {
+    pub strategies: Vec<StrategyInfo>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct StrategyInfo {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub is_multi_timeframe: bool,
+}
+
+/// 采集统计响应
+#[derive(Debug, Serialize)]
+pub struct CollectorStatsResponse {
+    pub status: String,
+    pub modes: Vec<String>,
+    pub uptime_seconds: u64,
+    pub total_ticks_processed: u64,
+    pub total_batches_flushed: u64,
+    pub last_flush_time: Option<String>,
+}
+
+/// 获取数据信息
+pub async fn get_data_info(
+    data: web::Data<AppState>,
+) -> HttpResponse {
+    match data.repository.get_backtest_data_info().await {
+        Ok(info) => {
+            let response = DataInfoResponse {
+                total_records: info.total_records,
+                symbols_count: info.symbols_count,
+                earliest_time: info.earliest_time.map(|t| t.format("%Y-%m-%d %H:%M:%S UTC").to_string()),
+                latest_time: info.latest_time.map(|t| t.format("%Y-%m-%d %H:%M:%S UTC").to_string()),
+                symbol_info: info.symbol_info.iter().map(|s| SymbolInfo {
+                    symbol: s.symbol.clone(),
+                    records_count: s.records_count,
+                }).collect(),
+            };
+            HttpResponse::Ok().json(response)
+        }
+        Err(e) => {
+            error!("Failed to get data info: {}", e);
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "success": false,
+                "message": format!("Failed to get data info: {}", e)
+            }))
+        }
+    }
+}
+
+/// 获取策略列表
+pub async fn get_strategies() -> HttpResponse {
+    let strategies = list_strategies();
+    let response = StrategiesResponse {
+        strategies: strategies.iter().map(|s| StrategyInfo {
+            id: s.id.clone(),
+            name: s.name.clone(),
+            description: s.description.clone(),
+            is_multi_timeframe: s.is_multi_timeframe,
+        }).collect(),
+    };
+    HttpResponse::Ok().json(response)
+}
+
+/// 执行回测
+pub async fn run_backtest(
+    data: web::Data<AppState>,
+    req: web::Json<BacktestRequest>,
+) -> HttpResponse {
+    info!("Backtest request: {:?}", req);
+
+    // 验证策略（普通策略或多时间框架策略）
+    let is_mtf = is_multi_timeframe_strategy(&req.strategy);
+    if !is_mtf && create_strategy(&req.strategy).is_err() {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "success": false,
+            "message": format!("Unknown strategy: {}", req.strategy)
+        }));
+    }
+    if is_mtf {
+        // 多时间框架策略目前只支持通过专门的 API 调用
+        // 后续可以扩展支持
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "success": false,
+            "message": "Multi-timeframe strategies require dedicated API endpoint. Use /api/backtest/multi-timeframe"
+        }));
+    }
+
+    // 获取回测锁（同时只允许一个回测）
+    let _lock = match data.backtest_lock.try_lock() {
+        Ok(lock) => lock,
+        Err(_) => {
+            return HttpResponse::Conflict().json(serde_json::json!({
+                "success": false,
+                "message": "Another backtest is running. Please wait."
+            }));
+        }
+    };
+
+    // 检查数据是否充足
+    match data.repository.get_backtest_data_info().await {
+        Ok(info) => {
+            if !info.has_sufficient_data(&req.symbol, 100) {
+                return HttpResponse::BadRequest().json(serde_json::json!({
+                    "success": false,
+                    "message": format!("Insufficient data for symbol: {} (minimum 100 records required)", req.symbol)
+                }));
+            }
+        }
+        Err(e) => {
+            error!("Failed to check data: {}", e);
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "success": false,
+                "message": format!("Failed to check data: {}", e)
+            }));
+        }
+    }
+
+    // 创建策略
+    let strategy = match create_strategy(&req.strategy) {
+        Ok(s) => s,
+        Err(e) => {
+            return HttpResponse::BadRequest().json(serde_json::json!({
+                "success": false,
+                "message": format!("Failed to create strategy: {}", e)
+            }));
+        }
+    };
+
+    // 创建配置
+    let initial_capital = Decimal::from_str(&req.capital.to_string()).unwrap_or(Decimal::from(10000));
+    let commission_rate = Decimal::from_str(&(req.commission_rate / 100.0).to_string())
+        .unwrap_or(Decimal::from_str("0.001").unwrap());
+    let config = BacktestConfig::new(initial_capital).with_commission_rate(commission_rate);
+
+    // 尝试使用 OHLC 数据
+    if req.use_ohlc && strategy.supports_ohlc() {
+        if let Some(timeframe) = strategy.preferred_timeframe() {
+            info!("Using OHLC data for backtest (timeframe: {})", timeframe.as_str());
+
+            let candle_count = (req.data_count / 50).max(100) as u32;
+
+            match data.repository.generate_recent_ohlc_for_backtest(&req.symbol, timeframe, candle_count).await {
+                Ok(ohlc_data) if !ohlc_data.is_empty() => {
+                    let mut engine = match BacktestEngine::new(strategy, config) {
+                        Ok(e) => e,
+                        Err(e) => {
+                            return HttpResponse::InternalServerError().json(serde_json::json!({
+                                "success": false,
+                                "message": format!("Failed to create backtest engine: {}", e)
+                            }));
+                        }
+                    };
+
+                    let result = engine.run_with_ohlc(ohlc_data.clone());
+
+                    let response = BacktestResponse {
+                        success: true,
+                        message: "Backtest completed successfully".to_string(),
+                        data: Some(BacktestResult {
+                            strategy: req.strategy.clone(),
+                            symbol: req.symbol.clone(),
+                            initial_capital: format!("${}", initial_capital),
+                            final_capital: format!("${:.2}", result.final_value),
+                            total_return_pct: format!("{:.2}%", result.return_percentage),
+                            total_trades: result.total_trades,
+                            winning_trades: result.winning_trades,
+                            losing_trades: result.losing_trades,
+                            win_rate: format!("{:.2}%", result.win_rate),
+                            max_drawdown: format!("{:.2}%", result.max_drawdown),
+                            sharpe_ratio: format!("{:.2}", result.sharpe_ratio),
+                            profit_factor: format!("{:.2}", result.profit_factor),
+                            data_points: ohlc_data.len(),
+                            data_range_start: ohlc_data.first().unwrap().timestamp.format("%Y-%m-%d %H:%M:%S").to_string(),
+                            data_range_end: ohlc_data.last().unwrap().timestamp.format("%Y-%m-%d %H:%M:%S").to_string(),
+                        }),
+                    };
+
+                    return HttpResponse::Ok().json(response);
+                }
+                _ => {
+                    info!("OHLC data not available, falling back to tick data");
+                }
+            }
+        }
+    }
+
+    // 使用 tick 数据
+    info!("Using tick data for backtest");
+
+    let data_count = req.data_count.min(50000); // 限制最大数据量
+    let tick_data = match data.repository.get_recent_ticks_for_backtest(&req.symbol, data_count).await {
+        Ok(d) => d,
+        Err(e) => {
+            error!("Failed to get tick data: {}", e);
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "success": false,
+                "message": format!("Failed to get tick data: {}", e)
+            }));
+        }
+    };
+
+    if tick_data.is_empty() {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "success": false,
+            "message": format!("No data found for symbol: {}", req.symbol)
+        }));
+    }
+
+    let mut engine = match BacktestEngine::new(strategy, config) {
+        Ok(e) => e,
+        Err(e) => {
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "success": false,
+                "message": format!("Failed to create backtest engine: {}", e)
+            }));
+        }
+    };
+
+    let result = engine.run(tick_data.clone());
+
+    let response = BacktestResponse {
+        success: true,
+        message: "Backtest completed successfully".to_string(),
+        data: Some(BacktestResult {
+            strategy: req.strategy.clone(),
+            symbol: req.symbol.clone(),
+            initial_capital: format!("${}", initial_capital),
+            final_capital: format!("${:.2}", result.final_value),
+            total_return_pct: format!("{:.2}%", result.return_percentage),
+            total_trades: result.total_trades,
+            winning_trades: result.winning_trades,
+            losing_trades: result.losing_trades,
+            win_rate: format!("{:.2}%", result.win_rate),
+            max_drawdown: format!("{:.2}%", result.max_drawdown),
+            sharpe_ratio: format!("{:.2}", result.sharpe_ratio),
+            profit_factor: format!("{:.2}", result.profit_factor),
+            data_points: tick_data.len(),
+            data_range_start: tick_data.first().unwrap().timestamp.format("%Y-%m-%d %H:%M:%S").to_string(),
+            data_range_end: tick_data.last().unwrap().timestamp.format("%Y-%m-%d %H:%M:%S").to_string(),
+        }),
+    };
+
+    HttpResponse::Ok().json(response)
+}
+
+/// 健康检查
+pub async fn health_check() -> HttpResponse {
+    HttpResponse::Ok().json(serde_json::json!({
+        "status": "ok",
+        "service": "trading-core"
+    }))
+}
+
+/// 多时间框架回测请求
+#[derive(Debug, Deserialize)]
+pub struct MultiTimeframeBacktestRequest {
+    pub strategy: String,
+    pub symbol: String,
+    #[serde(default = "default_capital")]
+    pub capital: f64,
+    #[serde(default = "default_data_count")]
+    pub data_count: i64,
+    #[serde(default = "default_commission")]
+    pub commission_rate: f64,
+    /// 策略参数 (可选)
+    #[serde(default)]
+    pub strategy_params: Option<std::collections::HashMap<String, String>>,
+}
+
+/// 执行多时间框架回测（完整模拟交易）
+pub async fn run_multi_timeframe_backtest(
+    data: web::Data<AppState>,
+    req: web::Json<MultiTimeframeBacktestRequest>,
+) -> HttpResponse {
+    info!("Multi-timeframe backtest request: {:?}", req);
+
+    // 验证策略
+    if !is_multi_timeframe_strategy(&req.strategy) {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "success": false,
+            "message": format!("Strategy '{}' is not a multi-timeframe strategy", req.strategy)
+        }));
+    }
+
+    // 获取回测锁
+    let _lock = match data.backtest_lock.try_lock() {
+        Ok(lock) => lock,
+        Err(_) => {
+            return HttpResponse::Conflict().json(serde_json::json!({
+                "success": false,
+                "message": "Another backtest is running. Please wait."
+            }));
+        }
+    };
+
+    // 检查数据是否充足
+    match data.repository.get_backtest_data_info().await {
+        Ok(info) => {
+            if !info.has_sufficient_data(&req.symbol, 100) {
+                return HttpResponse::BadRequest().json(serde_json::json!({
+                    "success": false,
+                    "message": format!("Insufficient data for symbol: {} (minimum 100 records required)", req.symbol)
+                }));
+            }
+        }
+        Err(e) => {
+            error!("Failed to check data: {}", e);
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "success": false,
+                "message": format!("Failed to check data: {}", e)
+            }));
+        }
+    }
+
+    // 获取 1m K线数据
+    let candle_count = req.data_count.max(1000) as u32;
+    let klines_1m = match data.repository.get_klines(&req.symbol, candle_count).await {
+        Ok(klines) if !klines.is_empty() => klines,
+        _ => {
+            // 回退到从 tick 数据生成
+            let fallback_count = (req.data_count / 50).max(100) as u32;
+            match data.repository.generate_recent_ohlc_for_backtest(
+                &req.symbol,
+                trading_common::data::types::Timeframe::OneMinute,
+                fallback_count,
+            ).await {
+                Ok(klines) => klines,
+                Err(e) => {
+                    error!("Failed to get 1m klines: {}", e);
+                    return HttpResponse::InternalServerError().json(serde_json::json!({
+                        "success": false,
+                        "message": format!("Failed to get 1m klines: {}", e)
+                    }));
+                }
+            }
+        }
+    };
+
+    if klines_1m.is_empty() {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "success": false,
+            "message": "No 1m kline data available"
+        }));
+    }
+
+    info!("Loaded {} 1m klines for multi-timeframe backtest", klines_1m.len());
+
+    // 创建多时间框架策略
+    let strategy = match trading_common::backtest::strategy::create_multi_timeframe_strategy(&req.strategy) {
+        Ok(s) => s,
+        Err(e) => {
+            return HttpResponse::BadRequest().json(serde_json::json!({
+                "success": false,
+                "message": format!("Failed to create strategy: {}", e)
+            }));
+        }
+    };
+
+    // 创建配置
+    let initial_capital = Decimal::from_str(&req.capital.to_string()).unwrap_or(Decimal::from(10000));
+    let commission_rate = Decimal::from_str(&(req.commission_rate / 100.0).to_string())
+        .unwrap_or(Decimal::from_str("0.001").unwrap());
+    let mut config = trading_common::backtest::engine::BacktestConfig::new(initial_capital)
+        .with_commission_rate(commission_rate);
+
+    // 应用策略参数
+    if let Some(params) = &req.strategy_params {
+        for (key, value) in params {
+            config = config.with_param(key, value);
+        }
+    }
+
+    // 创建并运行多时间框架回测引擎
+    let mut engine = match trading_common::backtest::MultiTimeframeBacktestEngine::new(
+        strategy,
+        config,
+        req.symbol.clone(),
+    ) {
+        Ok(e) => e,
+        Err(e) => {
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "success": false,
+                "message": format!("Failed to create backtest engine: {}", e)
+            }));
+        }
+    };
+
+    let result = engine.run(klines_1m.clone());
+
+    let response = BacktestResponse {
+        success: true,
+        message: "Multi-timeframe backtest completed successfully".to_string(),
+        data: Some(BacktestResult {
+            strategy: req.strategy.clone(),
+            symbol: req.symbol.clone(),
+            initial_capital: format!("${}", initial_capital),
+            final_capital: format!("${:.2}", result.final_value),
+            total_return_pct: format!("{:.2}%", result.return_percentage),
+            total_trades: result.total_trades,
+            winning_trades: result.winning_trades,
+            losing_trades: result.losing_trades,
+            win_rate: format!("{:.2}%", result.win_rate),
+            max_drawdown: format!("{:.2}%", result.max_drawdown),
+            sharpe_ratio: format!("{:.2}", result.sharpe_ratio),
+            profit_factor: format!("{:.2}", result.profit_factor),
+            data_points: klines_1m.len(),
+            data_range_start: klines_1m.first().unwrap().timestamp.format("%Y-%m-%d %H:%M:%S").to_string(),
+            data_range_end: klines_1m.last().unwrap().timestamp.format("%Y-%m-%d %H:%M:%S").to_string(),
+        }),
+    };
+
+    HttpResponse::Ok().json(response)
+}
+
+// =================================================================
+// 滚动前进测试 + 样本外测试
+// =================================================================
+
+/// 滚动前进测试请求
+#[derive(Debug, Deserialize)]
+pub struct WalkForwardRequest {
+    pub strategy: String,
+    pub symbol: String,
+    #[serde(default = "default_capital")]
+    pub capital: f64,
+    #[serde(default = "default_commission")]
+    pub commission_rate: f64,
+    /// 训练窗口大小（1m K线数量），默认 43200 (30天)
+    #[serde(default = "default_train_candles")]
+    pub train_candles: usize,
+    /// 测试窗口大小（1m K线数量），默认 10080 (7天)
+    #[serde(default = "default_test_candles")]
+    pub test_candles: usize,
+    /// 滚动步长（1m K线数量），默认 10080 (7天)
+    #[serde(default = "default_step_candles")]
+    pub step_candles: usize,
+    /// 总数据量（1m K线数量）
+    #[serde(default = "default_wf_data_count")]
+    pub data_count: u32,
+    /// 策略参数 (可选)
+    #[serde(default)]
+    pub strategy_params: Option<std::collections::HashMap<String, String>>,
+}
+
+fn default_train_candles() -> usize {
+    43200
+}
+fn default_test_candles() -> usize {
+    10080
+}
+fn default_step_candles() -> usize {
+    10080
+}
+fn default_wf_data_count() -> u32 {
+    100000
+}
+
+/// 样本外测试请求
+#[derive(Debug, Deserialize)]
+pub struct OutOfSampleRequest {
+    pub strategy: String,
+    pub symbol: String,
+    #[serde(default = "default_capital")]
+    pub capital: f64,
+    #[serde(default = "default_commission")]
+    pub commission_rate: f64,
+    /// 训练集比例，默认 0.7
+    #[serde(default = "default_train_ratio")]
+    pub train_ratio: f64,
+    /// 总数据量
+    #[serde(default = "default_wf_data_count")]
+    pub data_count: u32,
+    /// 策略参数 (可选)
+    #[serde(default)]
+    pub strategy_params: Option<std::collections::HashMap<String, String>>,
+}
+
+fn default_train_ratio() -> f64 {
+    0.7
+}
+
+/// 执行滚动前进测试
+pub async fn run_walk_forward_backtest(
+    data: web::Data<AppState>,
+    req: web::Json<WalkForwardRequest>,
+) -> HttpResponse {
+    info!("Walk-forward backtest request: {:?}", req);
+
+    if !is_multi_timeframe_strategy(&req.strategy) {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "success": false,
+            "message": format!("Strategy '{}' is not a multi-timeframe strategy", req.strategy)
+        }));
+    }
+
+    let _lock = match data.backtest_lock.try_lock() {
+        Ok(lock) => lock,
+        Err(_) => {
+            return HttpResponse::Conflict().json(serde_json::json!({
+                "success": false,
+                "message": "Another backtest is running. Please wait."
+            }));
+        }
+    };
+
+    // 获取 1m K线数据
+    let klines_1m = match data.repository.get_klines(&req.symbol, req.data_count).await {
+        Ok(klines) if !klines.is_empty() => klines,
+        _ => {
+            return HttpResponse::BadRequest().json(serde_json::json!({
+                "success": false,
+                "message": "Insufficient 1m kline data for walk-forward analysis"
+            }));
+        }
+    };
+
+    info!("Loaded {} 1m klines for walk-forward", klines_1m.len());
+
+    let initial_capital = Decimal::from_str(&req.capital.to_string()).unwrap_or(Decimal::from(10000));
+    let commission_rate = Decimal::from_str(&(req.commission_rate / 100.0).to_string())
+        .unwrap_or(Decimal::from_str("0.001").unwrap());
+    let mut bt_config = trading_common::backtest::BacktestConfig::new(initial_capital)
+        .with_commission_rate(commission_rate);
+    if let Some(params) = &req.strategy_params {
+        for (key, value) in params {
+            bt_config = bt_config.with_param(key, value);
+        }
+    }
+
+    let wf_config = trading_common::backtest::WalkForwardConfig::default()
+        .with_train_candles(req.train_candles)
+        .with_test_candles(req.test_candles)
+        .with_step_candles(req.step_candles);
+
+    let strategy_id = req.strategy.clone();
+    let result = trading_common::backtest::WalkForwardEngine::run(
+        || trading_common::backtest::strategy::create_multi_timeframe_strategy(&strategy_id).unwrap(),
+        &bt_config,
+        &wf_config,
+        &klines_1m,
+        &req.symbol,
+    );
+
+    match result {
+        Ok(wf_result) => {
+            let rounds_json: Vec<serde_json::Value> = wf_result
+                .round_summaries
+                .iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "round": r.round,
+                        "train_start": r.train_start.format("%Y-%m-%d %H:%M:%S").to_string(),
+                        "train_end": r.train_end.format("%Y-%m-%d %H:%M:%S").to_string(),
+                        "test_start": r.test_start.format("%Y-%m-%d %H:%M:%S").to_string(),
+                        "test_end": r.test_end.format("%Y-%m-%d %H:%M:%S").to_string(),
+                        "train_return_pct": format!("{:.2}%", r.train_return_pct),
+                        "train_sharpe": format!("{:.2}", r.train_sharpe),
+                        "train_trades": r.train_trades,
+                        "test_return_pct": format!("{:.2}%", r.test_return_pct),
+                        "test_sharpe": format!("{:.2}", r.test_sharpe),
+                        "test_trades": r.test_trades,
+                        "test_win_rate": format!("{:.2}%", r.test_win_rate),
+                        "test_max_drawdown": format!("{:.2}%", r.test_max_drawdown),
+                        "overfit_ratio": format!("{:.2}", r.overfit_ratio),
+                    })
+                })
+                .collect();
+
+            HttpResponse::Ok().json(serde_json::json!({
+                "success": true,
+                "message": "Walk-forward analysis completed",
+                "data": {
+                    "total_rounds": wf_result.total_rounds,
+                    "profitable_rounds": wf_result.profitable_rounds,
+                    "overall_test_return_pct": format!("{:.2}%", wf_result.overall_test_return_pct),
+                    "overall_test_sharpe": format!("{:.2}", wf_result.overall_test_sharpe),
+                    "overall_test_max_drawdown": format!("{:.2}%", wf_result.overall_test_max_drawdown),
+                    "overall_test_win_rate": format!("{:.2}%", wf_result.overall_test_win_rate),
+                    "avg_overfit_ratio": format!("{:.2}", wf_result.avg_overfit_ratio),
+                    "is_overfit": wf_result.is_overfit,
+                    "rounds": rounds_json
+                }
+            }))
+        }
+        Err(e) => HttpResponse::BadRequest().json(serde_json::json!({
+            "success": false,
+            "message": format!("Walk-forward analysis failed: {}", e)
+        })),
+    }
+}
+
+/// 执行样本外测试
+pub async fn run_out_of_sample_backtest(
+    data: web::Data<AppState>,
+    req: web::Json<OutOfSampleRequest>,
+) -> HttpResponse {
+    info!("Out-of-sample backtest request: {:?}", req);
+
+    if !is_multi_timeframe_strategy(&req.strategy) {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "success": false,
+            "message": format!("Strategy '{}' is not a multi-timeframe strategy", req.strategy)
+        }));
+    }
+
+    let _lock = match data.backtest_lock.try_lock() {
+        Ok(lock) => lock,
+        Err(_) => {
+            return HttpResponse::Conflict().json(serde_json::json!({
+                "success": false,
+                "message": "Another backtest is running. Please wait."
+            }));
+        }
+    };
+
+    let klines_1m = match data.repository.get_klines(&req.symbol, req.data_count).await {
+        Ok(klines) if !klines.is_empty() => klines,
+        _ => {
+            return HttpResponse::BadRequest().json(serde_json::json!({
+                "success": false,
+                "message": "Insufficient 1m kline data for out-of-sample analysis"
+            }));
+        }
+    };
+
+    info!("Loaded {} 1m klines for out-of-sample", klines_1m.len());
+
+    let initial_capital = Decimal::from_str(&req.capital.to_string()).unwrap_or(Decimal::from(10000));
+    let commission_rate = Decimal::from_str(&(req.commission_rate / 100.0).to_string())
+        .unwrap_or(Decimal::from_str("0.001").unwrap());
+    let mut bt_config = trading_common::backtest::BacktestConfig::new(initial_capital)
+        .with_commission_rate(commission_rate);
+    if let Some(params) = &req.strategy_params {
+        for (key, value) in params {
+            bt_config = bt_config.with_param(key, value);
+        }
+    }
+
+    let os_config = trading_common::backtest::OutOfSampleConfig {
+        train_ratio: Decimal::from_str(&req.train_ratio.to_string())
+            .unwrap_or(Decimal::from_str("0.7").unwrap()),
+    };
+
+    let strategy_id = req.strategy.clone();
+    let result = trading_common::backtest::WalkForwardEngine::run_out_of_sample(
+        || trading_common::backtest::strategy::create_multi_timeframe_strategy(&strategy_id).unwrap(),
+        &bt_config,
+        &os_config,
+        &klines_1m,
+        &req.symbol,
+    );
+
+    match result {
+        Ok(os_result) => {
+            HttpResponse::Ok().json(serde_json::json!({
+                "success": true,
+                "message": "Out-of-sample analysis completed",
+                "data": {
+                    "train": {
+                        "return_pct": format!("{:.2}%", os_result.train_result.return_percentage),
+                        "sharpe": format!("{:.2}", os_result.train_sharpe),
+                        "max_drawdown": format!("{:.2}%", os_result.train_result.max_drawdown),
+                        "win_rate": format!("{:.2}%", os_result.train_result.win_rate),
+                        "total_trades": os_result.train_result.total_trades,
+                        "profit_factor": format!("{:.2}", os_result.train_result.profit_factor),
+                    },
+                    "test": {
+                        "return_pct": format!("{:.2}%", os_result.test_result.return_percentage),
+                        "sharpe": format!("{:.2}", os_result.test_sharpe),
+                        "max_drawdown": format!("{:.2}%", os_result.test_result.max_drawdown),
+                        "win_rate": format!("{:.2}%", os_result.test_result.win_rate),
+                        "total_trades": os_result.test_result.total_trades,
+                        "profit_factor": format!("{:.2}", os_result.test_result.profit_factor),
+                    },
+                    "overfit_ratio": format!("{:.2}", os_result.overfit_ratio),
+                    "is_overfit": os_result.is_overfit
+                }
+            }))
+        }
+        Err(e) => HttpResponse::BadRequest().json(serde_json::json!({
+            "success": false,
+            "message": format!("Out-of-sample analysis failed: {}", e)
+        })),
+    }
+}

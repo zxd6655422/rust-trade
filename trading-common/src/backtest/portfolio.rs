@@ -4,6 +4,15 @@ use rust_decimal::Decimal;
 use std::collections::HashMap;
 use std::str::FromStr;
 
+/// 持仓方向
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PositionSide {
+    /// 多头
+    Long,
+    /// 空头
+    Short,
+}
+
 #[derive(Debug, Clone)]
 pub struct Position {
     pub symbol: String,
@@ -11,6 +20,7 @@ pub struct Position {
     pub avg_price: Decimal,
     pub market_value: Decimal,
     pub unrealized_pnl: Decimal,
+    pub side: PositionSide,
 }
 
 #[derive(Debug, Clone)]
@@ -55,8 +65,17 @@ impl Portfolio {
 
         // Update position market value and unrealized PnL
         if let Some(position) = self.positions.get_mut(symbol) {
-            position.market_value = position.quantity * price;
-            position.unrealized_pnl = (price - position.avg_price) * position.quantity;
+            match position.side {
+                PositionSide::Long => {
+                    position.market_value = position.quantity * price;
+                    position.unrealized_pnl = (price - position.avg_price) * position.quantity;
+                }
+                PositionSide::Short => {
+                    // 空头市值 = 数量 * 开仓均价 - 数量 * 当前价 = 数量 * (均价 - 现价)
+                    position.market_value = position.quantity * (position.avg_price * Decimal::from(2) - price);
+                    position.unrealized_pnl = (position.avg_price - price) * position.quantity;
+                }
+            }
         }
     }
 
@@ -97,6 +116,7 @@ impl Portfolio {
                         avg_price: price,
                         market_value: quantity * price,
                         unrealized_pnl: Decimal::ZERO,
+                        side: PositionSide::Long,
                     },
                 );
             }
@@ -163,11 +183,123 @@ impl Portfolio {
         Ok(())
     }
 
+    /// 开空仓：借入并卖出，获得 proceeds - commission
+    pub fn execute_short_open(
+        &mut self,
+        symbol: String,
+        quantity: Decimal,
+        price: Decimal,
+    ) -> Result<(), String> {
+        let proceeds = quantity * price;
+        let commission = proceeds * self.commission_rate;
+
+        // 开空获得 proceeds，扣除手续费
+        self.cash += proceeds - commission;
+
+        match self.positions.get_mut(&symbol) {
+            Some(pos) if pos.side == PositionSide::Short => {
+                let total_quantity = pos.quantity + quantity;
+                let total_cost = pos.quantity * pos.avg_price + proceeds;
+                pos.avg_price = total_cost / total_quantity;
+                pos.quantity = total_quantity;
+                pos.unrealized_pnl = (pos.avg_price - price) * total_quantity;
+            }
+            _ => {
+                self.positions.insert(
+                    symbol.clone(),
+                    Position {
+                        symbol: symbol.clone(),
+                        quantity,
+                        avg_price: price,
+                        market_value: Decimal::ZERO,
+                        unrealized_pnl: Decimal::ZERO,
+                        side: PositionSide::Short,
+                    },
+                );
+            }
+        }
+
+        self.trades.push(Trade {
+            symbol,
+            side: TradeSide::Sell,
+            quantity,
+            price,
+            timestamp: Utc::now(),
+            realized_pnl: None,
+            commission,
+        });
+
+        Ok(())
+    }
+
+    /// 平空仓：买入归还，支付 cost + commission
+    pub fn execute_short_close(
+        &mut self,
+        symbol: String,
+        quantity: Decimal,
+        price: Decimal,
+    ) -> Result<(), String> {
+        let position = self
+            .positions
+            .get_mut(&symbol)
+            .ok_or("No short position to close")?;
+
+        if position.side != PositionSide::Short {
+            return Err("Position is not a short".to_string());
+        }
+
+        if quantity > position.quantity {
+            return Err(format!(
+                "Insufficient short position: need {}, available {}",
+                quantity, position.quantity
+            ));
+        }
+
+        let cost = quantity * price;
+        let commission = cost * self.commission_rate;
+
+        // 平空需要支付 cost + commission
+        self.cash -= cost + commission;
+
+        // 盈亏 = 开仓 proceeds - 平仓 cost - 所有手续费
+        let open_proceeds = quantity * position.avg_price;
+        let open_commission = open_proceeds * self.commission_rate;
+        let realized_pnl = open_proceeds - cost - open_commission - commission;
+
+        position.quantity -= quantity;
+        if position.quantity == Decimal::ZERO {
+            self.positions.remove(&symbol);
+        } else {
+            position.unrealized_pnl = (position.avg_price - price) * position.quantity;
+        }
+
+        self.trades.push(Trade {
+            symbol,
+            side: TradeSide::Buy,
+            quantity,
+            price,
+            timestamp: Utc::now(),
+            realized_pnl: Some(realized_pnl),
+            commission,
+        });
+
+        Ok(())
+    }
+
     pub fn total_value(&self) -> Decimal {
         let mut total = self.cash;
 
         for position in self.positions.values() {
-            total += position.market_value;
+            match position.side {
+                PositionSide::Long => {
+                    // 多头：市值 = 数量 * 当前价
+                    total += position.market_value;
+                }
+                PositionSide::Short => {
+                    // 空头：cash 已包含开仓 proceeds，加上未实现盈亏即可
+                    total += position.unrealized_pnl;
+                }
+            }
         }
 
         total
@@ -195,6 +327,31 @@ impl Portfolio {
     pub fn has_position(&self, symbol: &str) -> bool {
         self.positions.contains_key(symbol)
             && self.positions.get(symbol).unwrap().quantity > Decimal::ZERO
+    }
+
+    /// 是否有多头持仓
+    pub fn has_long_position(&self, symbol: &str) -> bool {
+        self.positions
+            .get(symbol)
+            .map_or(false, |p| p.side == PositionSide::Long && p.quantity > Decimal::ZERO)
+    }
+
+    /// 是否有空头持仓
+    pub fn has_short_position(&self, symbol: &str) -> bool {
+        self.positions
+            .get(symbol)
+            .map_or(false, |p| p.side == PositionSide::Short && p.quantity > Decimal::ZERO)
+    }
+
+    /// 获取持仓方向
+    pub fn get_position_side(&self, symbol: &str) -> Option<PositionSide> {
+        self.positions.get(symbol).and_then(|p| {
+            if p.quantity > Decimal::ZERO {
+                Some(p.side)
+            } else {
+                None
+            }
+        })
     }
 
     pub fn get_equity_curve(&self) -> Vec<Decimal> {

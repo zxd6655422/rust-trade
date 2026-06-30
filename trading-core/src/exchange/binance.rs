@@ -1,7 +1,10 @@
 // exchange/binance.rs
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use futures_util::{SinkExt, StreamExt};
+use rust_decimal::Decimal;
+use std::str::FromStr;
 use std::time::Duration;
 use tokio::time::sleep;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -10,13 +13,14 @@ use tracing::{debug, error, info, warn};
 use super::{
     errors::ExchangeError,
     traits::Exchange,
-    types::{BinanceStreamMessage, BinanceSubscribeMessage, BinanceTradeMessage},
+    types::{BinanceStreamMessage, BinanceSubscribeMessage, BinanceTradeMessage, KlineData},
     utils::{build_binance_trade_streams, convert_binance_to_tick_data},
 };
 use trading_common::data::types::TickData;
 
 // Constants
 const BINANCE_WS_URL: &str = "wss://stream.binance.com:9443/stream";
+const BINANCE_REST_URL: &str = "https://api.binance.com";
 const RECONNECT_DELAY: Duration = Duration::from_secs(5);
 
 /// Binance exchange implementation
@@ -59,6 +63,90 @@ impl BinanceExchange {
             "Unable to parse message: {}",
             text
         )))
+    }
+
+    /// Shared kline fetch + parse logic
+    async fn do_fetch_klines(&self, url: &str, symbol: &str) -> Result<Vec<KlineData>, ExchangeError> {
+        debug!("Fetching klines: {}", url);
+
+        let client = reqwest::Client::new();
+        let response = client
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| ExchangeError::NetworkError(format!("HTTP request failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            return Err(ExchangeError::NetworkError(format!(
+                "HTTP {} from Binance klines API",
+                response.status()
+            )));
+        }
+
+        let raw: Vec<Vec<serde_json::Value>> = response
+            .json()
+            .await
+            .map_err(|e| ExchangeError::ParseError(format!("Failed to parse klines response: {}", e)))?;
+
+        let mut klines = Vec::with_capacity(raw.len());
+
+        for item in &raw {
+            if item.len() < 12 {
+                return Err(ExchangeError::ParseError(
+                    "Kline array has fewer than 12 elements".to_string(),
+                ));
+            }
+
+            let open_time_ms = item[0]
+                .as_i64()
+                .ok_or_else(|| ExchangeError::ParseError("Invalid open_time".to_string()))?;
+
+            let timestamp = DateTime::from_timestamp_millis(open_time_ms)
+                .ok_or_else(|| ExchangeError::ParseError("Invalid timestamp".to_string()))?;
+
+            let open = Decimal::from_str(
+                item[1].as_str().ok_or_else(|| ExchangeError::ParseError("Invalid open".to_string()))?,
+            )
+            .map_err(|e| ExchangeError::ParseError(format!("Invalid open price: {}", e)))?;
+
+            let high = Decimal::from_str(
+                item[2].as_str().ok_or_else(|| ExchangeError::ParseError("Invalid high".to_string()))?,
+            )
+            .map_err(|e| ExchangeError::ParseError(format!("Invalid high price: {}", e)))?;
+
+            let low = Decimal::from_str(
+                item[3].as_str().ok_or_else(|| ExchangeError::ParseError("Invalid low".to_string()))?,
+            )
+            .map_err(|e| ExchangeError::ParseError(format!("Invalid low price: {}", e)))?;
+
+            let close = Decimal::from_str(
+                item[4].as_str().ok_or_else(|| ExchangeError::ParseError("Invalid close".to_string()))?,
+            )
+            .map_err(|e| ExchangeError::ParseError(format!("Invalid close price: {}", e)))?;
+
+            let volume = Decimal::from_str(
+                item[5].as_str().ok_or_else(|| ExchangeError::ParseError("Invalid volume".to_string()))?,
+            )
+            .map_err(|e| ExchangeError::ParseError(format!("Invalid volume: {}", e)))?;
+
+            let trade_count = item[8]
+                .as_u64()
+                .ok_or_else(|| ExchangeError::ParseError("Invalid trade count".to_string()))?;
+
+            klines.push(KlineData {
+                timestamp,
+                symbol: symbol.to_string(),
+                open,
+                high,
+                low,
+                close,
+                volume,
+                trade_count,
+            });
+        }
+
+        debug!("Fetched {} klines for {}", klines.len(), symbol);
+        Ok(klines)
     }
 
     /// Handle WebSocket connection with reconnection logic
@@ -226,6 +314,36 @@ impl Exchange for BinanceExchange {
         // This will run indefinitely with reconnection logic
         self.handle_websocket_connection(symbols, callback, shutdown_rx.resubscribe())
             .await
+    }
+
+    async fn fetch_klines(
+        &self,
+        symbol: &str,
+        interval: &str,
+        limit: u32,
+    ) -> Result<Vec<KlineData>, ExchangeError> {
+        let url = format!(
+            "{}/api/v3/klines?symbol={}&interval={}&limit={}",
+            BINANCE_REST_URL, symbol, interval, limit
+        );
+        self.do_fetch_klines(&url, symbol).await
+    }
+
+    async fn fetch_klines_with_time(
+        &self,
+        symbol: &str,
+        interval: &str,
+        start_time: DateTime<Utc>,
+        end_time: DateTime<Utc>,
+        limit: u32,
+    ) -> Result<Vec<KlineData>, ExchangeError> {
+        let start_ms = start_time.timestamp_millis();
+        let end_ms = end_time.timestamp_millis();
+        let url = format!(
+            "{}/api/v3/klines?symbol={}&interval={}&startTime={}&endTime={}&limit={}",
+            BINANCE_REST_URL, symbol, interval, start_ms, end_ms, limit
+        );
+        self.do_fetch_klines(&url, symbol).await
     }
 }
 
