@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO tick_data \n            (timestamp, symbol, price, quantity, side, trade_id, is_buyer_maker)\n            VALUES ($1, $2, $3, $4, $5, $6, $7)\n            ON CONFLICT (symbol, trade_id, timestamp) DO NOTHING\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Timestamptz",
+        "Varchar",
+        "Numeric",
+        "Numeric",
+        "Varchar",
+        "Varchar",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "60bb5e58652d0246c9ac328ab9d34146a090c165ecbbc160a80a6dd22f41ab5c"
+}

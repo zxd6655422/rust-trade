@@ -1,0 +1,59 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT timestamp, symbol, price, quantity, side, trade_id, is_buyer_maker\n            FROM tick_data \n            WHERE symbol = $1\n            ORDER BY timestamp DESC\n            LIMIT $2\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "timestamp",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 1,
+        "name": "symbol",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "price",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 3,
+        "name": "quantity",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 4,
+        "name": "side",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 5,
+        "name": "trade_id",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 6,
+        "name": "is_buyer_maker",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "43c0baa62581aa99e10881cadccabb14add9f6b56846cee75a36b4d9e12a01b3"
+}
