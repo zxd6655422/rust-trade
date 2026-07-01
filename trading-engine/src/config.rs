@@ -85,12 +85,13 @@ impl Settings {
     pub fn new() -> Result<Self, ConfigError> {
         let run_mode = std::env::var("RUN_MODE").unwrap_or_else(|_| "development".into());
 
-        // 配置文件路径
-        let config_path = if std::path::Path::new("config").exists() {
-            format!("config/engine-{}", run_mode)
-        } else {
-            format!("../config/engine-{}", run_mode)
-        };
+        // 配置文件加载优先级（类似 Spring Boot 约定）：
+        // 1. 可执行文件同级目录 config/engine-{run_mode}.toml（外部配置，优先）
+        // 2. 当前工作目录 config/engine-{run_mode}.toml
+        // 3. 上级目录 config/engine-{run_mode}.toml（开发时使用）
+        let config_path = Self::find_config_path(&run_mode);
+
+        println!("📋 Loading config: {}", config_path);
 
         let mut builder = Config::builder()
             .add_source(File::with_name(&config_path).required(true));
@@ -113,6 +114,49 @@ impl Settings {
 
         let s = builder.build()?;
         s.try_deserialize()
+    }
+
+    /// 查找配置文件路径（支持外部配置覆盖内部配置）
+    fn find_config_path(run_mode: &str) -> String {
+        let config_name = format!("engine-{}", run_mode);
+
+        // 优先级 1: 可执行文件同级目录（打包部署时使用）
+        if let Ok(exe_path) = std::env::current_exe() {
+            if let Some(exe_dir) = exe_path.parent() {
+                let config_dir = exe_dir.join("config");
+                let config_file = config_dir.join(format!("{}.toml", config_name));
+                if config_file.exists() {
+                    println!("✅ Using config from exe dir: {:?}", config_file);
+                    return config_file.to_string_lossy().trim_end_matches(".toml").to_string();
+                }
+            }
+        }
+
+        // 优先级 2: 当前工作目录
+        let cwd_config = std::env::current_dir()
+            .unwrap_or_default()
+            .join("config")
+            .join(format!("{}.toml", config_name));
+        if cwd_config.exists() {
+            println!("✅ Using config from cwd: {:?}", cwd_config);
+            return cwd_config.to_string_lossy().trim_end_matches(".toml").to_string();
+        }
+
+        // 优先级 3: 上级目录（开发时使用）
+        let parent_config = std::env::current_dir()
+            .unwrap_or_default()
+            .parent()
+            .unwrap_or_default()
+            .join("config")
+            .join(format!("{}.toml", config_name));
+        if parent_config.exists() {
+            println!("✅ Using config from parent dir: {:?}", parent_config);
+            return parent_config.to_string_lossy().trim_end_matches(".toml").to_string();
+        }
+
+        // 默认：让 config crate 报错
+        println!("⚠️ Config file not found, using default path");
+        format!("config/{}", config_name)
     }
 
     /// 检查是否为测试网模式
