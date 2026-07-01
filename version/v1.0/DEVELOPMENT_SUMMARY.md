@@ -305,27 +305,60 @@ trading-engine/src/
 
 ---
 
-## 待完成任务 (Phase 5)
+### Phase 5: 监控桌面应用 API ✅
+
+**完成时间**: 2026-07-02
+
+#### 已完成任务
+1. ✅ P8: 实时行情图表 API
+2. ✅ P9: 持仓/交易记录 API
+3. ✅ P10: 统计分析 API
+4. ✅ 服务器部署 (trading-core + trading-engine)
+
+#### 产出文件
+```
+src-tauri/src/
+├── commands.rs              # 新增 9 个监控 API
+└── types.rs                 # 新增监控相关类型
+
+trading-common/src/data/
+└── repository.rs            # 新增数据查询方法
+```
+
+#### 新增 API 端点
+| 端点 | 功能 | 说明 |
+|------|------|------|
+| `get_realtime_prices` | 实时价格 | 获取多个交易对最新价格 |
+| `get_kline_history` | K线历史 | 支持 1m/5m/15m/30m/1h/4h/1d |
+| `get_24h_stats` | 24h统计 | 成交量、最高/最低价 |
+| `get_positions` | 持仓列表 | 当前所有持仓信息 |
+| `get_trade_history` | 交易历史 | 支持分页和筛选 |
+| `get_pnl_summary` | 盈亏汇总 | 胜率、总盈亏、最佳/最差交易 |
+| `get_equity_curve` | 资金曲线 | 按日/周/月聚合 |
+| `get_performance_metrics` | 性能指标 | 夏普、Sortino、最大回撤、Calmar |
+| `get_commission_stats` | 手续费统计 | 按交易对、按月汇总 |
+
+---
+
+## 待完成任务 (Phase 6)
+
+### 监控桌面应用前端
+1. ⏳ 实时行情图表界面
+2. ⏳ 持仓监控界面
+3. ⏳ 交易历史界面
+4. ⏳ 统计分析界面
+5. ⏳ 资金曲线图表
 
 ### 部署任务
-1. ⏳ systemd 服务配置
-2. ⏳ 日志系统完善
-3. ⏳ 告警机制
-4. ⏳ 生产环境部署
-5. ⏳ 文档编写
+1. ✅ 服务器部署 (Ubuntu)
+2. ⏳ systemd 服务配置
+3. ⏳ 日志轮转配置
+4. ⏳ 告警机制
 
 ### 可选功能
 1. ⏳ WebSocket 用户数据流 (订单状态实时更新)
 2. ⏳ 更多交易所 (Bybit, Huobi)
-3. ⏳ 回测系统优化
-4. ⏳ Web 仪表盘
-5. ⏳ 移动端监控
-
-### 优化任务
-1. ⏳ 性能优化
-2. ⏳ 单元测试完善
-3. ⏳ 集成测试
-4. ⏳ 部署脚本
+3. ⏳ 移动端监控
 
 ---
 
@@ -378,22 +411,30 @@ RUN_MODE=production cargo run -p trading-engine
 - ✅ 止损止盈自动执行
 - ✅ 持仓管理 + 对账
 - ✅ Redis 行情数据源
+- ✅ 多时间框架策略 (1m→4h)
+- ✅ 回测引擎 (样本外/滚动前进/多交易对)
+- ✅ 监控桌面应用 API (P8-P10)
+- ✅ 服务器部署 (Ubuntu)
 
 ### 系统能力
-1. 可以连接真实交易所
-2. 可以订阅实时行情
-3. 可以执行交易策略
-4. 可以进行风控检查
-5. 可以记录交易数据
-6. 可以自动止损止盈
-7. 可以管理持仓和对账
+1. ✅ 连接真实交易所 (Binance + OKX)
+2. ✅ 订阅实时行情 (WebSocket)
+3. ✅ 执行交易策略 (RSI/SMA/Trend)
+4. ✅ 风控检查 (止损/止盈/回撤保护)
+5. ✅ 记录交易数据 (PostgreSQL)
+6. ✅ 自动止损止盈
+7. ✅ 持仓管理和对账
+8. ✅ 多时间框架分析 (1m→4h)
+9. ✅ 历史回测 (抗过拟合)
+10. ✅ 监控 API (实时行情/持仓/统计)
 
 ### 下一步
-系统已具备完整自动交易能力，可以开始：
-1. 在 Testnet 上测试
-2. 验证策略有效性
-3. 逐步切换到 Live 模式
-4. 部署到生产环境
+系统已完成 P0-P10 开发，可以开始：
+1. ✅ 服务器部署已完成 (Ubuntu)
+2. ⏳ 开发监控桌面应用前端界面
+3. ⏳ 配置 systemd 服务实现开机自启
+4. ⏳ 设置日志轮转和告警机制
+5. ⏳ 实盘验证策略有效性
 
 ---
 
@@ -408,5 +449,6 @@ RUN_MODE=production cargo run -p trading-engine
 | [PHASE2_COMPLETE.md](PHASE2_COMPLETE.md) | Phase 2 完成报告 |
 | [PHASE3_COMPLETE.md](PHASE3_COMPLETE.md) | Phase 3 完成报告 |
 | [PHASE4_COMPLETE.md](PHASE4_COMPLETE.md) | Phase 4 完成报告 |
+| [PHASE5_COMPLETE.md](PHASE5_COMPLETE.md) | Phase 5 监控 API 完成报告 |
 | [DATABASE_INTEGRATION_COMPLETE.md](DATABASE_INTEGRATION_COMPLETE.md) | 数据库集成报告 |
 | [DEVELOPMENT_SUMMARY.md](DEVELOPMENT_SUMMARY.md) | 开发总结 (本文档) |

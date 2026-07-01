@@ -2,6 +2,7 @@ use chrono::{DateTime, Duration, Utc};
 use rust_decimal::Decimal;
 use sqlx::{PgPool, QueryBuilder, Row};
 use std::collections::HashMap;
+use std::str::FromStr;
 use tracing::{debug, error, info, warn};
 
 use crate::data::types::{LiveStrategyLog, OHLCData, Timeframe};
@@ -277,6 +278,266 @@ impl TickDataRepository {
         Ok(price)
     }
 
+    /// Get latest tick data for a symbol (with timestamp)
+    pub async fn get_latest_tick(&self, symbol: &str) -> DataResult<Option<TickData>> {
+        debug!("Fetching latest tick for symbol: {}", symbol);
+
+        // Try cache first
+        let cached_ticks = self.cache.get_recent_ticks(symbol, 1).await?;
+        if let Some(latest_tick) = cached_ticks.first() {
+            debug!("Latest tick from cache");
+            return Ok(Some(latest_tick.clone()));
+        }
+
+        // Cache miss, query database
+        let row = sqlx::query!(
+            r#"
+            SELECT timestamp, symbol, price, quantity, side, trade_id, is_buyer_maker
+            FROM tick_data
+            WHERE symbol = $1
+            ORDER BY timestamp DESC
+            LIMIT 1
+            "#,
+            symbol
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(r) => {
+                let tick = TickData {
+                    timestamp: r.timestamp,
+                    symbol: r.symbol,
+                    price: Decimal::from_str_exact(&r.price.to_string()).unwrap_or_default(),
+                    quantity: Decimal::from_str_exact(&r.quantity.to_string()).unwrap_or_default(),
+                    side: if r.side == "buy" || r.side == "BUY" { TradeSide::Buy } else { TradeSide::Sell },
+                    trade_id: r.trade_id,
+                    is_buyer_maker: r.is_buyer_maker,
+                };
+                Ok(Some(tick))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Get 24h statistics for a symbol
+    pub async fn get_symbol_stats(&self, symbol: &str, hours: i32) -> DataResult<serde_json::Value> {
+        debug!("Getting {}h stats for: {}", hours, symbol);
+
+        let hours_f64 = hours as f64;
+        let row = sqlx::query!(
+            r#"
+            SELECT
+                COUNT(*) as total_ticks,
+                MIN(price) as min_price,
+                MAX(price) as max_price,
+                SUM(quantity) as total_volume
+            FROM tick_data
+            WHERE symbol = $1
+              AND timestamp > NOW() - INTERVAL '1 hour' * $2
+            "#,
+            symbol,
+            hours_f64
+        )
+        .fetch_one(&self.pool)
+        .await?;
+
+        let stats = serde_json::json!({
+            "symbol": symbol,
+            "hours": hours,
+            "total_ticks": row.total_ticks.unwrap_or(0),
+            "min_price": row.min_price.map(|p| p.to_string()),
+            "max_price": row.max_price.map(|p| p.to_string()),
+            "total_volume": row.total_volume.map(|v| v.to_string()),
+        });
+
+        Ok(stats)
+    }
+
+    // ============ P9: 持仓和交易记录 ============
+
+    /// Get all positions
+    pub async fn get_positions(&self) -> DataResult<Vec<serde_json::Value>> {
+        debug!("Fetching all positions");
+
+        let rows = sqlx::query!(
+            r#"
+            SELECT
+                id,
+                symbol,
+                side,
+                quantity,
+                avg_entry_price,
+                current_price,
+                unrealized_pnl,
+                realized_pnl,
+                opened_at,
+                updated_at
+            FROM positions
+            ORDER BY updated_at DESC
+            "#
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let positions: Vec<serde_json::Value> = rows.iter().map(|r| {
+            serde_json::json!({
+                "id": r.id.to_string(),
+                "symbol": r.symbol,
+                "side": r.side,
+                "quantity": r.quantity.to_string(),
+                "avg_entry_price": r.avg_entry_price.to_string(),
+                "current_price": r.current_price.map(|p| p.to_string()),
+                "unrealized_pnl": r.unrealized_pnl.map(|p| p.to_string()),
+                "realized_pnl": r.realized_pnl.to_string(),
+                "opened_at": r.opened_at.to_rfc3339(),
+                "updated_at": r.updated_at.to_rfc3339(),
+            })
+        }).collect();
+
+        debug!("Found {} positions", positions.len());
+        Ok(positions)
+    }
+
+    /// Get trade history with pagination
+    pub async fn get_trade_history(
+        &self,
+        symbol: Option<&str>,
+        limit: i64,
+        offset: i64,
+    ) -> DataResult<Vec<serde_json::Value>> {
+        debug!("Fetching trade history: symbol={:?}, limit={}, offset={}", symbol, limit, offset);
+
+        // Use raw SQL with sqlx::query (not macro) for dynamic queries
+        let sql = match symbol {
+            Some(_) => {
+                "SELECT id, order_id, symbol, side, price, quantity, commission, realized_pnl, strategy_id, trade_time, created_at FROM trades WHERE symbol = $1 ORDER BY trade_time DESC LIMIT $2 OFFSET $3"
+            }
+            None => {
+                "SELECT id, order_id, symbol, side, price, quantity, commission, realized_pnl, strategy_id, trade_time, created_at FROM trades ORDER BY trade_time DESC LIMIT $1 OFFSET $2"
+            }
+        };
+
+        let mut query = sqlx::query(sql);
+
+        if let Some(sym) = symbol {
+            query = query.bind(sym);
+        }
+        query = query.bind(limit).bind(offset);
+
+        let rows = query.fetch_all(&self.pool).await?;
+
+        let trades: Vec<serde_json::Value> = rows.iter().map(|r| {
+            let id: uuid::Uuid = r.get("id");
+            let trade_time: DateTime<Utc> = r.get("trade_time");
+            let created_at: DateTime<Utc> = r.get("created_at");
+
+            serde_json::json!({
+                "id": id.to_string(),
+                "order_id": r.get::<Option<String>, _>("order_id"),
+                "symbol": r.get::<String, _>("symbol"),
+                "side": r.get::<String, _>("side"),
+                "price": r.get::<Decimal, _>("price").to_string(),
+                "quantity": r.get::<Decimal, _>("quantity").to_string(),
+                "commission": r.get::<Decimal, _>("commission").to_string(),
+                "realized_pnl": r.get::<Option<Decimal>, _>("realized_pnl").map(|p| p.to_string()),
+                "strategy_id": r.get::<Option<String>, _>("strategy_id"),
+                "trade_time": trade_time.to_rfc3339(),
+                "created_at": created_at.to_rfc3339(),
+            })
+        }).collect();
+
+        debug!("Found {} trades", trades.len());
+        Ok(trades)
+    }
+
+    /// Get PnL summary by period (daily/weekly/monthly)
+    pub async fn get_pnl_summary(
+        &self,
+        symbol: Option<&str>,
+        days: i32,
+    ) -> DataResult<serde_json::Value> {
+        debug!("Getting PnL summary for {} days", days);
+
+        let days_f64 = days as f64;
+
+        let sql = match symbol {
+            Some(_) => {
+                r#"
+                SELECT
+                    COUNT(*) as total_trades,
+                    SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END) as winning_trades,
+                    SUM(CASE WHEN realized_pnl < 0 THEN 1 ELSE 0 END) as losing_trades,
+                    SUM(realized_pnl) as total_pnl,
+                    SUM(commission) as total_commission,
+                    MAX(realized_pnl) as best_trade,
+                    MIN(realized_pnl) as worst_trade,
+                    AVG(realized_pnl) as avg_pnl
+                FROM trades
+                WHERE symbol = $1
+                  AND trade_time > NOW() - INTERVAL '1 day' * $2
+                  AND realized_pnl IS NOT NULL
+                "#
+            }
+            None => {
+                r#"
+                SELECT
+                    COUNT(*) as total_trades,
+                    SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END) as winning_trades,
+                    SUM(CASE WHEN realized_pnl < 0 THEN 1 ELSE 0 END) as losing_trades,
+                    SUM(realized_pnl) as total_pnl,
+                    SUM(commission) as total_commission,
+                    MAX(realized_pnl) as best_trade,
+                    MIN(realized_pnl) as worst_trade,
+                    AVG(realized_pnl) as avg_pnl
+                FROM trades
+                WHERE trade_time > NOW() - INTERVAL '1 day' * $1
+                  AND realized_pnl IS NOT NULL
+                "#
+            }
+        };
+
+        let mut query = sqlx::query(sql);
+
+        if let Some(sym) = symbol {
+            query = query.bind(sym);
+        }
+        query = query.bind(days_f64);
+
+        let row = query.fetch_one(&self.pool).await?;
+
+        let total_trades: i64 = row.get("total_trades");
+        let winning_trades: i64 = row.get::<Option<i64>, _>("winning_trades").unwrap_or(0);
+        let losing_trades: i64 = row.get::<Option<i64>, _>("losing_trades").unwrap_or(0);
+        let total_pnl: Option<Decimal> = row.get("total_pnl");
+        let total_commission: Option<Decimal> = row.get("total_commission");
+        let best_trade: Option<Decimal> = row.get("best_trade");
+        let worst_trade: Option<Decimal> = row.get("worst_trade");
+        let avg_pnl: Option<Decimal> = row.get("avg_pnl");
+
+        let win_rate = if total_trades > 0 {
+            (winning_trades as f64 / total_trades as f64) * 100.0
+        } else {
+            0.0
+        };
+
+        let summary = serde_json::json!({
+            "period_days": days,
+            "symbol": symbol,
+            "total_trades": total_trades,
+            "winning_trades": winning_trades,
+            "losing_trades": losing_trades,
+            "win_rate": format!("{:.2}", win_rate),
+            "total_pnl": total_pnl.map(|p| p.to_string()),
+            "total_commission": total_commission.map(|c| c.to_string()),
+            "best_trade": best_trade.map(|p| p.to_string()),
+            "worst_trade": worst_trade.map(|p| p.to_string()),
+            "avg_pnl": avg_pnl.map(|p| p.to_string()),
+        });
+
+        Ok(summary)
+    }
+
     /// Get latest prices for multiple symbols
     pub async fn get_latest_prices(
         &self,
@@ -326,6 +587,361 @@ impl TickDataRepository {
 
         debug!("Retrieved latest prices for {} symbols", prices.len());
         Ok(prices)
+    }
+
+    // ============ P10: 统计分析 ============
+
+    /// Get equity curve data grouped by period
+    pub async fn get_equity_curve(
+        &self,
+        symbol: Option<&str>,
+        period: &str,
+        days: i32,
+    ) -> DataResult<Vec<serde_json::Value>> {
+        debug!("Getting equity curve: period={}, days={}", period, days);
+
+        let days_f64 = days as f64;
+        let date_trunc = match period {
+            "weekly" => "week",
+            "monthly" => "month",
+            _ => "day",
+        };
+
+        let sql = match symbol {
+            Some(_) => {
+                format!(r#"
+                SELECT
+                    DATE_TRUNC('{date_trunc}', trade_time) as period_date,
+                    SUM(COALESCE(realized_pnl, 0)) as period_pnl,
+                    SUM(commission) as period_commission
+                FROM trades
+                WHERE symbol = $1
+                  AND trade_time > NOW() - INTERVAL '1 day' * $2
+                GROUP BY period_date
+                ORDER BY period_date
+                "#)
+            }
+            None => {
+                format!(r#"
+                SELECT
+                    DATE_TRUNC('{date_trunc}', trade_time) as period_date,
+                    SUM(COALESCE(realized_pnl, 0)) as period_pnl,
+                    SUM(commission) as period_commission
+                FROM trades
+                WHERE trade_time > NOW() - INTERVAL '1 day' * $1
+                GROUP BY period_date
+                ORDER BY period_date
+                "#)
+            }
+        };
+
+        let mut query = sqlx::query(&sql);
+
+        if let Some(sym) = symbol {
+            query = query.bind(sym);
+        }
+        query = query.bind(days_f64);
+
+        let rows = query.fetch_all(&self.pool).await?;
+
+        let mut cumulative_pnl = Decimal::ZERO;
+        let mut equity_curve: Vec<serde_json::Value> = Vec::new();
+
+        for row in rows {
+            let period_date: chrono::NaiveDateTime = row.get("period_date");
+            let period_pnl: Decimal = row.get("period_pnl");
+            let period_commission: Option<Decimal> = row.get("period_commission");
+
+            cumulative_pnl += period_pnl - period_commission.unwrap_or(Decimal::ZERO);
+
+            equity_curve.push(serde_json::json!({
+                "date": period_date.format("%Y-%m-%d").to_string(),
+                "pnl": period_pnl.to_string(),
+                "commission": period_commission.map(|c| c.to_string()).unwrap_or_else(|| "0".to_string()),
+                "cumulative_pnl": cumulative_pnl.to_string(),
+            }));
+        }
+
+        debug!("Generated {} equity curve points", equity_curve.len());
+        Ok(equity_curve)
+    }
+
+    /// Get detailed performance metrics
+    pub async fn get_performance_metrics(
+        &self,
+        symbol: Option<&str>,
+        days: i32,
+    ) -> DataResult<serde_json::Value> {
+        debug!("Getting performance metrics for {} days", days);
+
+        let days_f64 = days as f64;
+
+        let sql = match symbol {
+            Some(_) => {
+                r#"
+                SELECT
+                    realized_pnl,
+                    commission,
+                    trade_time
+                FROM trades
+                WHERE symbol = $1
+                  AND trade_time > NOW() - INTERVAL '1 day' * $2
+                  AND realized_pnl IS NOT NULL
+                ORDER BY trade_time
+                "#
+            }
+            None => {
+                r#"
+                SELECT
+                    realized_pnl,
+                    commission,
+                    trade_time
+                FROM trades
+                WHERE trade_time > NOW() - INTERVAL '1 day' * $1
+                  AND realized_pnl IS NOT NULL
+                ORDER BY trade_time
+                "#
+            }
+        };
+
+        let mut query = sqlx::query(sql);
+
+        if let Some(sym) = symbol {
+            query = query.bind(sym);
+        }
+        query = query.bind(days_f64);
+
+        let rows = query.fetch_all(&self.pool).await?;
+
+        let mut pnls: Vec<Decimal> = Vec::new();
+        let mut winning_trades = 0i64;
+        let mut losing_trades = 0i64;
+        let mut total_win = Decimal::ZERO;
+        let mut total_loss = Decimal::ZERO;
+        let mut largest_win = Decimal::ZERO;
+        let mut largest_loss = Decimal::ZERO;
+        let mut consecutive_wins = 0i32;
+        let mut consecutive_losses = 0i32;
+        let mut max_consecutive_wins = 0i32;
+        let mut max_consecutive_losses = 0i32;
+
+        for row in &rows {
+            let pnl: Decimal = row.get("realized_pnl");
+            pnls.push(pnl);
+
+            if pnl > Decimal::ZERO {
+                winning_trades += 1;
+                total_win += pnl;
+                consecutive_wins += 1;
+                consecutive_losses = 0;
+                if pnl > largest_win {
+                    largest_win = pnl;
+                }
+                if consecutive_wins > max_consecutive_wins {
+                    max_consecutive_wins = consecutive_wins;
+                }
+            } else {
+                losing_trades += 1;
+                total_loss += pnl.abs();
+                consecutive_losses += 1;
+                consecutive_wins = 0;
+                if pnl.abs() > largest_loss {
+                    largest_loss = pnl.abs();
+                }
+                if consecutive_losses > max_consecutive_losses {
+                    max_consecutive_losses = consecutive_losses;
+                }
+            }
+        }
+
+        let total_trades = winning_trades + losing_trades;
+        let win_rate = if total_trades > 0 {
+            Decimal::from(winning_trades) / Decimal::from(total_trades) * Decimal::from(100)
+        } else {
+            Decimal::ZERO
+        };
+
+        let avg_win = if winning_trades > 0 {
+            total_win / Decimal::from(winning_trades)
+        } else {
+            Decimal::ZERO
+        };
+
+        let avg_loss = if losing_trades > 0 {
+            total_loss / Decimal::from(losing_trades)
+        } else {
+            Decimal::ZERO
+        };
+
+        let profit_factor = if total_loss > Decimal::ZERO {
+            total_win / total_loss
+        } else if total_win > Decimal::ZERO {
+            Decimal::MAX
+        } else {
+            Decimal::ZERO
+        };
+
+        // Calculate Sharpe ratio (assuming daily returns)
+        let risk_free_rate = Decimal::from_str("0.02").unwrap_or(Decimal::ZERO) / Decimal::from(365);
+        let sharpe = crate::backtest::metrics::BacktestMetrics::calculate_sharpe_ratio(&pnls, risk_free_rate);
+
+        // Calculate Sortino ratio
+        let sortino = crate::backtest::metrics::BacktestMetrics::calculate_sortino_ratio(
+            &pnls, risk_free_rate, Decimal::ZERO
+        );
+
+        // Calculate max drawdown from cumulative PnL
+        let mut equity_curve: Vec<Decimal> = Vec::new();
+        let mut cum_pnl = Decimal::ZERO;
+        for pnl in &pnls {
+            cum_pnl += pnl;
+            equity_curve.push(cum_pnl);
+        }
+        let max_drawdown = crate::backtest::metrics::BacktestMetrics::calculate_max_drawdown(&equity_curve);
+
+        // Calculate volatility
+        let volatility = crate::backtest::metrics::BacktestMetrics::calculate_volatility(&pnls);
+
+        // Calculate Calmar ratio
+        let annual_return = if days > 0 {
+            cum_pnl * Decimal::from(365) / Decimal::from(days)
+        } else {
+            Decimal::ZERO
+        };
+        let calmar = crate::backtest::metrics::BacktestMetrics::calculate_calmar_ratio(annual_return, max_drawdown);
+
+        let metrics = serde_json::json!({
+            "sharpe_ratio": sharpe.to_string(),
+            "sortino_ratio": sortino.to_string(),
+            "max_drawdown": max_drawdown.to_string(),
+            "calmar_ratio": calmar.to_string(),
+            "volatility": volatility.to_string(),
+            "win_rate": win_rate.to_string(),
+            "profit_factor": profit_factor.to_string(),
+            "total_trades": total_trades,
+            "winning_trades": winning_trades,
+            "losing_trades": losing_trades,
+            "avg_win": avg_win.to_string(),
+            "avg_loss": avg_loss.to_string(),
+            "largest_win": largest_win.to_string(),
+            "largest_loss": largest_loss.to_string(),
+            "consecutive_wins": max_consecutive_wins,
+            "consecutive_losses": max_consecutive_losses,
+            "total_pnl": cum_pnl.to_string(),
+        });
+
+        Ok(metrics)
+    }
+
+    /// Get commission statistics
+    pub async fn get_commission_stats(
+        &self,
+        symbol: Option<&str>,
+        days: i32,
+    ) -> DataResult<serde_json::Value> {
+        debug!("Getting commission stats for {} days", days);
+
+        let days_f64 = days as f64;
+
+        // Get total commission
+        let total_sql = match symbol {
+            Some(_) => {
+                r#"
+                SELECT
+                    SUM(commission) as total_commission,
+                    COUNT(*) as trade_count
+                FROM trades
+                WHERE symbol = $1
+                  AND trade_time > NOW() - INTERVAL '1 day' * $2
+                "#
+            }
+            None => {
+                r#"
+                SELECT
+                    SUM(commission) as total_commission,
+                    COUNT(*) as trade_count
+                FROM trades
+                WHERE trade_time > NOW() - INTERVAL '1 day' * $1
+                "#
+            }
+        };
+
+        let mut total_query = sqlx::query(total_sql);
+        if let Some(sym) = symbol {
+            total_query = total_query.bind(sym);
+        }
+        total_query = total_query.bind(days_f64);
+
+        let total_row = total_query.fetch_one(&self.pool).await?;
+        let total_commission: Decimal = total_row.get::<Option<Decimal>, _>("total_commission").unwrap_or(Decimal::ZERO);
+        let trade_count: i64 = total_row.get("trade_count");
+
+        let avg_commission = if trade_count > 0 {
+            total_commission / Decimal::from(trade_count)
+        } else {
+            Decimal::ZERO
+        };
+
+        // Get commission by symbol
+        let symbol_sql = r#"
+        SELECT
+            symbol,
+            SUM(commission) as total_commission,
+            COUNT(*) as trade_count
+        FROM trades
+        WHERE trade_time > NOW() - INTERVAL '1 day' * $1
+        GROUP BY symbol
+        ORDER BY total_commission DESC
+        "#;
+
+        let symbol_rows = sqlx::query(symbol_sql)
+            .bind(days_f64)
+            .fetch_all(&self.pool)
+            .await?;
+
+        let by_symbol: Vec<serde_json::Value> = symbol_rows.iter().map(|r| {
+            serde_json::json!({
+                "symbol": r.get::<String, _>("symbol"),
+                "total_commission": r.get::<Decimal, _>("total_commission").to_string(),
+                "trade_count": r.get::<i64, _>("trade_count"),
+            })
+        }).collect();
+
+        // Get commission by month
+        let month_sql = r#"
+        SELECT
+            DATE_TRUNC('month', trade_time) as month,
+            SUM(commission) as total_commission,
+            COUNT(*) as trade_count
+        FROM trades
+        WHERE trade_time > NOW() - INTERVAL '1 day' * $1
+        GROUP BY month
+        ORDER BY month DESC
+        "#;
+
+        let month_rows = sqlx::query(month_sql)
+            .bind(days_f64)
+            .fetch_all(&self.pool)
+            .await?;
+
+        let by_month: Vec<serde_json::Value> = month_rows.iter().map(|r| {
+            let month: chrono::NaiveDateTime = r.get("month");
+            serde_json::json!({
+                "month": month.format("%Y-%m").to_string(),
+                "total_commission": r.get::<Decimal, _>("total_commission").to_string(),
+                "trade_count": r.get::<i64, _>("trade_count"),
+            })
+        }).collect();
+
+        let stats = serde_json::json!({
+            "total_commission": total_commission.to_string(),
+            "avg_commission_per_trade": avg_commission.to_string(),
+            "trade_count": trade_count,
+            "commission_by_symbol": by_symbol,
+            "commission_by_month": by_month,
+        });
+
+        Ok(stats)
     }
 
     // =================================================================

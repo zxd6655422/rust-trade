@@ -907,7 +907,7 @@ pub async fn run_multi_symbol_backtest(
 
     let strategy_id = req.strategy.clone();
     let result = trading_common::backtest::MultiSymbolBacktestEngine::run(
-        || trading_common::backtest::strategy::create_multi_timeframe_strategy(&strategy_id).unwrap(),
+        move || trading_common::backtest::strategy::create_multi_timeframe_strategy(&strategy_id).unwrap(),
         &bt_config,
         &symbol_data,
         req.market_state_window,

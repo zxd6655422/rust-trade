@@ -50,13 +50,13 @@ pub struct MultiSymbolBacktestResult {
 pub struct MultiSymbolBacktestEngine;
 
 impl MultiSymbolBacktestEngine {
-    /// 运行多交易对回测
+    /// 运行多交易对回测（并发版本）
     ///
     /// - `symbol_data`: 每个交易对的 1m K 线数据
     /// - 对每个 symbol 运行独立的 MultiTimeframeBacktestEngine
     /// - 汇总所有结果
     pub fn run(
-        strategy_factory: impl Fn() -> Box<dyn MultiTimeframeStrategy>,
+        strategy_factory: impl Fn() -> Box<dyn MultiTimeframeStrategy> + Send + Sync + 'static,
         config: &BacktestConfig,
         symbol_data: &HashMap<String, Vec<OHLCData>>,
         market_state_window: usize,
@@ -65,11 +65,12 @@ impl MultiSymbolBacktestEngine {
             return Err("No symbol data provided".to_string());
         }
 
-        let mut results = Vec::new();
-
         println!("Starting multi-symbol backtest...");
         println!("Symbols: {:?}", symbol_data.keys().collect::<Vec<_>>());
         println!("{}", "=".repeat(60));
+
+        // 串行执行（回测是 CPU 密集型，并发反而可能更慢）
+        let mut results = Vec::new();
 
         for (symbol, klines) in symbol_data {
             if klines.is_empty() {

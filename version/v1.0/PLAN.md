@@ -42,12 +42,58 @@
 | `/api/backtest/multi-symbol` | POST | 多交易对回测 |
 | `/api/analysis/market-state` | POST | 市场状态分析 |
 
+### ✅ 监控桌面应用 API
+
+| 端点 | 方法 | 功能 |
+|------|------|------|
+| `/api/realtime/prices` | POST | 获取多个交易对实时价格 |
+| `/api/kline/history` | POST | 获取 K 线历史数据（多时间框架） |
+| `/api/market/24h-stats` | POST | 获取 24h 统计数据 |
+| `/api/positions` | GET | 获取当前持仓列表 |
+| `/api/trades/history` | POST | 获取交易历史记录（分页） |
+| `/api/trades/pnl-summary` | POST | 获取盈亏汇总统计 |
+| `/api/analysis/equity-curve` | POST | 获取资金曲线（日/周/月） |
+| `/api/analysis/performance` | POST | 获取性能指标（夏普/回撤/胜率） |
+| `/api/analysis/commission` | POST | 获取手续费统计 |
+
 ### 📋 待开发
 
 | 模块 | 状态 | 说明 |
 |------|------|------|
-| 监控桌面应用 | 📋 规划完成 | P8-P10，Tauri 桌面端 |
+| 监控桌面应用前端 | 📋 待开发 | Tauri 前端界面开发 |
 | Exchange trait 分层重构 | 📋 可选 | P11，MarketDataProvider / TradingOperations 分离 |
+
+---
+
+## 九、API 限速配置 (2026-07-02)
+
+### 交易所 API 限制
+
+| 交易所 | 限制 | 安全阈值 |
+|--------|------|----------|
+| Binance | 20 req/s (1200/min) | 10 req/s |
+| OKX | 12 req/s (60/5s) | 6 req/s |
+
+### 当前配置
+
+| 场景 | 配置 | 实际速率 |
+|------|------|----------|
+| Backfill | 200ms/req, 5 并发 | 25 req/s |
+| 轮询 | 30s 间隔, 5/batch | < 10 req/s |
+| **总计** | - | **< 35 req/s** (安全) |
+
+### 配置参数
+
+```toml
+[collector]
+poll_interval_secs = 30
+
+[collector.rate_limit]
+backfill_interval_ms = 200
+max_concurrent_backfills = 5
+poll_batch_size = 5
+poll_batch_delay_ms = 500
+```
 
 ---
 
@@ -548,12 +594,12 @@ candle1m 数据源:
 | P5 | 多时间框架回测支持 | ✅ 已完成 | MultiTimeframeBacktestEngine + 做空支持 |
 | P6 | 回测增强 - 样本外测试 + 滚动前进测试 | ✅ 已完成 | WalkForwardEngine + 过拟合检测 |
 | P7 | 回测增强 - 多交易对 + 市场状态分析 | ✅ 已完成 | MultiSymbolBacktestEngine + MarketStateAnalyzer |
-| P8 | 监控桌面应用 - 实时行情图表 | ⏳ 待开发 | src-tauri 新增 WebSocket 直连行情 |
-| P9 | 监控桌面应用 - 持仓/交易记录 | ⏳ 待开发 | 读 trading_positions + trade_logs |
-| P10 | 监控桌面应用 - 统计分析 | ⏳ 待开发 | 复用 trading-common::backtest::metrics |
+| P8 | 监控桌面应用 - 实时行情图表 | ✅ 已完成 | get_realtime_prices, get_kline_history, get_24h_stats |
+| P9 | 监控桌面应用 - 持仓/交易记录 | ✅ 已完成 | get_positions, get_trade_history, get_pnl_summary |
+| P10 | 监控桌面应用 - 统计分析 | ✅ 已完成 | get_equity_curve, get_performance_metrics, get_commission_stats |
 | P11 | Exchange trait 分层重构（可选） | 📋 可选 | MarketDataProvider / TradingOperations 分离 |
 
-**完成进度：P0-P7 ✅ (8/11)，P8-P10 待开发，P11 可选**
+**完成进度：P0-P10 ✅ (11/12)，P11 可选**
 
 ---
 

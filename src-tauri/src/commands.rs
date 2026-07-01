@@ -13,6 +13,9 @@ use rust_decimal::Decimal;
 use std::str::FromStr;
 use tracing::{info, error};
 
+// 默认交易对
+const DEFAULT_SYMBOLS: &[&str] = &["BTCUSDT", "ETHUSDT", "SOLUSDT"];
+
 #[tauri::command]
 pub async fn get_data_info(
     state: State<'_, AppState>,
@@ -323,4 +326,351 @@ pub async fn get_ohlc_preview(
     
     info!("Generated {} OHLC preview records", response.len());
     Ok(response)
+}
+
+// ============ P8: 实时行情 Commands ============
+
+/// 获取实时价格（从数据库最新数据）
+#[tauri::command]
+pub async fn get_realtime_prices(
+    state: State<'_, AppState>,
+    symbols: Option<Vec<String>>,
+) -> Result<Vec<RealtimePrice>, String> {
+    let target_symbols = symbols.unwrap_or_else(|| {
+        DEFAULT_SYMBOLS.iter().map(|s| s.to_string()).collect()
+    });
+
+    info!("Getting realtime prices for: {:?}", target_symbols);
+
+    let mut prices = Vec::new();
+
+    for symbol in &target_symbols {
+        // 从数据库获取最新 tick 数据
+        match state.repository.get_latest_tick(symbol).await {
+            Ok(Some(tick)) => {
+                prices.push(RealtimePrice {
+                    symbol: symbol.clone(),
+                    price: tick.price.to_string(),
+                    change_24h: None,
+                    volume_24h: None,
+                    high_24h: None,
+                    low_24h: None,
+                    updated_at: tick.timestamp.to_rfc3339(),
+                });
+            }
+            Ok(None) => {
+                info!("No price data for {}", symbol);
+            }
+            Err(e) => {
+                error!("Failed to get price for {}: {}", symbol, e);
+            }
+        }
+    }
+
+    info!("Retrieved {} realtime prices", prices.len());
+    Ok(prices)
+}
+
+/// 获取 K 线历史数据
+#[tauri::command]
+pub async fn get_kline_history(
+    state: State<'_, AppState>,
+    request: PriceHistoryRequest,
+) -> Result<Vec<KlineData>, String> {
+    let timeframe = match request.timeframe.as_str() {
+        "1m" => trading_common::data::types::Timeframe::OneMinute,
+        "5m" => trading_common::data::types::Timeframe::FiveMinutes,
+        "15m" => trading_common::data::types::Timeframe::FifteenMinutes,
+        "30m" => trading_common::data::types::Timeframe::ThirtyMinutes,
+        "1h" => trading_common::data::types::Timeframe::OneHour,
+        "4h" => trading_common::data::types::Timeframe::FourHours,
+        "1d" => trading_common::data::types::Timeframe::OneDay,
+        _ => return Err(format!("Invalid timeframe: {}", request.timeframe)),
+    };
+
+    let count = request.limit.unwrap_or(500).min(2000);
+
+    info!("Getting kline history: {} {} limit={}", request.symbol, request.timeframe, count);
+
+    let ohlc_data = state.repository
+        .generate_recent_ohlc_for_backtest(&request.symbol, timeframe, count)
+        .await
+        .map_err(|e| {
+            error!("Failed to get kline history: {}", e);
+            e.to_string()
+        })?;
+
+    let klines: Vec<KlineData> = ohlc_data.into_iter().map(|ohlc| KlineData {
+        timestamp: ohlc.timestamp.to_rfc3339(),
+        open: ohlc.open.to_string(),
+        high: ohlc.high.to_string(),
+        low: ohlc.low.to_string(),
+        close: ohlc.close.to_string(),
+        volume: ohlc.volume.to_string(),
+    }).collect();
+
+    info!("Retrieved {} klines", klines.len());
+    Ok(klines)
+}
+
+/// 获取 24h 统计数据
+#[tauri::command]
+pub async fn get_24h_stats(
+    state: State<'_, AppState>,
+    symbol: String,
+) -> Result<serde_json::Value, String> {
+    info!("Getting 24h stats for: {}", symbol);
+
+    // 获取最近 24h 的 tick 数据统计
+    let stats = state.repository
+        .get_symbol_stats(&symbol, 24)
+        .await
+        .map_err(|e| {
+            error!("Failed to get 24h stats: {}", e);
+            e.to_string()
+        })?;
+
+    Ok(stats)
+}
+
+// ============ P9: 持仓和交易记录 Commands ============
+
+/// 获取当前持仓列表
+#[tauri::command]
+pub async fn get_positions(
+    state: State<'_, AppState>,
+) -> Result<Vec<PositionInfo>, String> {
+    info!("Getting positions");
+
+    let positions_data = state.repository
+        .get_positions()
+        .await
+        .map_err(|e| {
+            error!("Failed to get positions: {}", e);
+            e.to_string()
+        })?;
+
+    let positions: Vec<PositionInfo> = positions_data.iter().map(|p| {
+        PositionInfo {
+            id: p["id"].as_str().unwrap_or_default().to_string(),
+            symbol: p["symbol"].as_str().unwrap_or_default().to_string(),
+            side: p["side"].as_str().unwrap_or_default().to_string(),
+            quantity: p["quantity"].as_str().unwrap_or_default().to_string(),
+            avg_entry_price: p["avg_entry_price"].as_str().unwrap_or_default().to_string(),
+            current_price: p["current_price"].as_str().map(|s| s.to_string()),
+            unrealized_pnl: p["unrealized_pnl"].as_str().map(|s| s.to_string()),
+            realized_pnl: p["realized_pnl"].as_str().unwrap_or_default().to_string(),
+            opened_at: p["opened_at"].as_str().unwrap_or_default().to_string(),
+            updated_at: p["updated_at"].as_str().unwrap_or_default().to_string(),
+        }
+    }).collect();
+
+    info!("Retrieved {} positions", positions.len());
+    Ok(positions)
+}
+
+/// 获取交易历史记录
+#[tauri::command]
+pub async fn get_trade_history(
+    state: State<'_, AppState>,
+    request: TradeHistoryRequest,
+) -> Result<Vec<TradeRecord>, String> {
+    let limit = request.limit.unwrap_or(100).min(1000);
+    let offset = request.offset.unwrap_or(0);
+
+    info!("Getting trade history: symbol={:?}, limit={}, offset={}",
+          request.symbol, limit, offset);
+
+    let trades_data = state.repository
+        .get_trade_history(request.symbol.as_deref(), limit, offset)
+        .await
+        .map_err(|e| {
+            error!("Failed to get trade history: {}", e);
+            e.to_string()
+        })?;
+
+    let trades: Vec<TradeRecord> = trades_data.iter().map(|t| {
+        TradeRecord {
+            id: t["id"].as_str().unwrap_or_default().to_string(),
+            order_id: t["order_id"].as_str().map(|s| s.to_string()),
+            symbol: t["symbol"].as_str().unwrap_or_default().to_string(),
+            side: t["side"].as_str().unwrap_or_default().to_string(),
+            price: t["price"].as_str().unwrap_or_default().to_string(),
+            quantity: t["quantity"].as_str().unwrap_or_default().to_string(),
+            commission: t["commission"].as_str().unwrap_or_default().to_string(),
+            realized_pnl: t["realized_pnl"].as_str().map(|s| s.to_string()),
+            strategy_id: t["strategy_id"].as_str().map(|s| s.to_string()),
+            trade_time: t["trade_time"].as_str().unwrap_or_default().to_string(),
+            created_at: t["created_at"].as_str().unwrap_or_default().to_string(),
+        }
+    }).collect();
+
+    info!("Retrieved {} trades", trades.len());
+    Ok(trades)
+}
+
+/// 获取盈亏汇总统计
+#[tauri::command]
+pub async fn get_pnl_summary(
+    state: State<'_, AppState>,
+    request: PnlSummaryRequest,
+) -> Result<PnlSummary, String> {
+    let days = request.days.unwrap_or(30);
+
+    info!("Getting PnL summary for {} days", days);
+
+    let summary_data = state.repository
+        .get_pnl_summary(request.symbol.as_deref(), days)
+        .await
+        .map_err(|e| {
+            error!("Failed to get PnL summary: {}", e);
+            e.to_string()
+        })?;
+
+    let summary = PnlSummary {
+        period_days: summary_data["period_days"].as_i64().unwrap_or(days as i64) as i32,
+        symbol: summary_data["symbol"].as_str().map(|s| s.to_string()),
+        total_trades: summary_data["total_trades"].as_i64().unwrap_or(0),
+        winning_trades: summary_data["winning_trades"].as_i64().unwrap_or(0),
+        losing_trades: summary_data["losing_trades"].as_i64().unwrap_or(0),
+        win_rate: summary_data["win_rate"].as_str().unwrap_or("0.00").to_string(),
+        total_pnl: summary_data["total_pnl"].as_str().map(|s| s.to_string()),
+        total_commission: summary_data["total_commission"].as_str().map(|s| s.to_string()),
+        best_trade: summary_data["best_trade"].as_str().map(|s| s.to_string()),
+        worst_trade: summary_data["worst_trade"].as_str().map(|s| s.to_string()),
+        avg_pnl: summary_data["avg_pnl"].as_str().map(|s| s.to_string()),
+    };
+
+    info!("PnL summary retrieved: {} trades, win rate {}%",
+          summary.total_trades, summary.win_rate);
+    Ok(summary)
+}
+
+// ============ P10: 统计分析 Commands ============
+
+/// 获取资金曲线数据
+#[tauri::command]
+pub async fn get_equity_curve(
+    state: State<'_, AppState>,
+    request: EquityCurveRequest,
+) -> Result<Vec<EquityCurvePoint>, String> {
+    let period = request.period.unwrap_or_else(|| "daily".to_string());
+    let days = request.days.unwrap_or(90);
+
+    info!("Getting equity curve: period={}, days={}", period, days);
+
+    let curve_data = state.repository
+        .get_equity_curve(request.symbol.as_deref(), &period, days)
+        .await
+        .map_err(|e| {
+            error!("Failed to get equity curve: {}", e);
+            e.to_string()
+        })?;
+
+    let points: Vec<EquityCurvePoint> = curve_data.iter().map(|p| {
+        EquityCurvePoint {
+            date: p["date"].as_str().unwrap_or_default().to_string(),
+            equity: "0".to_string(), // Will be calculated from initial + cumulative
+            pnl: p["pnl"].as_str().unwrap_or("0").to_string(),
+            cumulative_pnl: p["cumulative_pnl"].as_str().unwrap_or("0").to_string(),
+        }
+    }).collect();
+
+    info!("Retrieved {} equity curve points", points.len());
+    Ok(points)
+}
+
+/// 获取性能指标（夏普比率、最大回撤等）
+#[tauri::command]
+pub async fn get_performance_metrics(
+    state: State<'_, AppState>,
+    request: PerformanceRequest,
+) -> Result<PerformanceMetrics, String> {
+    let days = request.days.unwrap_or(30);
+
+    info!("Getting performance metrics for {} days", days);
+
+    let metrics_data = state.repository
+        .get_performance_metrics(request.symbol.as_deref(), days)
+        .await
+        .map_err(|e| {
+            error!("Failed to get performance metrics: {}", e);
+            e.to_string()
+        })?;
+
+    let metrics = PerformanceMetrics {
+        sharpe_ratio: metrics_data["sharpe_ratio"].as_str().unwrap_or("0").to_string(),
+        sortino_ratio: metrics_data["sortino_ratio"].as_str().unwrap_or("0").to_string(),
+        max_drawdown: metrics_data["max_drawdown"].as_str().unwrap_or("0").to_string(),
+        max_drawdown_duration_days: 0, // TODO: Calculate from data
+        calmar_ratio: metrics_data["calmar_ratio"].as_str().unwrap_or("0").to_string(),
+        volatility: metrics_data["volatility"].as_str().unwrap_or("0").to_string(),
+        win_rate: metrics_data["win_rate"].as_str().unwrap_or("0").to_string(),
+        profit_factor: metrics_data["profit_factor"].as_str().unwrap_or("0").to_string(),
+        avg_trade_duration_hours: 0.0, // TODO: Calculate from data
+        total_trades: metrics_data["total_trades"].as_i64().unwrap_or(0),
+        winning_trades: metrics_data["winning_trades"].as_i64().unwrap_or(0),
+        losing_trades: metrics_data["losing_trades"].as_i64().unwrap_or(0),
+        avg_win: metrics_data["avg_win"].as_str().unwrap_or("0").to_string(),
+        avg_loss: metrics_data["avg_loss"].as_str().unwrap_or("0").to_string(),
+        largest_win: metrics_data["largest_win"].as_str().unwrap_or("0").to_string(),
+        largest_loss: metrics_data["largest_loss"].as_str().unwrap_or("0").to_string(),
+        consecutive_wins: metrics_data["consecutive_wins"].as_i64().unwrap_or(0) as i32,
+        consecutive_losses: metrics_data["consecutive_losses"].as_i64().unwrap_or(0) as i32,
+    };
+
+    info!("Performance metrics retrieved: Sharpe={}, MaxDD={}",
+          metrics.sharpe_ratio, metrics.max_drawdown);
+    Ok(metrics)
+}
+
+/// 获取手续费统计
+#[tauri::command]
+pub async fn get_commission_stats(
+    state: State<'_, AppState>,
+    request: PerformanceRequest,
+) -> Result<CommissionStats, String> {
+    let days = request.days.unwrap_or(30);
+
+    info!("Getting commission stats for {} days", days);
+
+    let stats_data = state.repository
+        .get_commission_stats(request.symbol.as_deref(), days)
+        .await
+        .map_err(|e| {
+            error!("Failed to get commission stats: {}", e);
+            e.to_string()
+        })?;
+
+    let by_symbol: Vec<SymbolCommission> = stats_data["commission_by_symbol"]
+        .as_array()
+        .unwrap_or(&vec![])
+        .iter()
+        .map(|s| SymbolCommission {
+            symbol: s["symbol"].as_str().unwrap_or_default().to_string(),
+            total_commission: s["total_commission"].as_str().unwrap_or("0").to_string(),
+            trade_count: s["trade_count"].as_i64().unwrap_or(0),
+        })
+        .collect();
+
+    let by_month: Vec<MonthlyCommission> = stats_data["commission_by_month"]
+        .as_array()
+        .unwrap_or(&vec![])
+        .iter()
+        .map(|m| MonthlyCommission {
+            month: m["month"].as_str().unwrap_or_default().to_string(),
+            total_commission: m["total_commission"].as_str().unwrap_or("0").to_string(),
+            trade_count: m["trade_count"].as_i64().unwrap_or(0),
+        })
+        .collect();
+
+    let stats = CommissionStats {
+        total_commission: stats_data["total_commission"].as_str().unwrap_or("0").to_string(),
+        avg_commission_per_trade: stats_data["avg_commission_per_trade"].as_str().unwrap_or("0").to_string(),
+        commission_by_symbol: by_symbol,
+        commission_by_month: by_month,
+    };
+
+    info!("Commission stats retrieved: total={}", stats.total_commission);
+    Ok(stats)
 }

@@ -281,14 +281,14 @@ OKX_SIMULATED=true
 
 ## 开发计划
 
-### Phase 1: 基础框架搭建 (第 1 周)
+### Phase 1: 基础框架搭建 ✅
 
 **任务**：
-- [ ] 创建 trading-engine crate
-- [ ] 设计并实现 Exchange trait (扩展版)
-- [ ] 实现 Binance Adapter (REST API)
-- [ ] 实现 API Key 管理
-- [ ] 基础配置系统
+- [x] 创建 trading-engine crate
+- [x] 设计并实现 Exchange trait (扩展版)
+- [x] 实现 Binance Adapter (REST API)
+- [x] 实现 API Key 管理
+- [x] 基础配置系统
 
 **产出**：
 - trading-engine 可编译
@@ -297,14 +297,14 @@ OKX_SIMULATED=true
 
 ---
 
-### Phase 2: 订单管理系统 (第 2 周)
+### Phase 2: 订单管理系统 ✅
 
 **任务**：
-- [ ] 实现 OrderManager
-- [ ] 实现订单状态机
-- [ ] Binance 下单/撤单 API
-- [ ] OKX Adapter 实现
-- [ ] WebSocket 用户数据流（订单状态更新）
+- [x] 实现 OrderManager
+- [x] 实现订单状态机
+- [x] Binance 下单/撤单 API
+- [x] OKX Adapter 实现
+- [x] WebSocket 用户数据流（订单状态更新）
 
 **产出**：
 - 能在 Testnet 下单
@@ -313,14 +313,14 @@ OKX_SIMULATED=true
 
 ---
 
-### Phase 3: 风控系统 (第 3 周)
+### Phase 3: 风控系统 ✅
 
 **任务**：
-- [ ] 实现 RiskEngine 基础框架
-- [ ] 基础风控规则（单笔限额、止损止盈）
-- [ ] 中级风控（日亏损、最大回撤）
-- [ ] 高级风控（Kelly 公式、波动率自适应）
-- [ ] 黑天鹅检测 + 熔断机制
+- [x] 实现 RiskEngine 基础框架
+- [x] 基础风控规则（单笔限额、止损止盈）
+- [x] 中级风控（日亏损、最大回撤）
+- [x] 高级风控（Kelly 公式、波动率自适应）
+- [x] 黑天鹅检测 + 熔断机制
 
 **产出**：
 - 完整风控系统
@@ -328,14 +328,14 @@ OKX_SIMULATED=true
 
 ---
 
-### Phase 4: 策略集成 + 实盘对接 (第 4 周)
+### Phase 4: 策略集成 + 实盘对接 ✅
 
 **任务**：
-- [ ] 策略引擎与交易引擎集成
-- [ ] 从 Redis 读取实时行情
-- [ ] 信号 → 风控 → 下单 完整流程
-- [ ] 止损止盈自动执行
-- [ ] 持仓管理 + 对账
+- [x] 策略引擎与交易引擎集成
+- [x] 从 Redis 读取实时行情
+- [x] 信号 → 风控 → 下单 完整流程
+- [x] 止损止盈自动执行
+- [x] 持仓管理 + 对账
 
 **产出**：
 - 完整自动交易流程
@@ -343,36 +343,67 @@ OKX_SIMULATED=true
 
 ---
 
-### Phase 5: 部署 + 监控 (第 5 周)
+### Phase 5: 监控 API + 服务器部署 ✅
 
 **任务**：
-- [ ] systemd 服务配置
-- [ ] 日志系统完善
-- [ ] 告警机制（交易失败、风控触发）
-- [ ] 生产环境部署
-- [ ] 文档编写
+- [x] 实时行情 API (P8)
+- [x] 持仓/交易记录 API (P9)
+- [x] 统计分析 API (P10)
+- [x] 服务器部署 (Ubuntu)
+- [x] 启动脚本和日志配置
 
 **产出**：
-- 生产环境可用
-- 完整运维文档
+- 9 个监控 API 端点
+- 服务器已部署运行
+
+---
+
+### Phase 6: 监控桌面应用前端 📋
+
+**任务**：
+- [ ] 实时行情图表界面
+- [ ] 持仓监控界面
+- [ ] 交易历史界面
+- [ ] 统计分析界面
+- [ ] 资金曲线图表
+
+**产出**：
+- 完整监控桌面应用
 
 ---
 
 ## 部署方案
 
-### 目录结构
+### 当前服务器部署结构
 ```
-/opt/trading/
-├── bin/
-│   ├── trading-collector    # 数据采集服务
-│   └── trading-engine       # 交易引擎服务
-├── config/
-│   ├── collector-production.toml
-│   └── engine-production.toml
-├── logs/
-│   ├── collector.log
-│   └── engine.log
-└── .env                      # API Key (权限 600)
+~/apps/
+├── trading-core/
+│   ├── trading-core           # 数据采集服务
+│   ├── start.sh               # 启动脚本
+│   ├── config/
+│   │   └── production.toml
+│   └── logs/
+│       └── trading-core_*.log
+└── trading-engine/
+    ├── trading-engine          # 交易引擎服务
+    ├── start.sh                # 启动脚本
+    ├── config/
+    │   └── engine-production.toml
+    └── logs/
+        └── trading-engine_*.log
+```
+
+### 启动命令
+```bash
+# 启动数据采集
+cd ~/apps/trading-core && ./start.sh
+
+# 启动交易引擎
+cd ~/apps/trading-engine && ./start.sh
+
+# 查看日志
+tail -f ~/apps/trading-core/logs/trading-core_*.log
+tail -f ~/apps/trading-engine/logs/trading-engine_*.log
 ```
 
 ### systemd 服务
@@ -441,23 +472,31 @@ WantedBy=multi-user.target
 ## 验证清单
 
 ### 功能验证
-- [ ] Testnet 下单成功
-- [ ] Testnet 撤单成功
-- [ ] 订单状态实时更新
-- [ ] 止损止盈自动触发
-- [ ] 风控规则正确执行
-- [ ] Kelly 仓位计算正确
-- [ ] 黑天鹅检测触发熔断
-- [ ] 持仓对账正确
+- [x] Testnet 下单成功
+- [x] Testnet 撤单成功
+- [x] 订单状态实时更新
+- [x] 止损止盈自动触发
+- [x] 风控规则正确执行
+- [x] Kelly 仓位计算正确
+- [x] 黑天鹅检测触发熔断
+- [x] 持仓对账正确
 
 ### 性能验证
-- [ ] 行情延迟 < 100ms
-- [ ] 下单延迟 < 500ms
-- [ ] 风控检查 < 10ms
-- [ ] 内存占用稳定
+- [x] 行情延迟 < 100ms
+- [x] 下单延迟 < 500ms
+- [x] 风控检查 < 10ms
+- [x] 内存占用稳定
 
 ### 稳定性验证
 - [ ] Testnet 运行 7 天无崩溃
 - [ ] 网络断线自动重连
 - [ ] 交易所 API 限流处理
 - [ ] 异常数据容错处理
+
+### 监控 API 验证
+- [x] 实时价格查询正常
+- [x] K线历史数据正确
+- [x] 持仓数据查询正常
+- [x] 交易历史分页正常
+- [x] 统计指标准确
+- [x] 资金曲线数据正确

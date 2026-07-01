@@ -68,7 +68,19 @@ fn main() {
             get_historical_data,
             validate_backtest_config,
             get_strategy_capabilities,
-            get_ohlc_preview
+            get_ohlc_preview,
+            // P8: 实时行情
+            get_realtime_prices,
+            get_kline_history,
+            get_24h_stats,
+            // P9: 持仓和交易记录
+            get_positions,
+            get_trade_history,
+            get_pnl_summary,
+            // P10: 统计分析
+            get_equity_curve,
+            get_performance_metrics,
+            get_commission_stats
         ])
         .setup(|app| {
             tracing::info!("Tauri setup started");

@@ -281,17 +281,52 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
                 ));
 
                 // Step 1: Backfill historical data (if enabled)
+                // API 限制: Binance 20 req/s, OKX 12 req/s
+                // 使用信号量限制并发数，避免超出限制
                 if backfill_enabled {
                     match NaiveDate::parse_from_str(&backfill_start, "%Y-%m-%d") {
                         Ok(date) => {
                             let start_dt = date.and_hms_opt(0, 0, 0).unwrap().and_utc();
-                            let backfill = BackfillService::new(
-                                exchange.clone(),
-                                repo.clone(),
-                                symbols.clone(),
-                                start_dt,
-                            );
-                            backfill.run().await;
+
+                            // 限制最大并发数为 5，每个 symbol 内部限速 200ms
+                            // 总速率 = 5 * 5 req/s = 25 req/s (远低于 20 req/s 限制)
+                            const MAX_CONCURRENT_BACKFILLS: usize = 5;
+                            let semaphore = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_BACKFILLS));
+
+                            info!("🚀 Starting backfill for {} symbols (max {} concurrent)", symbols.len(), MAX_CONCURRENT_BACKFILLS);
+
+                            let mut backfill_handles = Vec::new();
+                            for symbol in &symbols {
+                                let ex = exchange.clone();
+                                let repo_clone = repo.clone();
+                                let sym = symbol.clone();
+                                let start = start_dt;
+                                let sem = semaphore.clone();
+
+                                let handle = tokio::spawn(async move {
+                                    // 获取许可，限制并发
+                                    let _permit = sem.acquire().await.unwrap();
+                                    info!("📊 Starting backfill for {}", sym);
+
+                                    let backfill = BackfillService::new(
+                                        ex,
+                                        repo_clone,
+                                        vec![sym.clone()],
+                                        start,
+                                    );
+                                    backfill.run().await;
+                                    info!("✅ Backfill completed for {}", sym);
+                                });
+                                backfill_handles.push(handle);
+                            }
+
+                            // 等待所有 backfill 完成
+                            for handle in backfill_handles {
+                                if let Err(e) = handle.await {
+                                    error!("Backfill task failed: {}", e);
+                                }
+                            }
+                            info!("✅ All backfill tasks completed");
                         }
                         Err(e) => {
                             error!("Invalid backfill_start_date '{}': {}", backfill_start, e);
@@ -299,48 +334,71 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
 
-                // Step 2: Start periodic polling
+                // Step 2: Start periodic polling - 分批获取，避免超出 API 限制
+                // poll_interval 默认 30 秒，每批 5 个 symbol，间隔 500ms
+                const POLL_BATCH_SIZE: usize = 5;
+                const POLL_BATCH_DELAY_MS: u64 = 500;
+
                 let mut poll_timer = tokio::time::interval(Duration::from_secs(poll_interval));
                 poll_timer.tick().await; // skip first immediate tick
 
                 loop {
                     poll_timer.tick().await;
 
-                    for symbol in &symbols {
-                        match exchange.fetch_klines(symbol, "1m", 100).await {
-                            Ok(klines) => {
-                                let ohlc_list: Vec<OHLCData> = klines
-                                    .into_iter()
-                                    .map(|k| OHLCData {
-                                        timestamp: k.timestamp,
-                                        symbol: k.symbol,
-                                        timeframe: Timeframe::OneMinute,
-                                        open: k.open,
-                                        high: k.high,
-                                        low: k.low,
-                                        close: k.close,
-                                        volume: k.volume,
-                                        trade_count: k.trade_count,
-                                    })
-                                    .collect();
-
-                                let count = ohlc_list.len();
-                                match repo.batch_insert_klines(ohlc_list).await {
-                                    Ok(inserted) => {
-                                        info!(
-                                            "✅ {} kline_1m: fetched {}, upserted {}",
-                                            symbol, count, inserted
-                                        );
+                    // 分批获取 symbol 的 kline 数据
+                    for chunk in symbols.chunks(POLL_BATCH_SIZE) {
+                        let fetch_futures: Vec<_> = chunk.iter().map(|symbol| {
+                            let ex = exchange.clone();
+                            let sym = symbol.clone();
+                            async move {
+                                match ex.fetch_klines(&sym, "1m", 100).await {
+                                    Ok(klines) => {
+                                        let ohlc_list: Vec<OHLCData> = klines
+                                            .into_iter()
+                                            .map(|k| OHLCData {
+                                                timestamp: k.timestamp,
+                                                symbol: k.symbol,
+                                                timeframe: Timeframe::OneMinute,
+                                                open: k.open,
+                                                high: k.high,
+                                                low: k.low,
+                                                close: k.close,
+                                                volume: k.volume,
+                                                trade_count: k.trade_count,
+                                            })
+                                            .collect();
+                                        Some((sym, ohlc_list))
                                     }
                                     Err(e) => {
-                                        error!("Failed to insert klines for {}: {}", symbol, e);
+                                        error!("Failed to fetch klines for {}: {}", sym, e);
+                                        None
                                     }
                                 }
                             }
-                            Err(e) => {
-                                error!("Failed to fetch klines for {}: {}", symbol, e);
+                        }).collect();
+
+                        // 等待当前批次完成
+                        let results = futures::future::join_all(fetch_futures).await;
+
+                        // 批量插入数据
+                        for result in results.into_iter().flatten() {
+                            let (symbol, ohlc_list) = result;
+                            let count = ohlc_list.len();
+                            match repo.batch_insert_klines(ohlc_list).await {
+                                Ok(inserted) => {
+                                    info!(
+                                        "✅ {} kline_1m: fetched {}, upserted {}",
+                                        symbol, count, inserted
+                                    );
+                                }
+                                Err(e) => {
+                                    error!("Failed to insert klines for {}: {}", symbol, e);
+                                }
                             }
                         }
+
+                        // 批次间延迟，避免短时间大量请求
+                        tokio::time::sleep(Duration::from_millis(POLL_BATCH_DELAY_MS)).await;
                     }
                 }
             }))

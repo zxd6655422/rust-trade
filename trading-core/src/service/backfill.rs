@@ -44,6 +44,7 @@ impl BackfillService {
     }
 
     /// 对单个 symbol 执行回填
+    /// 优化: 增量更新，只拉取新数据
     async fn backfill_symbol(&self, symbol: &str) -> Result<(), Box<dyn std::error::Error>> {
         info!("📊 Backfilling {} from {}", symbol, self.start_date);
 
@@ -59,19 +60,32 @@ impl BackfillService {
                     latest_ts.format("%Y-%m-%d %H:%M")
                 );
 
-                // 拉取 start_date → earliest 之间的历史数据
-                if self.start_date < earliest_ts {
+                // 优化: 只在首次时拉取历史，后续只补齐间隙
+                let now = Utc::now();
+                let time_since_latest = now.signed_duration_since(latest_ts);
+
+                // 如果最新数据超过 1 小时，只拉取最近的数据
+                if time_since_latest.num_hours() > 1 {
                     info!(
-                        "  Backfilling history: {} → {}",
-                        self.start_date.format("%Y-%m-%d %H:%M"),
-                        earliest_ts.format("%Y-%m-%d %H:%M")
+                        "  Data is {} hours old, fetching recent: {} → now",
+                        time_since_latest.num_hours(),
+                        latest_ts.format("%Y-%m-%d %H:%M")
                     );
-                    self.fetch_range(symbol, self.start_date, earliest_ts).await?;
+                    self.fetch_range(symbol, latest_ts, now).await?;
+                } else {
+                    info!("  Data is recent ({} min ago), skipping full backfill", time_since_latest.num_minutes());
                 }
 
-                // 检测并补齐缺失
-                info!("  Checking for gaps...");
-                self.fill_gaps(symbol, self.start_date, latest_ts).await?;
+                // 只检查最近 7 天的间隙（而不是全部历史）
+                let gap_check_start = now - chrono::Duration::days(7);
+                let check_start = if gap_check_start > latest_ts {
+                    gap_check_start
+                } else {
+                    self.start_date
+                };
+
+                info!("  Checking gaps for last 7 days...");
+                self.fill_gaps(symbol, check_start, latest_ts).await?;
             }
             (None, None) => {
                 // 数据库无数据，从 start_date 拉到现在
@@ -84,7 +98,6 @@ impl BackfillService {
                 self.fetch_range(symbol, self.start_date, now).await?;
             }
             _ => {
-                // 不可能的状态（有 earliest 没 latest 或反之），忽略
                 warn!("  Inconsistent kline data state for {}, skipping", symbol);
             }
         }
@@ -94,6 +107,7 @@ impl BackfillService {
     }
 
     /// 分页拉取指定时间范围的 kline 数据并写入数据库
+    /// 优化: 使用更大的 batch size 和更短的限速
     async fn fetch_range(
         &self,
         symbol: &str,
@@ -102,15 +116,25 @@ impl BackfillService {
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut cursor = start;
         let mut total_fetched: u64 = 0;
+        let mut consecutive_errors = 0;
+        const MAX_CONSECUTIVE_ERRORS: u32 = 5;
+
+        // Binance 实际支持 1500，但用 1000 更稳定
+        const BATCH_SIZE: u32 = 1000;
+        // API 限制: Binance 20 req/s, OKX 12 req/s
+        // 安全配置: 200ms per request = 5 req/s per symbol
+        // 多 symbol 并发时总速率 = 5 * N，留 4x 安全边际
+        const RATE_LIMIT_MS: u64 = 200;
 
         while cursor < end {
-            // 每次拉取 1000 根（Binance 最大限制）
             match self
                 .exchange
-                .fetch_klines_with_time(symbol, "1m", cursor, end, 1000)
+                .fetch_klines_with_time(symbol, "1m", cursor, end, BATCH_SIZE)
                 .await
             {
                 Ok(klines) => {
+                    consecutive_errors = 0; // 重置错误计数
+
                     if klines.is_empty() {
                         info!("  No more data available at {}", cursor.format("%Y-%m-%d %H:%M"));
                         break;
@@ -124,7 +148,8 @@ impl BackfillService {
                     match self.repository.batch_insert_klines(ohlc_list).await {
                         Ok(inserted) => {
                             total_fetched += inserted as u64;
-                            if total_fetched % 10000 < 1000 {
+                            // 减少日志频率
+                            if total_fetched % 50000 < BATCH_SIZE as u64 {
                                 info!(
                                     "  Progress: {} klines fetched, cursor at {}",
                                     total_fetched,
@@ -137,22 +162,29 @@ impl BackfillService {
                         }
                     }
 
-                    // 如果返回不足 1000 条，说明已经到头了
-                    if count < 1000 {
+                    // 如果返回不足 BATCH_SIZE 条，说明已经到头了
+                    if count < BATCH_SIZE as usize {
                         break;
                     }
 
                     // 移动 cursor 到最后一条之后（+1 分钟）
                     cursor = last_ts + chrono::Duration::minutes(1);
 
-                    // 限速：每次请求后 sleep 100ms
-                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    // 限速
+                    tokio::time::sleep(Duration::from_millis(RATE_LIMIT_MS)).await;
                 }
                 Err(e) => {
-                    error!("  fetch_klines_with_time failed: {}", e);
-                    // 出错后等久一点再重试
-                    tokio::time::sleep(Duration::from_secs(5)).await;
-                    // 不 break，重试同一段
+                    consecutive_errors += 1;
+                    error!("  fetch_klines_with_time failed ({}): {}", consecutive_errors, e);
+
+                    if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                        error!("  Too many consecutive errors, aborting backfill for {}", symbol);
+                        return Err(format!("Max consecutive errors reached for {}", symbol).into());
+                    }
+
+                    // 指数退避: 1s, 2s, 4s, 8s, 16s
+                    let backoff = 2u64.pow(consecutive_errors - 1);
+                    tokio::time::sleep(Duration::from_secs(backoff)).await;
                 }
             }
         }
