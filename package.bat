@@ -1,68 +1,53 @@
 @echo off
 chcp 65001 >nul
-setlocal enabledelayedexpansion
 
-echo 🚀 开始打包...
+echo Starting build...
 
-:: 清理
 if exist dist rmdir /s /q dist
 mkdir dist
 
-:: ==================== trading-core ====================
-echo 📦 编译 trading-core...
+echo Building trading-core...
 cargo build --release -p trading-core
-if errorlevel 1 (
-    echo ❌ 编译 trading-core 失败
-    exit /b 1
-)
+if errorlevel 1 goto error
 
-set CORE_DIR=dist\trading-core
-mkdir %CORE_DIR%\config
+mkdir dist\trading-core\config
+copy target\release\trading-core.exe dist\trading-core\
+copy config\development.toml dist\trading-core\config\
+copy config\production.toml dist\trading-core\config\
 
-copy target\release\trading-core.exe %CORE_DIR%\
-copy config\development.toml %CORE_DIR%\config\
-copy config\production.toml %CORE_DIR%\config\
+echo @echo off > dist\trading-core\start.bat
+echo cd /d "%%~dp0" >> dist\trading-core\start.bat
+echo set RUN_MODE=production >> dist\trading-core\start.bat
+echo echo Starting Trading Core... >> dist\trading-core\start.bat
+echo trading-core.exe service >> dist\trading-core\start.bat
 
-:: 创建启动脚本
-(
-echo @echo off
-echo cd /d "%%~dp0"
-echo set RUN_MODE=%%RUN_MODE%%^&if "%%RUN_MODE%%"=="" set RUN_MODE=production
-echo echo 🚀 Starting Trading Core ^(mode: %%RUN_MODE%%^)...
-echo trading-core.exe service
-) > %CORE_DIR%\start.bat
-
-:: ==================== trading-engine ====================
-echo 📦 编译 trading-engine...
+echo Building trading-engine...
 cargo build --release -p trading-engine
-if errorlevel 1 (
-    echo ❌ 编译 trading-engine 失败
-    exit /b 1
-)
+if errorlevel 1 goto error
 
-set ENGINE_DIR=dist\trading-engine
-mkdir %ENGINE_DIR%\config
+mkdir dist\trading-engine\config
+copy target\release\trading-engine.exe dist\trading-engine\
+copy config\engine-development.toml dist\trading-engine\config\
+copy config\engine-production.toml dist\trading-engine\config\
 
-copy target\release\trading-engine.exe %ENGINE_DIR%\
-copy config\engine-development.toml %ENGINE_DIR%\config\
-copy config\engine-production.toml %ENGINE_DIR%\config\
-
-:: 创建启动脚本
-(
-echo @echo off
-echo cd /d "%%~dp0"
-echo set RUN_MODE=%%RUN_MODE%%^&if "%%RUN_MODE%%"=="" set RUN_MODE=production
-echo echo 🚀 Starting Trading Engine ^(mode: %%RUN_MODE%%^)...
-echo trading-engine.exe
-) > %ENGINE_DIR%\start.bat
+echo @echo off > dist\trading-engine\start.bat
+echo cd /d "%%~dp0" >> dist\trading-engine\start.bat
+echo set RUN_MODE=production >> dist\trading-engine\start.bat
+echo echo Starting Trading Engine... >> dist\trading-engine\start.bat
+echo trading-engine.exe >> dist\trading-engine\start.bat
 
 echo.
-echo ✅ 打包完成!
+echo Build complete!
 echo.
-echo 📦 生成目录:
-echo   - dist\trading-core\
-echo   - dist\trading-engine\
+echo Output:
+echo   dist\trading-core\
+echo   dist\trading-engine\
 echo.
-echo 📋 部署步骤:
-echo   1. 复制 dist\trading-core 和 dist\trading-engine 到服务器
-echo   2. 运行 start.bat 启动服务
+echo Deploy: Copy dist folder to server, run start.bat
+goto end
+
+:error
+echo Build failed!
+exit /b 1
+
+:end

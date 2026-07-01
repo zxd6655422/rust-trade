@@ -143,15 +143,14 @@ impl Settings {
         }
 
         // 优先级 3: 上级目录（开发时使用）
-        let parent_config = std::env::current_dir()
-            .unwrap_or_default()
-            .parent()
-            .unwrap_or_default()
-            .join("config")
-            .join(format!("{}.toml", config_name));
-        if parent_config.exists() {
-            println!("✅ Using config from parent dir: {:?}", parent_config);
-            return parent_config.to_string_lossy().trim_end_matches(".toml").to_string();
+        if let Ok(cwd) = std::env::current_dir() {
+            if let Some(parent) = cwd.parent() {
+                let parent_config = parent.join("config").join(format!("{}.toml", config_name));
+                if parent_config.exists() {
+                    println!("✅ Using config from parent dir: {:?}", parent_config);
+                    return parent_config.to_string_lossy().trim_end_matches(".toml").to_string();
+                }
+            }
         }
 
         // 默认：让 config crate 报错
