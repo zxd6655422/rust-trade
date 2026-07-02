@@ -1,0 +1,74 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT\n                id,\n                symbol,\n                side,\n                quantity,\n                avg_entry_price,\n                current_price,\n                unrealized_pnl,\n                realized_pnl,\n                opened_at,\n                updated_at\n            FROM positions\n            ORDER BY updated_at DESC\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "symbol",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "side",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "quantity",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 4,
+        "name": "avg_entry_price",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 5,
+        "name": "current_price",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 6,
+        "name": "unrealized_pnl",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 7,
+        "name": "realized_pnl",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 8,
+        "name": "opened_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "043039e57973efcdb31b1eb2a2667c0d93d97ec11c065dcc26c1003566123ceb"
+}

@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            WITH deleted AS (\n                DELETE FROM tick_data\n                WHERE timestamp < NOW() - INTERVAL '1 day' * $1\n                RETURNING *\n            )\n            SELECT COUNT(*) as count\n            FROM deleted\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Float8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "5cd3e3c4ccefa2b45e59cb7376a2b1e4fbafa7c475850661a8daeee50bc89bd3"
+}
