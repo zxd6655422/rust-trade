@@ -1,3 +1,4 @@
+use crate::backtest::metrics::BacktestMetrics;
 use crate::data::types::TradeSide;
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
@@ -396,5 +397,177 @@ impl Portfolio {
         }
 
         equity_curve
+    }
+
+    // ===== 风险指标便捷方法 =====
+
+    /// 计算收益率序列（基于权益曲线）
+    pub fn returns(&self) -> Vec<Decimal> {
+        let equity_curve = self.get_equity_curve();
+        if equity_curve.len() < 2 {
+            return Vec::new();
+        }
+
+        equity_curve
+            .windows(2)
+            .filter_map(|window| {
+                let prev = window[0];
+                let curr = window[1];
+                if prev > Decimal::ZERO {
+                    Some((curr - prev) / prev)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// 计算夏普比率
+    ///
+    /// Sharpe Ratio = (Mean Return - Risk Free Rate) / Standard Deviation
+    pub fn sharpe_ratio(&self, risk_free_rate: Decimal) -> Decimal {
+        let returns = self.returns();
+        BacktestMetrics::calculate_sharpe_ratio(&returns, risk_free_rate)
+    }
+
+    /// 计算最大回撤
+    ///
+    /// Max Drawdown = Max((Peak - Trough) / Peak)
+    pub fn max_drawdown(&self) -> Decimal {
+        let equity_curve = self.get_equity_curve();
+        BacktestMetrics::calculate_max_drawdown(&equity_curve)
+    }
+
+    /// 计算索提诺比率（只考虑下行风险）
+    ///
+    /// Sortino Ratio = (Mean Return - Risk Free Rate) / Downside Deviation
+    pub fn sortino_ratio(&self, risk_free_rate: Decimal) -> Decimal {
+        let returns = self.returns();
+        BacktestMetrics::calculate_sortino_ratio(&returns, risk_free_rate, risk_free_rate)
+    }
+
+    /// 计算风险价值 (VaR)
+    ///
+    /// VaR = 在给定置信水平下的最大预期损失
+    pub fn value_at_risk(&self, confidence_level: Decimal) -> Decimal {
+        let returns = self.returns();
+        BacktestMetrics::calculate_var(&returns, confidence_level)
+    }
+
+    /// 计算卡尔玛比率（年化收益 / 最大回撤）
+    pub fn calmar_ratio(&self, annual_return: Decimal) -> Decimal {
+        let max_dd = self.max_drawdown();
+        BacktestMetrics::calculate_calmar_ratio(annual_return, max_dd)
+    }
+
+    /// 计算胜率
+    pub fn win_rate(&self) -> Decimal {
+        BacktestMetrics::calculate_win_rate(&self.trades)
+    }
+
+    /// 计算盈亏比（总盈利 / 总亏损）
+    pub fn profit_factor(&self) -> Decimal {
+        BacktestMetrics::calculate_profit_factor(&self.trades)
+    }
+
+    /// 计算平均交易时长（秒）
+    pub fn average_trade_duration(&self) -> f64 {
+        BacktestMetrics::calculate_average_trade_duration(&self.trades)
+    }
+
+    /// 计算年化收益率
+    ///
+    /// 基于初始资金和当前总价值计算年化收益（简化计算）
+    pub fn annualized_return(&self) -> Decimal {
+        if self.trades.is_empty() {
+            return Decimal::ZERO;
+        }
+
+        let total_value = self.total_value();
+        if self.initial_capital <= Decimal::ZERO {
+            return Decimal::ZERO;
+        }
+
+        let total_return = (total_value - self.initial_capital) / self.initial_capital;
+
+        // 计算交易天数
+        let first_trade_time = self.trades.first().map(|t| t.timestamp);
+        let last_trade_time = self.trades.last().map(|t| t.timestamp);
+
+        match (first_trade_time, last_trade_time) {
+            (Some(first), Some(last)) => {
+                let days = (last - first).num_days() as f64;
+                if days <= 0.0 {
+                    return total_return;
+                }
+                // 简化年化: total_return * (365 / days)
+                let years = Decimal::from_str(&(days / 365.0).to_string()).unwrap_or(Decimal::ONE);
+                if years > Decimal::ZERO {
+                    total_return / years
+                } else {
+                    total_return
+                }
+            }
+            _ => Decimal::ZERO,
+        }
+    }
+
+    /// 获取完整的风险指标摘要
+    pub fn risk_summary(&self, risk_free_rate: Decimal) -> RiskSummary {
+        RiskSummary {
+            total_return: self.total_pnl() / self.initial_capital,
+            annualized_return: self.annualized_return(),
+            sharpe_ratio: self.sharpe_ratio(risk_free_rate),
+            sortino_ratio: self.sortino_ratio(risk_free_rate),
+            max_drawdown: self.max_drawdown(),
+            win_rate: self.win_rate(),
+            profit_factor: self.profit_factor(),
+            total_trades: self.trades.len(),
+            total_commission: self.total_commission(),
+            average_trade_duration_secs: self.average_trade_duration(),
+        }
+    }
+}
+
+/// 风险指标摘要
+#[derive(Debug, Clone)]
+pub struct RiskSummary {
+    /// 总收益率
+    pub total_return: Decimal,
+    /// 年化收益率
+    pub annualized_return: Decimal,
+    /// 夏普比率
+    pub sharpe_ratio: Decimal,
+    /// 索提诺比率
+    pub sortino_ratio: Decimal,
+    /// 最大回撤
+    pub max_drawdown: Decimal,
+    /// 胜率 (%)
+    pub win_rate: Decimal,
+    /// 盈亏比
+    pub profit_factor: Decimal,
+    /// 总交易次数
+    pub total_trades: usize,
+    /// 总手续费
+    pub total_commission: Decimal,
+    /// 平均交易时长（秒）
+    pub average_trade_duration_secs: f64,
+}
+
+impl std::fmt::Display for RiskSummary {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "收益: {:.2}% | 年化: {:.2}% | 夏普: {:.2} | 索提诺: {:.2} | 最大回撤: {:.2}% | 胜率: {:.1}% | 盈亏比: {:.2} | 交易: {} | 手续费: {:.2}",
+            self.total_return * Decimal::from(100),
+            self.annualized_return * Decimal::from(100),
+            self.sharpe_ratio,
+            self.sortino_ratio,
+            self.max_drawdown * Decimal::from(100),
+            self.win_rate,
+            self.profit_factor,
+            self.total_trades,
+            self.total_commission,
+        )
     }
 }

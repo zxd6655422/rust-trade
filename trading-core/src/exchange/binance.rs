@@ -20,12 +20,15 @@ use trading_common::data::types::TickData;
 
 // Constants
 const BINANCE_WS_URL: &str = "wss://stream.binance.com:9443/stream";
-const BINANCE_REST_URL: &str = "https://api.binance.com";
+const BINANCE_SPOT_URL: &str = "https://api.binance.com";
+const BINANCE_FUTURES_URL: &str = "https://fapi.binance.com";
 const RECONNECT_DELAY: Duration = Duration::from_secs(5);
 
 /// Binance exchange implementation
 pub struct BinanceExchange {
     ws_url: String,
+    /// 只有合约的交易对列表
+    futures_symbols: Vec<String>,
 }
 
 impl BinanceExchange {
@@ -33,6 +36,38 @@ impl BinanceExchange {
     pub fn new() -> Self {
         Self {
             ws_url: BINANCE_WS_URL.to_string(),
+            futures_symbols: Vec::new(),
+        }
+    }
+
+    /// Create with futures symbols list
+    pub fn with_futures_symbols(futures_symbols: Vec<String>) -> Self {
+        Self {
+            ws_url: BINANCE_WS_URL.to_string(),
+            futures_symbols,
+        }
+    }
+
+    /// 判断是否为合约交易对
+    fn is_futures_symbol(&self, symbol: &str) -> bool {
+        self.futures_symbols.iter().any(|s| s.eq_ignore_ascii_case(symbol))
+    }
+
+    /// 获取 REST API base URL
+    fn rest_url(&self, symbol: &str) -> &str {
+        if self.is_futures_symbol(symbol) {
+            BINANCE_FUTURES_URL
+        } else {
+            BINANCE_SPOT_URL
+        }
+    }
+
+    /// 获取 kline API 路径
+    fn kline_path(&self, symbol: &str) -> &str {
+        if self.is_futures_symbol(symbol) {
+            "/fapi/v1/klines"
+        } else {
+            "/api/v3/klines"
         }
     }
 
@@ -67,19 +102,21 @@ impl BinanceExchange {
 
     /// Shared kline fetch + parse logic
     async fn do_fetch_klines(&self, url: &str, symbol: &str) -> Result<Vec<KlineData>, ExchangeError> {
-        debug!("Fetching klines: {}", url);
+        debug!("Fetching klines for {}: {}", symbol, url);
 
         let client = reqwest::Client::new();
         let response = client
             .get(url)
             .send()
             .await
-            .map_err(|e| ExchangeError::NetworkError(format!("HTTP request failed: {}", e)))?;
+            .map_err(|e| ExchangeError::NetworkError(format!("[{}] HTTP request failed: {}", symbol, e)))?;
 
         if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
             return Err(ExchangeError::NetworkError(format!(
-                "HTTP {} from Binance klines API",
-                response.status()
+                "[{}] HTTP {} from Binance klines API: {}",
+                symbol, status, body
             )));
         }
 
@@ -322,9 +359,11 @@ impl Exchange for BinanceExchange {
         interval: &str,
         limit: u32,
     ) -> Result<Vec<KlineData>, ExchangeError> {
+        let base_url = self.rest_url(symbol);
+        let path = self.kline_path(symbol);
         let url = format!(
-            "{}/api/v3/klines?symbol={}&interval={}&limit={}",
-            BINANCE_REST_URL, symbol, interval, limit
+            "{}{}?symbol={}&interval={}&limit={}",
+            base_url, path, symbol, interval, limit
         );
         self.do_fetch_klines(&url, symbol).await
     }
@@ -337,11 +376,13 @@ impl Exchange for BinanceExchange {
         end_time: DateTime<Utc>,
         limit: u32,
     ) -> Result<Vec<KlineData>, ExchangeError> {
+        let base_url = self.rest_url(symbol);
+        let path = self.kline_path(symbol);
         let start_ms = start_time.timestamp_millis();
         let end_ms = end_time.timestamp_millis();
         let url = format!(
-            "{}/api/v3/klines?symbol={}&interval={}&startTime={}&endTime={}&limit={}",
-            BINANCE_REST_URL, symbol, interval, start_ms, end_ms, limit
+            "{}{}?symbol={}&interval={}&startTime={}&endTime={}&limit={}",
+            base_url, path, symbol, interval, start_ms, end_ms, limit
         );
         self.do_fetch_klines(&url, symbol).await
     }

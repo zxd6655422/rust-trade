@@ -90,6 +90,12 @@ pub trait Exchange: Send + Sync {
 
     // ===== 行情数据接口 =====
 
+    /// 获取行情快照 (Ticker)
+    async fn get_ticker(&self, symbol: &str) -> Result<Ticker, ExchangeError>;
+
+    /// 获取多个交易对行情快照
+    async fn get_tickers(&self, symbols: &[String]) -> Result<Vec<Ticker>, ExchangeError>;
+
     /// 获取标记价格
     async fn get_mark_price(&self, symbol: &str) -> Result<MarkPrice, ExchangeError>;
 
@@ -101,6 +107,9 @@ pub trait Exchange: Send + Sync {
 
     /// 获取订单簿深度
     async fn get_order_book(&self, symbol: &str, limit: Option<u32>) -> Result<OrderBook, ExchangeError>;
+
+    /// 获取最近成交
+    async fn get_recent_trades(&self, symbol: &str, limit: Option<u32>) -> Result<Vec<PublicTrade>, ExchangeError>;
 
     /// 批量下单
     async fn batch_place_orders(&self, orders: Vec<BatchOrderRequest>) -> Result<Vec<BatchOrderResult>, ExchangeError>;

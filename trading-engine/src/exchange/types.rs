@@ -370,3 +370,49 @@ pub struct FuturesAccountInfo {
     pub total_unrealized_pnl: Decimal,
     pub total_margin_balance: Decimal,
 }
+
+// ===== 行情快照类型 =====
+
+/// 行情快照 (Ticker)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Ticker {
+    /// 交易对
+    pub symbol: String,
+    /// 最新价格
+    pub last_price: Decimal,
+    /// 买一价
+    pub bid_price: Decimal,
+    /// 卖一价
+    pub ask_price: Decimal,
+    /// 24h 最高价
+    pub high_price: Decimal,
+    /// 24h 最低价
+    pub low_price: Decimal,
+    /// 24h 成交量
+    pub volume: Decimal,
+    /// 24h 成交额
+    pub quote_volume: Decimal,
+    /// 24h 价格变化
+    pub price_change: Decimal,
+    /// 24h 价格变化百分比
+    pub price_change_percent: Decimal,
+    /// 更新时间
+    pub timestamp: DateTime<Utc>,
+}
+
+/// 简化成交信息 (用于 public trades)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublicTrade {
+    /// 成交 ID
+    pub id: String,
+    /// 交易对
+    pub symbol: String,
+    /// 成交价格
+    pub price: Decimal,
+    /// 成交数量
+    pub quantity: Decimal,
+    /// 成交时间
+    pub timestamp: DateTime<Utc>,
+    /// 是否买方主动
+    pub is_buyer_maker: bool,
+}

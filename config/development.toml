@@ -1,5 +1,11 @@
+# 日志等级: trace, debug, info, warn, error
+log_level = "info"
+
 # Trading pairs to monitor
-symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "SUIUSDT"]
+symbols = ["SPCXUSDT", "HYPEUSDT", "TSLAUSDT", "NVDAUSDT", "AAOIUSDT", "MUUSDT", "SKHYNIXUSDT"]
+
+# Futures-only symbols (use /fapi/v1/klines instead of /api/v3/klines)
+futures_symbols = ["SPCXUSDT", "HYPEUSDT", "TSLAUSDT", "NVDAUSDT", "AAOIUSDT", "MUUSDT", "SKHYNIXUSDT"]
 
 [server]
 host = "0.0.0.0"

@@ -89,7 +89,6 @@ impl TickDataRepository {
             // Don't fail the operation if cache update fails
         }
 
-        debug!("Successfully inserted tick data");
         Ok(())
     }
 
@@ -105,7 +104,6 @@ impl TickDataRepository {
         }
 
         let total_count = ticks.len();
-        debug!("Batch inserting {} tick records", total_count);
 
         // Process in chunks to avoid memory issues
         let mut total_inserted = 0;
@@ -116,15 +114,13 @@ impl TickDataRepository {
             // Update cache for each chunk
             for tick in chunk {
                 if let Err(e) = self.cache.push_tick(tick).await {
-                    warn!("Failed to update cache for tick {}: {}", tick.trade_id, e);
+                    debug!("Failed to update cache for tick {}: {}", tick.trade_id, e);
                 }
             }
         }
 
-        info!(
-            "Successfully batch inserted {} out of {} tick records",
-            total_inserted, total_count
-        );
+        // 静默，由调用方决定是否打日志
+        debug!("[tick_data] Batch inserted {} records", total_inserted);
         Ok(total_inserted)
     }
 
@@ -1271,11 +1267,6 @@ impl TickDataRepository {
 
     /// Insert a single kline into kline_1m table (upsert)
     pub async fn insert_kline(&self, kline: &OHLCData) -> DataResult<()> {
-        debug!(
-            "Inserting kline: symbol={}, timestamp={}, close={}",
-            kline.symbol, kline.timestamp, kline.close
-        );
-
         let mut query_builder = QueryBuilder::new(
             "INSERT INTO kline_1m (timestamp, symbol, open, high, low, close, volume, trade_count) "
         );
@@ -1298,11 +1289,10 @@ impl TickDataRepository {
         );
 
         query_builder.build().execute(&self.pool).await.map_err(|e| {
-            error!("Failed to insert kline: {}", e);
+            error!("[kline_1m] Insert failed for {}: {}", kline.symbol, e);
             DataError::Database(e)
         })?;
 
-        debug!("Successfully inserted kline for {} at {}", kline.symbol, kline.timestamp);
         Ok(())
     }
 
@@ -1313,9 +1303,8 @@ impl TickDataRepository {
         }
 
         let total_count = klines.len();
-        debug!("Batch inserting {} kline records", total_count);
-
         let mut total_inserted = 0;
+
         for chunk in klines.chunks(MAX_BATCH_SIZE) {
             let mut query_builder = QueryBuilder::new(
                 "INSERT INTO kline_1m (timestamp, symbol, open, high, low, close, volume, trade_count) "
@@ -1342,10 +1331,8 @@ impl TickDataRepository {
             total_inserted += result.rows_affected() as usize;
         }
 
-        info!(
-            "Successfully batch upserted {} out of {} kline records",
-            total_inserted, total_count
-        );
+        // 静默，由调用方决定是否打日志
+        debug!("[kline_1m] Batch upserted {} records", total_inserted);
         Ok(total_inserted)
     }
 

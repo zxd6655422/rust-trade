@@ -1155,6 +1155,125 @@ impl Exchange for OkxAdapter {
                 .unwrap_or_default(),
         })
     }
+
+    /// GET /api/v5/market/ticker - 获取行情快照
+    async fn get_ticker(&self, symbol: &str) -> Result<Ticker, ExchangeError> {
+        let mut params = HashMap::new();
+        params.insert("instId".to_string(), symbol.to_string());
+
+        let data = self.send_public_request("/api/v5/market/ticker", &params).await?;
+
+        let ticker_data = data["data"].as_array().and_then(|a| a.first())
+            .ok_or_else(|| ExchangeError::ApiError {
+                code: 0,
+                message: "No ticker data".to_string(),
+            })?;
+
+        Ok(Ticker {
+            symbol: symbol.to_string(),
+            last_price: Decimal::from_str(ticker_data["last"].as_str().unwrap_or("0")).unwrap_or_default(),
+            bid_price: Decimal::from_str(ticker_data["bidPx"].as_str().unwrap_or("0")).unwrap_or_default(),
+            ask_price: Decimal::from_str(ticker_data["askPx"].as_str().unwrap_or("0")).unwrap_or_default(),
+            high_price: Decimal::from_str(ticker_data["high24h"].as_str().unwrap_or("0")).unwrap_or_default(),
+            low_price: Decimal::from_str(ticker_data["low24h"].as_str().unwrap_or("0")).unwrap_or_default(),
+            volume: Decimal::from_str(ticker_data["vol24h"].as_str().unwrap_or("0")).unwrap_or_default(),
+            quote_volume: Decimal::from_str(ticker_data["volCcy24h"].as_str().unwrap_or("0")).unwrap_or_default(),
+            price_change: Decimal::from_str(ticker_data["last"].as_str().unwrap_or("0")).unwrap_or_default()
+                - Decimal::from_str(ticker_data["open24h"].as_str().unwrap_or("0")).unwrap_or_default(),
+            price_change_percent: {
+                let open = Decimal::from_str(ticker_data["open24h"].as_str().unwrap_or("0")).unwrap_or_default();
+                let last = Decimal::from_str(ticker_data["last"].as_str().unwrap_or("0")).unwrap_or_default();
+                if open > Decimal::ZERO {
+                    ((last - open) / open) * Decimal::from(100)
+                } else {
+                    Decimal::ZERO
+                }
+            },
+            timestamp: Utc::now(),
+        })
+    }
+
+    /// GET /api/v5/market/tickers - 批量获取行情快照
+    async fn get_tickers(&self, symbols: &[String]) -> Result<Vec<Ticker>, ExchangeError> {
+        let mut params = HashMap::new();
+        params.insert("instType".to_string(), "SWAP".to_string());
+
+        let data = self.send_public_request("/api/v5/market/tickers", &params).await?;
+
+        let all_tickers: Vec<Ticker> = data["data"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|item| {
+                        let inst_id = item["instId"].as_str()?;
+                        if !symbols.iter().any(|s| s == inst_id) {
+                            return None;
+                        }
+                        Some(Ticker {
+                            symbol: inst_id.to_string(),
+                            last_price: Decimal::from_str(item["last"].as_str()?).ok()?,
+                            bid_price: Decimal::from_str(item["bidPx"].as_str()?).ok()?,
+                            ask_price: Decimal::from_str(item["askPx"].as_str()?).ok()?,
+                            high_price: Decimal::from_str(item["high24h"].as_str()?).ok()?,
+                            low_price: Decimal::from_str(item["low24h"].as_str()?).ok()?,
+                            volume: Decimal::from_str(item["vol24h"].as_str()?).ok()?,
+                            quote_volume: Decimal::from_str(item["volCcy24h"].as_str()?).ok()?,
+                            price_change: {
+                                let open = Decimal::from_str(item["open24h"].as_str()?).ok()?;
+                                let last = Decimal::from_str(item["last"].as_str()?).ok()?;
+                                last - open
+                            },
+                            price_change_percent: {
+                                let open = Decimal::from_str(item["open24h"].as_str()?).ok()?;
+                                let last = Decimal::from_str(item["last"].as_str()?).ok()?;
+                                if open > Decimal::ZERO {
+                                    ((last - open) / open) * Decimal::from(100)
+                                } else {
+                                    Decimal::ZERO
+                                }
+                            },
+                            timestamp: Utc::now(),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(all_tickers)
+    }
+
+    /// GET /api/v5/market/trades - 获取最近成交
+    async fn get_recent_trades(&self, symbol: &str, limit: Option<u32>) -> Result<Vec<PublicTrade>, ExchangeError> {
+        let mut params = HashMap::new();
+        params.insert("instId".to_string(), symbol.to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+
+        let data = self.send_public_request("/api/v5/market/trades", &params).await?;
+
+        let trades: Vec<PublicTrade> = data["data"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|t| {
+                        Some(PublicTrade {
+                            id: t["tradeId"].as_str()?.to_string(),
+                            symbol: symbol.to_string(),
+                            price: Decimal::from_str(t["px"].as_str()?).ok()?,
+                            quantity: Decimal::from_str(t["sz"].as_str()?).ok()?,
+                            timestamp: DateTime::from_timestamp_millis(
+                                t["ts"].as_str()?.parse::<i64>().ok()?,
+                            )?,
+                            is_buyer_maker: t["side"].as_str()? == "sell",
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(trades)
+    }
 }
 
 // ===== WebSocket 数据解析 =====

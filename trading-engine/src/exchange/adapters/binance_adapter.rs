@@ -1162,6 +1162,96 @@ impl Exchange for BinanceAdapter {
             total_margin_balance: Decimal::from_str(data["totalMarginBalance"].as_str().unwrap_or("0")).unwrap_or_default(),
         })
     }
+
+    /// GET /fapi/v1/ticker/24hr - 获取行情快照
+    async fn get_ticker(&self, symbol: &str) -> Result<Ticker, ExchangeError> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+
+        let data = self.send_public_request("/fapi/v1/ticker/24hr", &params).await?;
+
+        Ok(Ticker {
+            symbol: data["symbol"].as_str().unwrap_or(symbol).to_string(),
+            last_price: Decimal::from_str(data["lastPrice"].as_str().unwrap_or("0")).unwrap_or_default(),
+            bid_price: Decimal::from_str(data["bidPrice"].as_str().unwrap_or("0")).unwrap_or_default(),
+            ask_price: Decimal::from_str(data["askPrice"].as_str().unwrap_or("0")).unwrap_or_default(),
+            high_price: Decimal::from_str(data["highPrice"].as_str().unwrap_or("0")).unwrap_or_default(),
+            low_price: Decimal::from_str(data["lowPrice"].as_str().unwrap_or("0")).unwrap_or_default(),
+            volume: Decimal::from_str(data["volume"].as_str().unwrap_or("0")).unwrap_or_default(),
+            quote_volume: Decimal::from_str(data["quoteVolume"].as_str().unwrap_or("0")).unwrap_or_default(),
+            price_change: Decimal::from_str(data["priceChange"].as_str().unwrap_or("0")).unwrap_or_default(),
+            price_change_percent: Decimal::from_str(data["priceChangePercent"].as_str().unwrap_or("0")).unwrap_or_default(),
+            timestamp: Utc::now(),
+        })
+    }
+
+    /// GET /fapi/v1/ticker/24hr - 批量获取行情快照
+    async fn get_tickers(&self, symbols: &[String]) -> Result<Vec<Ticker>, ExchangeError> {
+        // 不传 symbol 参数，获取所有交易对
+        let params = HashMap::new();
+        let data = self.send_public_request("/fapi/v1/ticker/24hr", &params).await?;
+
+        let all_tickers: Vec<Ticker> = data
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|item| {
+                        let sym = item["symbol"].as_str()?;
+                        // 只返回请求的交易对
+                        if !symbols.iter().any(|s| s == sym) {
+                            return None;
+                        }
+                        Some(Ticker {
+                            symbol: sym.to_string(),
+                            last_price: Decimal::from_str(item["lastPrice"].as_str()?).ok()?,
+                            bid_price: Decimal::from_str(item["bidPrice"].as_str()?).ok()?,
+                            ask_price: Decimal::from_str(item["askPrice"].as_str()?).ok()?,
+                            high_price: Decimal::from_str(item["highPrice"].as_str()?).ok()?,
+                            low_price: Decimal::from_str(item["lowPrice"].as_str()?).ok()?,
+                            volume: Decimal::from_str(item["volume"].as_str()?).ok()?,
+                            quote_volume: Decimal::from_str(item["quoteVolume"].as_str()?).ok()?,
+                            price_change: Decimal::from_str(item["priceChange"].as_str()?).ok()?,
+                            price_change_percent: Decimal::from_str(item["priceChangePercent"].as_str()?).ok()?,
+                            timestamp: Utc::now(),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(all_tickers)
+    }
+
+    /// GET /fapi/v1/trades - 获取最近成交
+    async fn get_recent_trades(&self, symbol: &str, limit: Option<u32>) -> Result<Vec<PublicTrade>, ExchangeError> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+
+        let data = self.send_public_request("/fapi/v1/trades", &params).await?;
+
+        let trades: Vec<PublicTrade> = data
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|t| {
+                        Some(PublicTrade {
+                            id: t["id"].as_i64()?.to_string(),
+                            symbol: symbol.to_string(),
+                            price: Decimal::from_str(t["price"].as_str()?).ok()?,
+                            quantity: Decimal::from_str(t["qty"].as_str()?).ok()?,
+                            timestamp: DateTime::from_timestamp_millis(t["time"].as_i64()?)?,
+                            is_buyer_maker: t["maker"].as_bool()?,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(trades)
+    }
 }
 
 /// 解析交易数据 (WebSocket @trade stream)

@@ -290,11 +290,6 @@ impl MarketDataService {
         loop {
             match repository.batch_insert(batch_buffer.clone()).await {
                 Ok(inserted_count) => {
-                    info!(
-                        "Successfully flushed batch: {} ticks inserted",
-                        inserted_count
-                    );
-
                     // Update success stats
                     {
                         let mut s = stats.lock().await;

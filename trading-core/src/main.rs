@@ -4,7 +4,7 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::signal;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 // CLI-specific modules
@@ -82,10 +82,13 @@ async fn run_live_with_paper_trading() -> Result<(), Box<dyn std::error::Error>>
     // Initialize application environment
     init_application().await?;
 
-    info!("🎯 Starting Trading Core Application (Live Mode + Paper Trading)");
-
     // Load configuration
     let settings = Settings::new()?;
+
+    // Initialize logging with configured level
+    init_tracing(&settings.log_level)?;
+
+    info!("🎯 Starting Trading Core Application (Live Mode + Paper Trading)");
 
     // Check if paper trading is enabled
     if !settings.paper_trading.enabled {
@@ -96,6 +99,7 @@ async fn run_live_with_paper_trading() -> Result<(), Box<dyn std::error::Error>>
 
     info!("📋 Configuration loaded successfully");
     info!("📊 Monitoring symbols: {:?}", settings.symbols);
+    info!("📝 Log level: {}", settings.log_level);
     info!(
         "🎯 Paper Trading Strategy: {}",
         settings.paper_trading.strategy
@@ -139,8 +143,10 @@ async fn run_live_with_paper_trading() -> Result<(), Box<dyn std::error::Error>>
 
     // Create exchange connection
     info!("📡 Initializing exchange connection...");
-    let exchange: Arc<dyn exchange::Exchange> = Arc::new(BinanceExchange::new());
-    info!("✅ Exchange connection ready");
+    let exchange: Arc<dyn exchange::Exchange> = Arc::new(
+        BinanceExchange::with_futures_symbols(settings.futures_symbols.clone())
+    );
+    info!("✅ Exchange connection ready (futures: {:?})", &settings.futures_symbols);
 
     // Create strategy
     info!(
@@ -211,13 +217,16 @@ async fn run_live_application_with_service(
 async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
     init_application().await?;
 
-    info!("🚀 Starting Trading Core Service Mode");
-
     // Load configuration
     let settings = Settings::new()?;
 
+    // Initialize logging with configured level
+    init_tracing(&settings.log_level)?;
+
+    info!("🚀 Starting Trading Core Service Mode");
     info!("📋 Configuration loaded successfully");
     info!("📊 Monitoring symbols: {:?}", settings.symbols);
+    info!("📝 Log level: {}", settings.log_level);
     info!(
         "🗄️  Database: {} connections",
         settings.database.max_connections
@@ -248,7 +257,9 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
         }
         CollectorMode::Tick => {
             info!("📊 Starting tick data collection (high frequency)");
-            let exchange: Arc<dyn exchange::Exchange> = Arc::new(BinanceExchange::new());
+            let exchange: Arc<dyn exchange::Exchange> = Arc::new(
+                BinanceExchange::with_futures_symbols(settings.futures_symbols.clone())
+            );
             let symbols = settings.symbols.clone();
             let tick_tx_clone = tick_tx.clone();
             let shutdown_rx = tick_tx.subscribe();
@@ -270,8 +281,11 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
             let poll_interval = settings.collector.poll_interval_secs;
             let backfill_enabled = settings.collector.backfill_enabled;
             let backfill_start = settings.collector.backfill_start_date.clone();
+            let futures_symbols = settings.futures_symbols.clone();
             info!("📊 Starting candle1m data collection (REST polling every {}s)", poll_interval);
-            let exchange: Arc<dyn exchange::Exchange> = Arc::new(BinanceExchange::new());
+            let exchange: Arc<dyn exchange::Exchange> = Arc::new(
+                BinanceExchange::with_futures_symbols(futures_symbols.clone())
+            );
             let symbols = settings.symbols.clone();
 
             Some(tokio::spawn(async move {
@@ -353,6 +367,7 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
                             async move {
                                 match ex.fetch_klines(&sym, "1m", 100).await {
                                     Ok(klines) => {
+                                        debug!("[{}] 拉取到 {} 条 kline", sym, klines.len());
                                         let ohlc_list: Vec<OHLCData> = klines
                                             .into_iter()
                                             .map(|k| OHLCData {
@@ -386,13 +401,13 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
                             let count = ohlc_list.len();
                             match repo.batch_insert_klines(ohlc_list).await {
                                 Ok(inserted) => {
-                                    info!(
-                                        "✅ {} kline_1m: fetched {}, upserted {}",
+                                    debug!(
+                                        "[{}] kline_1m: fetched {}, upserted {}",
                                         symbol, count, inserted
                                     );
                                 }
                                 Err(e) => {
-                                    error!("Failed to insert klines for {}: {}", symbol, e);
+                                    error!("[{}] kline_1m 插入失败: {}", symbol, e);
                                 }
                             }
                         }
@@ -450,10 +465,14 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
 async fn run_collector_mode() -> Result<(), Box<dyn std::error::Error>> {
     init_application().await?;
 
-    info!("🚀 Starting Trading Core Collector Mode");
-
     // Load configuration
     let settings = Settings::new()?;
+
+    // Initialize logging with configured level
+    init_tracing(&settings.log_level)?;
+
+    info!("🚀 Starting Trading Core Collector Mode");
+    info!("📝 Log level: {}", settings.log_level);
 
     // Check collector mode
     match settings.collector.mode {
@@ -495,8 +514,10 @@ async fn run_collector_mode() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create exchange connection
     info!("📡 Initializing exchange connection...");
-    let exchange: Arc<dyn exchange::Exchange> = Arc::new(BinanceExchange::new());
-    info!("✅ Exchange connection ready");
+    let exchange: Arc<dyn exchange::Exchange> = Arc::new(
+        BinanceExchange::with_futures_symbols(settings.futures_symbols.clone())
+    );
+    info!("✅ Exchange connection ready (futures: {:?})", &settings.futures_symbols);
 
     // Create market data service (no paper trading in collector mode)
     let service = MarketDataService::new(exchange, repository, settings.symbols.clone());
@@ -540,13 +561,16 @@ async fn run_live_mode() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize environment and logging
     init_application().await?;
 
-    info!("🚀 Starting Trading Core Application (Live Mode)");
-
     // Load configuration
     let settings = Settings::new()?;
 
+    // Initialize logging with configured level
+    init_tracing(&settings.log_level)?;
+
+    info!("🚀 Starting Trading Core Application (Live Mode)");
     info!("📋 Configuration loaded successfully");
     info!("📊 Monitoring symbols: {:?}", settings.symbols);
+    info!("📝 Log level: {}", settings.log_level);
     info!(
         "🗄️  Database: {} connections",
         settings.database.max_connections
@@ -570,10 +594,14 @@ async fn run_live_mode() -> Result<(), Box<dyn std::error::Error>> {
 async fn run_backtest_mode() -> Result<(), Box<dyn std::error::Error>> {
     init_application().await?;
 
-    info!("🔬 Starting Trading Core Application (Backtest Mode)");
-
     let settings = Settings::new()?;
+
+    // Initialize logging with configured level
+    init_tracing(&settings.log_level)?;
+
+    info!("🔬 Starting Trading Core Application (Backtest Mode)");
     info!("📋 Configuration loaded successfully");
+    info!("📝 Log level: {}", settings.log_level);
 
     let pool = create_database_pool(&settings).await?;
     test_database_connection(&pool).await?;
@@ -914,19 +942,25 @@ async fn init_application() -> Result<(), Box<dyn std::error::Error>> {
         dotenv::dotenv().ok();
     }
 
-    // Initialize tracing/logging
-    init_tracing()?;
-
     info!("🔧 Application environment initialized");
     Ok(())
 }
 
 /// Initialize tracing subscriber for logging
-fn init_tracing() -> Result<(), Box<dyn std::error::Error>> {
-    // Create env filter from RUST_LOG environment variable
-    // Default to info level if not set
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("trading_core=info,sqlx=info,tokio=info,hyper=info"));
+fn init_tracing(log_level: &str) -> Result<(), Box<dyn std::error::Error>> {
+    // 优先使用环境变量 RUST_LOG，否则使用配置文件的 log_level
+    // sqlx 慢查询日志默认关闭（设为 error 只在真正出错时才打印）
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        let level = match log_level {
+            "trace" => "trading_core=trace,sqlx=debug,tokio=trace,hyper=debug",
+            "debug" => "trading_core=debug,sqlx=warn,tokio=info,hyper=info",
+            "info" => "trading_core=info,sqlx=error,tokio=warn,hyper=warn",
+            "warn" => "trading_core=warn,sqlx=error,tokio=error,hyper=error",
+            "error" => "trading_core=error,sqlx=error,tokio=error,hyper=error",
+            _ => "trading_core=info,sqlx=error,tokio=warn,hyper=warn",
+        };
+        EnvFilter::new(level)
+    });
 
     // Setup tracing subscriber with structured logging
     tracing_subscriber::registry()
@@ -975,8 +1009,10 @@ async fn run_live_application(settings: Settings) -> Result<(), Box<dyn std::err
 
     // Create exchange
     info!("📡 Initializing exchange connection...");
-    let exchange: Arc<dyn exchange::Exchange> = Arc::new(BinanceExchange::new());
-    info!("✅ Exchange connection ready");
+    let exchange: Arc<dyn exchange::Exchange> = Arc::new(
+        BinanceExchange::with_futures_symbols(settings.futures_symbols.clone())
+    );
+    info!("✅ Exchange connection ready (futures: {:?})", &settings.futures_symbols);
 
     // Create market data service
     let service = MarketDataService::new(exchange, repository, settings.symbols.clone());

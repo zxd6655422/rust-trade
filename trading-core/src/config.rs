@@ -108,10 +108,20 @@ pub struct Settings {
     pub database: Database,
     pub cache: Cache,
     pub symbols: Vec<String>,
+    /// 只有合约的交易对（使用 /fapi/v1/klines 而非 /api/v3/klines）
+    #[serde(default)]
+    pub futures_symbols: Vec<String>,
     pub paper_trading: PaperTrading,
     /// 数据采集配置
     #[serde(default)]
     pub collector: CollectorConfig,
+    /// 日志等级: trace, debug, info, warn, error
+    #[serde(default = "default_log_level")]
+    pub log_level: String,
+}
+
+fn default_log_level() -> String {
+    "info".to_string()
 }
 
 impl Settings {

@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::exchange::{Exchange, KlineData};
 use trading_common::data::types::{OHLCData, Timeframe};
@@ -46,16 +46,15 @@ impl BackfillService {
     /// 对单个 symbol 执行回填
     /// 优化: 增量更新，只拉取新数据
     async fn backfill_symbol(&self, symbol: &str) -> Result<(), Box<dyn std::error::Error>> {
-        info!("📊 Backfilling {} from {}", symbol, self.start_date);
-
         // 1. 查询数据库中已有的最早/最新时间
         let earliest = self.repository.get_kline_earliest(symbol).await?;
         let latest = self.repository.get_kline_latest(symbol).await?;
 
         match (earliest, latest) {
             (Some(earliest_ts), Some(latest_ts)) => {
-                info!(
-                    "  DB has data: {} ~ {}",
+                debug!(
+                    "[{}] 已有数据: {} ~ {}",
+                    symbol,
                     earliest_ts.format("%Y-%m-%d %H:%M"),
                     latest_ts.format("%Y-%m-%d %H:%M")
                 );
@@ -66,14 +65,14 @@ impl BackfillService {
 
                 // 如果最新数据超过 1 小时，只拉取最近的数据
                 if time_since_latest.num_hours() > 1 {
-                    info!(
-                        "  Data is {} hours old, fetching recent: {} → now",
-                        time_since_latest.num_hours(),
-                        latest_ts.format("%Y-%m-%d %H:%M")
+                    debug!(
+                        "[{}] 数据已过期 {} 小时，拉取最近数据",
+                        symbol,
+                        time_since_latest.num_hours()
                     );
                     self.fetch_range(symbol, latest_ts, now).await?;
                 } else {
-                    info!("  Data is recent ({} min ago), skipping full backfill", time_since_latest.num_minutes());
+                    debug!("[{}] 数据较新 ({} 分钟前)，跳过", symbol, time_since_latest.num_minutes());
                 }
 
                 // 只检查最近 7 天的间隙（而不是全部历史）
@@ -84,25 +83,24 @@ impl BackfillService {
                     self.start_date
                 };
 
-                info!("  Checking gaps for last 7 days...");
+                debug!("[{}] 检查最近 7 天数据间隙...", symbol);
                 self.fill_gaps(symbol, check_start, latest_ts).await?;
             }
             (None, None) => {
                 // 数据库无数据，从 start_date 拉到现在
                 let now = Utc::now();
                 info!(
-                    "  No existing data, fetching: {} → {}",
-                    self.start_date.format("%Y-%m-%d %H:%M"),
-                    now.format("%Y-%m-%d %H:%M")
+                    "[{}] 首次拉取，从 {} 开始",
+                    symbol,
+                    self.start_date.format("%Y-%m-%d")
                 );
                 self.fetch_range(symbol, self.start_date, now).await?;
             }
             _ => {
-                warn!("  Inconsistent kline data state for {}, skipping", symbol);
+                warn!("[{}] 数据状态不一致，跳过", symbol);
             }
         }
 
-        info!("✅ Backfill completed for {}", symbol);
         Ok(())
     }
 
@@ -114,6 +112,13 @@ impl BackfillService {
         start: DateTime<Utc>,
         end: DateTime<Utc>,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        debug!(
+            "[{}] 拉取 kline 数据 [{} → {}]",
+            symbol,
+            start.format("%Y-%m-%d %H:%M"),
+            end.format("%Y-%m-%d %H:%M")
+        );
+
         let mut cursor = start;
         let mut total_fetched: u64 = 0;
         let mut consecutive_errors = 0;
@@ -148,17 +153,9 @@ impl BackfillService {
                     match self.repository.batch_insert_klines(ohlc_list).await {
                         Ok(inserted) => {
                             total_fetched += inserted as u64;
-                            // 减少日志频率
-                            if total_fetched % 50000 < BATCH_SIZE as u64 {
-                                info!(
-                                    "  Progress: {} klines fetched, cursor at {}",
-                                    total_fetched,
-                                    cursor.format("%Y-%m-%d %H:%M")
-                                );
-                            }
                         }
                         Err(e) => {
-                            error!("  Failed to insert klines: {}", e);
+                            error!("[{}] kline 插入失败: {}", symbol, e);
                         }
                     }
 
@@ -175,10 +172,10 @@ impl BackfillService {
                 }
                 Err(e) => {
                     consecutive_errors += 1;
-                    error!("  fetch_klines_with_time failed ({}): {}", consecutive_errors, e);
+                    error!("  [{}] fetch_klines_with_time failed ({}/{}): {}", symbol, consecutive_errors, MAX_CONSECUTIVE_ERRORS, e);
 
                     if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
-                        error!("  Too many consecutive errors, aborting backfill for {}", symbol);
+                        error!("  [{}] Too many consecutive errors, aborting backfill", symbol);
                         return Err(format!("Max consecutive errors reached for {}", symbol).into());
                     }
 
@@ -189,7 +186,9 @@ impl BackfillService {
             }
         }
 
-        info!("  Fetched total {} klines for {}", total_fetched, symbol);
+        if total_fetched > 0 {
+            info!("✅ [{}] 完成，共拉取 {} 条 kline", symbol, total_fetched);
+        }
         Ok(())
     }
 
@@ -203,22 +202,23 @@ impl BackfillService {
         let gaps = self.repository.find_kline_gaps(symbol, start, end).await?;
 
         if gaps.is_empty() {
-            info!("  No gaps found for {}", symbol);
+            debug!("[{}] 无数据间隙", symbol);
             return Ok(());
         }
 
-        info!("  Found {} gaps for {}, filling...", gaps.len(), symbol);
+        info!("[{}] 发现 {} 个数据间隙，正在补齐...", symbol, gaps.len());
 
         for (gap_start, gap_end) in &gaps {
-            info!(
-                "    Filling gap: {} → {}",
+            debug!(
+                "[{}] 补齐间隙: {} → {}",
+                symbol,
                 gap_start.format("%Y-%m-%d %H:%M"),
                 gap_end.format("%Y-%m-%d %H:%M")
             );
             self.fetch_range(symbol, *gap_start, *gap_end).await?;
         }
 
-        info!("  Gaps filled for {}", symbol);
+        debug!("[{}] 数据间隙补齐完成", symbol);
         Ok(())
     }
 }

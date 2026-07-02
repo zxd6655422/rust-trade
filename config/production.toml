@@ -1,5 +1,12 @@
 # 生产环境配置
+
+# 日志等级: trace, debug, info, warn, error
+log_level = "info"
+
 symbols = ["BTCUSDT", "ETHUSDT"]
+
+# 只有合约的交易对（使用 /fapi/v1/klines）
+futures_symbols = []
 
 [server]
 host = "0.0.0.0"

@@ -3,3 +3,6 @@
 
 pub mod backtest;
 pub mod data;
+pub mod event;
+pub mod pricing;
+pub mod simulation;
