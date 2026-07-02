@@ -3,10 +3,10 @@
 # 日志等级: trace, debug, info, warn, error
 log_level = "info"
 
-symbols = ["BTCUSDT", "ETHUSDT"]
+symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "SUIUSDT", "BNBUSDT", "HYPEUSDT", "SPCXUSDT", "TSLAUSDT", "NVDAUSDT", "AAOIUSDT", "MUUSDT", "SKHYNIXUSDT"]
 
 # 只有合约的交易对（使用 /fapi/v1/klines）
-futures_symbols = []
+futures_symbols = ["SPCXUSDT", "TSLAUSDT", "NVDAUSDT", "AAOIUSDT", "MUUSDT", "SKHYNIXUSDT"]
 
 [server]
 host = "0.0.0.0"
@@ -50,3 +50,21 @@ poll_interval_secs = 10
 # Historical data backfill (runs once on startup)
 backfill_enabled = true
 backfill_start_date = "2020-01-01"
+
+# Rate limiting configuration
+# Binance: 20 req/s (1200/min), OKX: 12 req/s (60/5s)
+# 建议保持在限制的 50% 以下，留足安全边际
+[collector.rate_limit]
+# Backfill 每个请求间隔 (ms)
+# 300ms ≈ 3.3 req/s per symbol
+backfill_interval_ms = 300
+
+# 最大并发 backfill 数量
+# 3 并发 × 3.3 req/s ≈ 10 req/s (安全)
+max_concurrent_backfills = 3
+
+# 轮询批次大小
+poll_batch_size = 5
+
+# 轮询批次间延迟 (ms)
+poll_batch_delay_ms = 500
