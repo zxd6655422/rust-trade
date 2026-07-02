@@ -612,3 +612,717 @@ candle1m 数据源:
 | OKX | `version/v1.0/okx_api.html` |
 | 架构设计 | `version/v1.0/ARCHITECTURE.md` |
 | 开发总结 | `version/v1.0/DEVELOPMENT_SUMMARY.md` |
+
+---
+
+## 九、外部项目优秀功能集成计划 (2026-07-02)
+
+### 9.1 集成原则
+
+- ✅ 只集成真正有价值的
+- ✅ 保持简单，不过度设计
+- ✅ 符合桌面应用定位
+- ❌ 砍掉复杂、不必要的功能
+
+### 9.2 可集成功能分析
+
+#### **P0：必须集成（核心价值）**
+
+##### **1. 统一交易所抽象增强**
+
+**来源**：extrema_infra
+
+**价值**：⭐⭐⭐⭐⭐
+
+**复杂度**：低
+
+**为什么需要**：
+- 当前已有 Exchange trait，但可以进一步优化
+- 统一接口，策略可移植性更强
+- 代码已存在，只需小幅重构
+
+**贴合度分析**：
+- ✅ 当前项目已有 Exchange trait 和 Binance/Okx 实现
+- ✅ 需要支持更多交易所时，统一抽象很有价值
+- ✅ 不增加复杂度，只是优化现有架构
+
+**实现方案**：
+```rust
+// 优化现有 exchange 模块
+// trading-common/src/exchange/
+
+pub mod traits;      // 统一 trait（已有）
+pub mod binance;     // Binance 实现（已有）
+pub mod okx;         // Okx 实现（已有）
+
+// 可选：添加更多交易所
+pub mod bybit;       // Bybit 实现（未来）
+
+// 增强统一接口
+#[async_trait]
+pub trait Exchange: Send + Sync {
+    // 现有方法
+    async fn get_ticker(&self, symbol: &str) -> Result<Ticker>;
+    async fn get_klines(&self, symbol: &str, interval: &str, limit: usize) -> Result<Vec<Kline>>;
+    async fn place_order(&self, params: OrderParams) -> Result<Order>;
+    
+    // 新增方法（可选）
+    async fn get_orderbook(&self, symbol: &str, depth: usize) -> Result<OrderBook>;
+    async fn get_trades(&self, symbol: &str, limit: usize) -> Result<Vec<Trade>>;
+}
+```
+
+**预计时间**：1-2 天
+
+**状态**：📋 待优化
+
+---
+
+##### **2. 事件驱动架构增强**
+
+**来源**：extrema_infra
+
+**价值**：⭐⭐⭐⭐⭐
+
+**复杂度**：低
+
+**为什么需要**：
+- 当前已有 broadcast channel，很好
+- 增加事件类型定义，更清晰
+- 解耦系统组件，便于扩展
+
+**贴合度分析**：
+- ✅ 当前项目已使用 tokio::sync::broadcast
+- ✅ 需要更清晰的事件类型定义
+- ✅ 不增加复杂度，只是规范化
+
+**实现方案**：
+```rust
+// 增强现有事件系统
+// trading-common/src/event/
+
+pub mod bus;         // 事件总线（已有）
+pub mod types;       // 事件类型定义（新增）
+
+// 事件类型定义
+#[derive(Clone, Debug)]
+pub enum MarketEvent {
+    Tick(TickData),
+    Kline(KlineData),
+    OrderBook(OrderBook),
+}
+
+#[derive(Clone, Debug)]
+pub enum TradingEvent {
+    OrderPlaced(Order),
+    OrderFilled(Order),
+    OrderCancelled(Order),
+    PositionChanged(Position),
+}
+
+#[derive(Clone, Debug)]
+pub enum StrategyEvent {
+    SignalGenerated(Signal),
+    StrategyStarted(String),
+    StrategyStopped(String),
+}
+
+#[derive(Clone, Debug)]
+pub enum SystemEvent {
+    Error(String),
+    Heartbeat,
+    ConnectionStatus(String),
+}
+
+// 统一事件类型
+#[derive(Clone, Debug)]
+pub enum Event {
+    Market(MarketEvent),
+    Trading(TradingEvent),
+    Strategy(StrategyEvent),
+    System(SystemEvent),
+}
+```
+
+**预计时间**：1 天
+
+**状态**：📋 待优化
+
+---
+
+#### **P1：建议集成（提升功能）**
+
+##### **3. 金融工具定价**
+
+**来源**：RustQuant
+
+**价值**：⭐⭐⭐⭐
+
+**复杂度**：低
+
+**为什么需要**：
+- 期权、债券定价是量化交易核心功能
+- 代码简洁，易于实现
+- 提升策略能力，支持衍生品交易
+
+**贴合度分析**：
+- ✅ 当前项目支持加密货币期权交易
+- ✅ 需要期权定价来评估策略
+- ✅ 实现简单，不影响现有架构
+
+**实现方案**：
+```rust
+// 新增模块
+// trading-common/src/pricing/
+
+pub mod options;     // 期权定价
+pub mod bonds;       // 债券定价（可选）
+pub mod greeks;      // Greeks 计算
+
+// Black-Scholes 期权定价
+pub struct BlackScholes {
+    pub spot: Decimal,           // 标的价格
+    pub strike: Decimal,         // 行权价
+    pub rate: Decimal,           // 无风险利率
+    pub volatility: Decimal,     // 波动率
+    pub time: Decimal,           // 到期时间（年）
+}
+
+impl BlackScholes {
+    pub fn call_price(&self) -> Decimal { ... }
+    pub fn put_price(&self) -> Decimal { ... }
+    
+    // Greeks
+    pub fn delta(&self, option_type: OptionType) -> Decimal { ... }
+    pub fn gamma(&self) -> Decimal { ... }
+    pub fn theta(&self, option_type: OptionType) -> Decimal { ... }
+    pub fn vega(&self) -> Decimal { ... }
+    pub fn rho(&self, option_type: OptionType) -> Decimal { ... }
+}
+
+// 期权类型
+pub enum OptionType {
+    Call,
+    Put,
+}
+
+// 期权合约
+pub struct OptionContract {
+    pub underlying: String,      // 标的资产
+    pub option_type: OptionType, // 期权类型
+    pub strike: Decimal,         // 行权价
+    pub expiry: NaiveDateTime,   // 到期时间
+    pub premium: Decimal,        // 权利金
+}
+```
+
+**预计时间**：2-3 天
+
+**状态**：📋 待开发
+
+---
+
+##### **4. 投资组合增强**
+
+**来源**：RustQuant + QUANTAXIS
+
+**价值**：⭐⭐⭐⭐
+
+**复杂度**：低
+
+**为什么需要**：
+- 当前 portfolio.rs 已有基础
+- 增加风险指标计算
+- 提升风控能力
+
+**贴合度分析**：
+- ✅ 当前项目已有 Portfolio 结构
+- ✅ 需要更完善的风险指标
+- ✅ 在现有代码基础上增强
+
+**实现方案**：
+```rust
+// 增强现有 portfolio 模块
+// trading-common/src/backtest/portfolio.rs
+
+impl Portfolio {
+    // 现有方法
+    pub fn total_value(&self) -> Decimal { ... }
+    pub fn unrealized_pnl(&self) -> Decimal { ... }
+    
+    // 新增风险指标
+    /// 夏普比率
+    pub fn sharpe_ratio(&self, risk_free_rate: Decimal, returns: &[Decimal]) -> Decimal {
+        if returns.is_empty() {
+            return dec!(0);
+        }
+        
+        let mean_return: Decimal = returns.iter().sum::<Decimal>() / returns.len() as u32;
+        let variance: Decimal = returns.iter()
+            .map(|r| (*r - mean_return).powi(2))
+            .sum::<Decimal>() / returns.len() as u32;
+        let std_dev = variance.sqrt();
+        
+        if std_dev == dec!(0) {
+            return dec!(0);
+        }
+        
+        (mean_return - risk_free_rate) / std_dev
+    }
+    
+    /// 最大回撤
+    pub fn max_drawdown(&self, equity_curve: &[Decimal]) -> Decimal {
+        if equity_curve.is_empty() {
+            return dec!(0);
+        }
+        
+        let mut max_value = equity_curve[0];
+        let mut max_dd = dec!(0);
+        
+        for &value in equity_curve.iter() {
+            if value > max_value {
+                max_value = value;
+            }
+            let dd = (max_value - value) / max_value;
+            if dd > max_dd {
+                max_dd = dd;
+            }
+        }
+        
+        max_dd
+    }
+    
+    /// 索提诺比率
+    pub fn sortino_ratio(&self, risk_free_rate: Decimal, returns: &[Decimal]) -> Decimal {
+        if returns.is_empty() {
+            return dec!(0);
+        }
+        
+        let mean_return: Decimal = returns.iter().sum::<Decimal>() / returns.len() as u32;
+        let downside_variance: Decimal = returns.iter()
+            .filter(|&&r| r < risk_free_rate)
+            .map(|r| (*r - risk_free_rate).powi(2))
+            .sum::<Decimal>() / returns.len() as u32;
+        let downside_std = downside_variance.sqrt();
+        
+        if downside_std == dec!(0) {
+            return dec!(0);
+        }
+        
+        (mean_return - risk_free_rate) / downside_std
+    }
+    
+    /// 风险价值 (VaR)
+    pub fn var(&self, confidence: f64, returns: &[Decimal]) -> Decimal {
+        if returns.is_empty() {
+            return dec!(0);
+        }
+        
+        let mut sorted_returns = returns.to_vec();
+        sorted_returns.sort();
+        
+        let index = ((1.0 - confidence) * sorted_returns.len() as f64) as usize;
+        -sorted_returns[index]
+    }
+}
+```
+
+**预计时间**：1-2 天
+
+**状态**：📋 待开发
+
+---
+
+#### **P2：可选集成（锦上添花）**
+
+##### **5. 随机过程生成器**
+
+**来源**：RustQuant
+
+**价值**：⭐⭐⭐
+
+**复杂度**：低
+
+**为什么需要**：
+- 蒙特卡洛模拟
+- 风险价值计算
+- 策略回测增强
+
+**贴合度分析**：
+- ✅ 当前项目需要蒙特卡洛模拟
+- ✅ 可用于期权定价和风险计算
+- ✅ 实现简单，独立模块
+
+**实现方案**：
+```rust
+// 新增模块
+// trading-common/src/simulation/
+
+pub mod brownian;    // 布朗运动
+pub mod monte_carlo; // 蒙特卡洛
+
+// 标准布朗运动
+pub struct BrownianMotion {
+    pub drift: Decimal,      // 漂移率
+    pub diffusion: Decimal,  // 扩散率
+}
+
+impl BrownianMotion {
+    /// 生成布朗运动路径
+    pub fn generate(&self, n: usize, dt: Decimal, seed: u64) -> Vec<Decimal> {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let mut path = Vec::with_capacity(n);
+        let mut current = dec!(0);
+        
+        for _ in 0..n {
+            let noise = Decimal::from_str(&rng.gen::<f64>().to_string()).unwrap();
+            let increment = self.drift * dt + self.diffusion * noise * dt.sqrt();
+            current += increment;
+            path.push(current);
+        }
+        
+        path
+    }
+}
+
+// 几何布朗运动（用于股票/期货价格模拟）
+pub struct GeometricBrownianMotion {
+    pub drift: Decimal,      // 漂移率
+    pub volatility: Decimal, // 波动率
+}
+
+impl GeometricBrownianMotion {
+    /// 生成几何布朗运动路径
+    pub fn generate(&self, initial_price: Decimal, n: usize, dt: Decimal, seed: u64) -> Vec<Decimal> {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let mut path = Vec::with_capacity(n);
+        let mut current = initial_price;
+        
+        for _ in 0..n {
+            let noise = Decimal::from_str(&rng.gen::<f64>().to_string()).unwrap();
+            let increment = (self.drift - self.volatility.powi(2) / dec!(2)) * dt 
+                + self.volatility * noise * dt.sqrt();
+            current *= increment.exp();
+            path.push(current);
+        }
+        
+        path
+    }
+}
+
+// 蒙特卡洛模拟
+pub struct MonteCarloSimulator {
+    pub n_simulations: usize,  // 模拟次数
+    pub n_steps: usize,        // 时间步数
+}
+
+impl MonteCarloSimulator {
+    /// 蒙特卡洛期权定价
+    pub fn price_option(
+        &self,
+        option: &OptionContract,
+        spot: Decimal,
+        rate: Decimal,
+        volatility: Decimal,
+    ) -> Decimal {
+        let dt = option.time / self.n_steps as u32;
+        let mut total_payoff = dec!(0);
+        
+        for i in 0..self.n_simulations {
+            let gbm = GeometricBrownianMotion {
+                drift: rate,
+                volatility,
+            };
+            
+            let path = gbm.generate(spot, self.n_steps, dt, i as u64);
+            let final_price = *path.last().unwrap();
+            
+            let payoff = match option.option_type {
+                OptionType::Call => (final_price - option.strike).max(dec!(0)),
+                OptionType::Put => (option.strike - final_price).max(dec!(0)),
+            };
+            
+            total_payoff += payoff;
+        }
+        
+        let avg_payoff = total_payoff / self.n_simulations as u32;
+        avg_payoff * (-rate * option.time).exp()
+    }
+}
+```
+
+**预计时间**：2-3 天
+
+**状态**：📋 待开发
+
+---
+
+### 9.3 不需要集成的功能（砍掉）
+
+#### ❌ **HList 策略注册**
+**原因**：过于复杂，当前简单 trait 足够
+**替代**：保持现有 Strategy trait
+
+#### ❌ **因子研究框架**
+**原因**：桌面应用不需要，过于复杂
+**替代**：简单因子计算即可
+
+#### ❌ **自动微分（AAD）**
+**原因**：当前策略不需要梯度优化
+**替代**：未来需要时再集成
+
+#### ❌ **ML 集成（Rust ML / Python ML）**
+**原因**：
+- 2核4G 轻量云服务器资源有限
+- ML 模型（XGBoost、LSTM 等）需要 1-4 GB 内存
+- 深度学习模型（Transformer）需要 GPU
+- 大模型完全无法运行
+
+**替代**：简单规则策略 + 技术指标（MA、RSI、MACD）
+
+**资源对比**：
+| 方案 | 内存需求 | CPU 需求 | 2核4G 能否运行 |
+|------|---------|---------|---------------|
+| 简单规则策略 | < 100 MB | < 10% | ✅ 轻松 |
+| 线性回归 | 100-200 MB | 10-20% | ✅ 可以 |
+| XGBoost | 500 MB - 1 GB | 30-50% | ⚠️ 勉强 |
+| LSTM | 1-2 GB | 50-80% | ❌ 不行 |
+| Transformer | 2-4 GB | 60-100% | ❌ 不行 |
+| 大模型 | 8+ GB | 100%+ | ❌ 完全不行 |
+
+#### ❌ **QUIC 协议**
+**原因**：桌面应用，不需要高性能网络
+**替代**：现有 WebSocket 足够
+
+#### ❌ **RabbitMQ**
+**原因**：单机应用，不需要消息队列
+**替代**：内存通道足够
+
+#### ⏸️ **Polars（暂缓，非永久砍掉）**
+**原因**：3GB 数据，先优化数据库索引
+**替代**：数据库索引 + 分页查询
+
+**部署说明**：
+- Polars 是库，不是服务，不能独立部署
+- 如果需要使用，在 rust-trade 中直接集成
+- 2核4G 服务器可以运行，但内存紧张
+- 需要使用懒加载、Parquet 格式优化
+
+**决策流程**：
+```
+当前问题：查询 3GB 数据慢
+    │
+    ├─→ 优化数据库索引（1-2 天）
+    │       │
+    │       ├─→ 解决问题 → 结束
+    │       │
+    │       └─→ 还是慢 → 考虑 Polars
+    │
+    └─→ Polars（3-5 天）
+            │
+            ├─→ 2核4G 能运行 → 集成 Polars
+            │
+            └─→ 2核4G 不能运行 → 考虑升级服务器
+```
+
+---
+
+### 9.4 部署架构说明
+
+#### **当前架构（推荐保持）**
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    轻量级架构（2核4G）                        │
+│                                                             │
+│  ┌──────────────────┐         ┌──────────────────┐         │
+│  │  轻量云服务器      │         │  独立服务器        │         │
+│  │  2核4GB           │         │  Redis            │         │
+│  │                  │         │  PostgreSQL       │         │
+│  │  - rust-trade    │ ◄──────►│                  │         │
+│  │  - 简单策略       │   网络  │  - 数据存储       │         │
+│  │  - 技术指标       │         │  - 缓存           │         │
+│  │  - 规则策略       │         │                  │         │
+│  │                  │         │                  │         │
+│  └──────────────────┘         └──────────────────┘         │
+│                                                             │
+│  资源使用：                                                  │
+│  - 内存：1-2 GB（应用）✅                                    │
+│  - CPU：10-30%（正常）✅                                     │
+│  - 网络：低（只传数据）✅                                     │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+#### **资源使用预估**
+
+| 组件 | 内存需求 | CPU 需求 | 说明 |
+|------|---------|---------|------|
+| 系统占用 | 500 MB - 1 GB | - | Linux 系统 |
+| rust-trade 应用 | 500 MB - 1 GB | 10-30% | 核心应用 |
+| Redis 连接 | 10-50 MB | < 5% | 连接池 |
+| PostgreSQL 连接 | 10-50 MB | < 5% | 连接池 |
+| **总计** | **1-2 GB** | **10-30%** | **适合 2核4G** |
+
+#### **为什么不需要 ML**
+
+```
+✅ 2核4G 资源有限，不适合运行 ML 模型
+✅ 简单规则策略 + 技术指标已足够
+✅ Redis 和 PostgreSQL 在独立服务器上，减轻压力
+✅ 保持架构简单，易于维护和扩展
+```
+
+### 9.5 集成计划总览
+
+#### **功能集成清单**
+
+| 功能 | 来源 | 优先级 | 复杂度 | 预计时间 | 状态 |
+|------|------|--------|--------|----------|------|
+| 统一交易所抽象增强 | extrema_infra | P0 | 低 | 1-2 天 | 📋 待优化 |
+| 事件驱动架构增强 | extrema_infra | P0 | 低 | 1 天 | 📋 待优化 |
+| 金融工具定价 | RustQuant | P1 | 低 | 2-3 天 | 📋 待开发 |
+| 投资组合增强 | RustQuant | P1 | 低 | 1-2 天 | 📋 待开发 |
+| 随机过程生成器 | RustQuant | P2 | 低 | 2-3 天 | 📋 待开发 |
+| Polars 集成 | Polars | P3 | 中 | 3-5 天 | ⏸️ 暂缓 |
+
+**总计**：7-11 天
+
+#### **不集成的功能（砍掉）**
+
+| 功能 | 原因 | 替代方案 |
+|------|------|---------|
+| HList 策略注册 | 过于复杂 | 保持现有 Strategy trait |
+| 因子研究框架 | 桌面应用不需要 | 简单因子计算 |
+| 自动微分（AAD） | 不需要梯度优化 | 未来需要时再集成 |
+| ML 集成 | 2核4G 资源有限 | 简单规则策略 |
+| QUIC 协议 | 不需要高性能网络 | 现有 WebSocket |
+| RabbitMQ | 单机应用 | 内存通道 |
+| Polars | 先优化数据库 | 数据库索引 + 分页查询
+
+---
+
+### 9.6 实施步骤
+
+#### **阶段 1：核心功能（2-3 天）**
+
+**Day 1-2：统一交易所抽象增强 + 事件驱动架构增强**
+```rust
+// 1. 优化 Exchange trait
+// 2. 定义事件类型
+// 3. 测试验证
+```
+
+#### **阶段 2：增强功能（4-6 天）**
+
+**Day 3-5：金融工具定价**
+```rust
+// 1. 实现 Black-Scholes
+// 2. 实现 Greeks 计算
+// 3. 添加期权合约
+```
+
+**Day 6-7：投资组合增强**
+```rust
+// 1. 添加风险指标
+// 2. 增强绩效评估
+```
+
+#### **阶段 3：可选功能（2-3 天）**
+
+**Day 8-10：随机过程生成器**
+```rust
+// 1. 实现布朗运动
+// 2. 实现蒙特卡洛
+```
+
+---
+
+### 9.7 预期效果
+
+#### **功能提升**
+
+| 功能 | 集成前 | 集成后 |
+|------|--------|--------|
+| **交易所支持** | Binance + Okx | 统一抽象，易于扩展 |
+| **事件处理** | 基础 broadcast | 完整事件类型系统 |
+| **定价能力** | 无 | 期权、Greeks |
+| **风控能力** | 基础 | 完整风险指标 |
+| **模拟能力** | 无 | 蒙特卡洛模拟 |
+
+#### **代码质量**
+
+```
+✅ 架构更清晰
+✅ 模块更独立
+✅ 扩展性更强
+✅ 维护性更好
+```
+
+---
+
+### 9.8 项目结构（集成后）
+
+```
+rust-trade/
+├── trading-common/
+│   ├── src/
+│   │   ├── exchange/          # 统一交易所抽象（优化）
+│   │   │   ├── mod.rs
+│   │   │   ├── traits.rs      # 统一 trait
+│   │   │   ├── binance.rs     # Binance 实现
+│   │   │   ├── okx.rs         # Okx 实现
+│   │   │   └── types.rs       # 类型定义
+│   │   │
+│   │   ├── event/             # 事件驱动架构（增强）
+│   │   │   ├── mod.rs
+│   │   │   ├── bus.rs         # 事件总线
+│   │   │   └── types.rs       # 事件类型定义
+│   │   │
+│   │   ├── pricing/           # 金融工具定价（新增）
+│   │   │   ├── mod.rs
+│   │   │   ├── options.rs     # 期权定价
+│   │   │   └── greeks.rs      # Greeks 计算
+│   │   │
+│   │   ├── simulation/        # 模拟工具（新增）
+│   │   │   ├── mod.rs
+│   │   │   ├── brownian.rs    # 布朗运动
+│   │   │   └── monte_carlo.rs # 蒙特卡洛
+│   │   │
+│   │   ├── backtest/          # 回测系统（现有）
+│   │   └── data/              # 数据管理（现有）
+│   └── Cargo.toml
+│
+├── trading-core/              # 核心交易库（现有）
+├── trading-engine/            # 交易引擎（现有）
+└── src-tauri/                 # 桌面应用（现有）
+```
+
+---
+
+### 9.9 总结
+
+#### **集成原则**
+- ✅ 只集成真正有价值的
+- ✅ 保持简单，不过度设计
+- ✅ 符合桌面应用定位
+- ❌ 砍掉复杂、不必要的功能
+
+#### **集成清单**
+1. **P0**：统一交易所抽象增强、事件驱动架构增强
+2. **P1**：金融工具定价、投资组合增强
+3. **P2**：随机过程生成器
+4. **P3**：Polars（暂缓）
+
+#### **预计时间**
+- 核心功能：2-3 天
+- 增强功能：4-6 天
+- 可选功能：2-3 天
+- 总计：8-12 天
+
+#### **最终效果**
+- rust-trade 成为功能完整、架构清晰的中型量化交易平台
+- 保持代码简洁、易于维护
+- 性能良好、资源占用合理
+
+**这个计划既集成了优秀功能，又保持了项目干净整洁！**
