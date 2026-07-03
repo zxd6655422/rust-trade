@@ -2,7 +2,7 @@
 log_level = "info"
 
 # Trading pairs to monitor
-symbols = ["SPCXUSDT", "HYPEUSDT", "TSLAUSDT", "NVDAUSDT", "AAOIUSDT", "MUUSDT", "SKHYNIXUSDT"]
+symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "SUIUSDT", "SPCXUSDT"]
 
 # Futures-only symbols (use /fapi/v1/klines instead of /api/v3/klines)
 futures_symbols = ["SPCXUSDT", "HYPEUSDT", "TSLAUSDT", "NVDAUSDT", "AAOIUSDT", "MUUSDT", "SKHYNIXUSDT"]

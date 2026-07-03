@@ -1,9 +1,9 @@
 const nextConfig = {
-  output: 'export',
+  // output: 'export',  // 开发时注释掉，构建时取消注释
   images: {
     unoptimized: true,
   },
-  assetPrefix: './',
+  // assetPrefix: './',
   trailingSlash: true,
   webpack: (config: { resolve: { fallback: any; }; }) => {
     config.resolve.fallback = {

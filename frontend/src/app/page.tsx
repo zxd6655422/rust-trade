@@ -5,7 +5,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, LineChart, Line } from 'recharts';
+import { XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line } from 'recharts';
 import { Loader2, Database, TrendingUp, Activity, Zap, Clock, BarChart3, Play, Eye, Coins, Layers, Timer, Sparkles } from 'lucide-react';
 import Link from 'next/link';
 
@@ -158,7 +158,12 @@ export default function Home() {
         try {
           const startTime = Date.now();
           
-          const response = await invoke('run_backtest', {
+          const response = await invoke<{
+            return_percentage: string;
+            final_value: string;
+            total_trades: number;
+            data_source?: string;
+          }>('run_backtest', {
             request: {
               strategy_id: strategy.id,
               symbol: symbolInfo.symbol,
@@ -167,10 +172,10 @@ export default function Home() {
               commission_rate: "0.001",
               strategy_params: {}
             }
-          }) as any;
-          
+          });
+
           const processingTime = Date.now() - startTime;
-          
+
           results.push({
             strategy: strategy.name,
             symbol: symbolInfo.symbol,
@@ -464,7 +469,7 @@ export default function Home() {
                         tickFormatter={(value) => `$${value.toFixed(0)}`}
                       />
                       <Tooltip
-                        formatter={(value: any) => [`$${value.toFixed(2)}`, 'Close Price']}
+                        formatter={(value: number) => [`$${value.toFixed(2)}`, 'Close Price']}
                         labelFormatter={(label) => `Time: ${label}`}
                       />
                       <Line

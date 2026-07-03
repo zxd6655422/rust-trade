@@ -6,7 +6,10 @@ use trading_common::{
         engine::{BacktestEngine, BacktestConfig, BacktestResult},
         strategy::create_strategy,
     },
-    data::types::TradeSide,
+    data::{
+        aggregator::KlineAggregator,
+        types::{TradeSide, Timeframe},
+    },
 };
 use rust_decimal::Decimal;
 
@@ -286,33 +289,46 @@ pub async fn get_ohlc_preview(
     state: State<'_, AppState>,
     request: OHLCRequest,
 ) -> Result<Vec<OHLCPreview>, String> {
-    info!("Getting OHLC preview: {} {} count={}", 
+    info!("Getting OHLC preview: {} {} count={}",
           request.symbol, request.timeframe, request.count);
-    
+
     let timeframe = match request.timeframe.as_str() {
-        "1m" => trading_common::data::types::Timeframe::OneMinute,
-        "5m" => trading_common::data::types::Timeframe::FiveMinutes,
-        "15m" => trading_common::data::types::Timeframe::FifteenMinutes,
-        "30m" => trading_common::data::types::Timeframe::ThirtyMinutes,
-        "1h" => trading_common::data::types::Timeframe::OneHour,
-        "4h" => trading_common::data::types::Timeframe::FourHours,
-        "1d" => trading_common::data::types::Timeframe::OneDay,
-        "1w" => trading_common::data::types::Timeframe::OneWeek,
+        "1m" => Timeframe::OneMinute,
+        "5m" => Timeframe::FiveMinutes,
+        "15m" => Timeframe::FifteenMinutes,
+        "30m" => Timeframe::ThirtyMinutes,
+        "1h" => Timeframe::OneHour,
+        "4h" => Timeframe::FourHours,
+        "1d" => Timeframe::OneDay,
+        "1w" => Timeframe::OneWeek,
         _ => return Err(format!("Invalid timeframe: {}", request.timeframe)),
     };
-    
-    let ohlc_data = state.repository
-        .generate_recent_ohlc_for_backtest(&request.symbol, timeframe, request.count)
+
+    // 从 kline_1m 表获取数据，然后聚合
+    let klines_1m = state.repository
+        .get_klines(&request.symbol, 2000)
         .await
         .map_err(|e| {
-            error!("Failed to generate OHLC preview: {}", e);
+            error!("Failed to get klines: {}", e);
             e.to_string()
         })?;
-    
+
+    if klines_1m.is_empty() {
+        return Err("No OHLC data available for the specified parameters".to_string());
+    }
+
+    // 使用聚合器生成指定时间框架的 K 线
+    let mut aggregator = KlineAggregator::new();
+    for kline in klines_1m {
+        aggregator.update(kline);
+    }
+
+    let ohlc_data = aggregator.get_klines(timeframe, request.count as usize);
+
     if ohlc_data.is_empty() {
         return Err("No OHLC data available for the specified parameters".to_string());
     }
-    
+
     let response: Vec<OHLCPreview> = ohlc_data.into_iter().map(|ohlc| OHLCPreview {
         timestamp: ohlc.timestamp.to_rfc3339(),
         symbol: ohlc.symbol,
@@ -323,7 +339,7 @@ pub async fn get_ohlc_preview(
         volume: ohlc.volume.to_string(),
         trade_count: ohlc.trade_count,
     }).collect();
-    
+
     info!("Generated {} OHLC preview records", response.len());
     Ok(response)
 }
@@ -378,13 +394,13 @@ pub async fn get_kline_history(
     request: PriceHistoryRequest,
 ) -> Result<Vec<KlineData>, String> {
     let timeframe = match request.timeframe.as_str() {
-        "1m" => trading_common::data::types::Timeframe::OneMinute,
-        "5m" => trading_common::data::types::Timeframe::FiveMinutes,
-        "15m" => trading_common::data::types::Timeframe::FifteenMinutes,
-        "30m" => trading_common::data::types::Timeframe::ThirtyMinutes,
-        "1h" => trading_common::data::types::Timeframe::OneHour,
-        "4h" => trading_common::data::types::Timeframe::FourHours,
-        "1d" => trading_common::data::types::Timeframe::OneDay,
+        "1m" => Timeframe::OneMinute,
+        "5m" => Timeframe::FiveMinutes,
+        "15m" => Timeframe::FifteenMinutes,
+        "30m" => Timeframe::ThirtyMinutes,
+        "1h" => Timeframe::OneHour,
+        "4h" => Timeframe::FourHours,
+        "1d" => Timeframe::OneDay,
         _ => return Err(format!("Invalid timeframe: {}", request.timeframe)),
     };
 
@@ -392,13 +408,26 @@ pub async fn get_kline_history(
 
     info!("Getting kline history: {} {} limit={}", request.symbol, request.timeframe, count);
 
-    let ohlc_data = state.repository
-        .generate_recent_ohlc_for_backtest(&request.symbol, timeframe, count)
+    // 从 kline_1m 表获取数据，然后聚合
+    let klines_1m = state.repository
+        .get_klines(&request.symbol, 2000)
         .await
         .map_err(|e| {
-            error!("Failed to get kline history: {}", e);
+            error!("Failed to get klines: {}", e);
             e.to_string()
         })?;
+
+    if klines_1m.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // 使用聚合器生成指定时间框架的 K 线
+    let mut aggregator = KlineAggregator::new();
+    for kline in klines_1m {
+        aggregator.update(kline);
+    }
+
+    let ohlc_data = aggregator.get_klines(timeframe, count as usize);
 
     let klines: Vec<KlineData> = ohlc_data.into_iter().map(|ohlc| KlineData {
         timestamp: ohlc.timestamp.to_rfc3339(),
