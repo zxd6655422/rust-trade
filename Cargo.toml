@@ -2,8 +2,10 @@
 members = [
     "trading-common",
     "trading-core",
+    "trading-engine",
+    "archive-klines",
     "src-tauri"
-, "trading-engine"]
+]
 resolver = "2"
 
 [workspace.package]

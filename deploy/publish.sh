@@ -47,6 +47,15 @@ cp "$REPO_DIR/target/release/trading-engine" "$APPS_DIR/trading-engine/trading-e
 chmod +x "$APPS_DIR/trading-engine/trading-engine"
 echo -e "  ${GREEN}trading-engine ✓${NC}"
 
+# 更新 archive_klines 工具
+cp "$REPO_DIR/target/release/archive_klines" "$APPS_DIR/trading-core/archive_klines"
+chmod +x "$APPS_DIR/trading-core/archive_klines"
+echo -e "  ${GREEN}archive_klines ✓${NC}"
+
+# 同步归档脚本
+cp "$REPO_DIR/deploy/archive.sh" "$APPS_DIR/trading-core/archive.sh"
+chmod +x "$APPS_DIR/trading-core/archive.sh"
+
 # 启动服务
 sudo systemctl start trading-collector
 sudo systemctl start trading-engine

@@ -14,7 +14,8 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 # 配置
-APP_DIR="${APP_DIR:-/opt/trading}"
+APPS_DIR="$HOME/apps"
+DATA_DIR="$APPS_DIR/trading-data"
 WATCH_MODE=false
 
 # 解析参数
@@ -69,11 +70,11 @@ check_services() {
 
     # 检查磁盘空间
     echo -e "\n${YELLOW}磁盘空间:${NC}"
-    df -h $APP_DIR | tail -1 | awk '{print "  使用率: "$5" (剩余: "$4")"}'
+    df -h $APPS_DIR | tail -1 | awk '{print "  使用率: "$5" (剩余: "$4")"}'
 
     # 检查日志文件
     echo -e "\n${YELLOW}日志文件:${NC}"
-    for log in $APP_DIR/logs/*.log; do
+    for log in $APPS_DIR/trading-core/logs/*.log $APPS_DIR/trading-engine/logs/*.log; do
         if [ -f "$log" ]; then
             size=$(du -sh "$log" | cut -f1)
             echo -e "  $(basename $log): $size"
@@ -82,9 +83,9 @@ check_services() {
 
     # 检查 Parquet 文件
     echo -e "\n${YELLOW}Parquet 数据:${NC}"
-    if [ -d "$APP_DIR/data/parquet" ]; then
-        total_size=$(du -sh $APP_DIR/data/parquet | cut -f1)
-        total_files=$(find $APP_DIR/data/parquet -name "*.parquet" | wc -l)
+    if [ -d "$DATA_DIR/parquet" ]; then
+        total_size=$(du -sh $DATA_DIR/parquet | cut -f1)
+        total_files=$(find $DATA_DIR/parquet -name "*.parquet" | wc -l)
         echo -e "  总大小: $total_size"
         echo -e "  文件数: $total_files"
     else

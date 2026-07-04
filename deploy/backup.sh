@@ -13,8 +13,9 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 
 # 配置
-APP_DIR="${APP_DIR:-/opt/trading}"
-BACKUP_DIR="${BACKUP_DIR:-/opt/trading/backups}"
+APPS_DIR="$HOME/apps"
+DATA_DIR="$APPS_DIR/trading-data"
+BACKUP_DIR="$DATA_DIR/backups"
 RETENTION_DAYS=30
 
 # 解析参数
@@ -45,25 +46,25 @@ BACKUP_PATH="$BACKUP_DIR/$TIMESTAMP"
 mkdir -p $BACKUP_PATH
 
 # 加载环境变量
-if [ -f "$APP_DIR/.env" ]; then
-    source $APP_DIR/.env
+if [ -f "$APPS_DIR/trading-engine/.env" ]; then
+    source $APPS_DIR/trading-engine/.env
 fi
 
 # 备份配置文件
 if [ "$BACKUP_CONFIG" = true ]; then
     echo -e "\n${YELLOW}备份配置文件...${NC}"
     mkdir -p $BACKUP_PATH/config
-    cp -r $APP_DIR/config/* $BACKUP_PATH/config/
-    cp $APP_DIR/.env $BACKUP_PATH/.env.backup 2>/dev/null || true
+    cp -r $APPS_DIR/trading-core/config/* $BACKUP_PATH/config/trading-core/ 2>/dev/null || true
+    cp -r $APPS_DIR/trading-engine/config/* $BACKUP_PATH/config/trading-engine/ 2>/dev/null || true
     echo -e "${GREEN}✓ 配置文件已备份${NC}"
 fi
 
 # 备份 Parquet 数据
 if [ "$BACKUP_PARQUET" = true ] || [ "$BACKUP_FULL" = true ]; then
     echo -e "\n${YELLOW}备份 Parquet 数据...${NC}"
-    if [ -d "$APP_DIR/data/parquet" ]; then
+    if [ -d "$DATA_DIR/parquet" ]; then
         mkdir -p $BACKUP_PATH/parquet
-        cp -r $APP_DIR/data/parquet/* $BACKUP_PATH/parquet/
+        cp -r $DATA_DIR/parquet/* $BACKUP_PATH/parquet/
         echo -e "${GREEN}✓ Parquet 数据已备份${NC}"
     else
         echo -e "${YELLOW}⚠ 无 Parquet 数据${NC}"

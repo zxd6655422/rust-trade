@@ -48,12 +48,15 @@ echo -e "${GREEN}  编译完成 ✓${NC}"
 # 3. 创建目录结构
 # ============================================================
 echo -e "\n${YELLOW}[3/7] 创建目录结构...${NC}"
+DATA_DIR="$APPS_DIR/trading-data"
 for dir in "$COLLECTOR_DIR" "$COLLECTOR_DIR/config" "$COLLECTOR_DIR/logs" \
-           "$ENGINE_DIR" "$ENGINE_DIR/config" "$ENGINE_DIR/logs"; do
+           "$ENGINE_DIR" "$ENGINE_DIR/config" "$ENGINE_DIR/logs" \
+           "$DATA_DIR/parquet" "$DATA_DIR/logs"; do
     mkdir -p "$dir"
 done
 echo -e "${GREEN}  $COLLECTOR_DIR/${NC}"
-echo -e "${GREEN}  $ENGINE_DIR/   ✓${NC}"
+echo -e "${GREEN}  $ENGINE_DIR/${NC}"
+echo -e "${GREEN}  $DATA_DIR/    ✓${NC}"
 
 # ============================================================
 # 4. 复制二进制文件
@@ -66,6 +69,15 @@ echo -e "  ${GREEN}trading-core ✓${NC}"
 cp "$REPO_DIR/target/release/trading-engine" "$ENGINE_DIR/trading-engine"
 chmod +x "$ENGINE_DIR/trading-engine"
 echo -e "  ${GREEN}trading-engine ✓${NC}"
+
+cp "$REPO_DIR/target/release/archive_klines" "$COLLECTOR_DIR/archive_klines"
+chmod +x "$COLLECTOR_DIR/archive_klines"
+echo -e "  ${GREEN}archive_klines ✓${NC}"
+
+# 复制归档脚本
+cp "$REPO_DIR/deploy/archive.sh" "$COLLECTOR_DIR/archive.sh"
+chmod +x "$COLLECTOR_DIR/archive.sh"
+echo -e "  ${GREEN}archive.sh ✓${NC}"
 
 # ============================================================
 # 5. 复制配置和启动脚本（不覆盖已有配置）

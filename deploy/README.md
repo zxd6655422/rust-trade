@@ -7,17 +7,21 @@
 ~/apps/
 ├── trading-core/              # 数据采集服务
 │   ├── trading-core           # 二进制
+│   ├── archive_klines         # 归档工具
+│   ├── archive.sh             # 归档脚本
 │   ├── config/
 │   │   └── production.toml    # 配置
-│   ├── logs/
-│   └── start.sh               # 手动启动脚本
+│   └── logs/
 │
-└── trading-engine/            # 交易引擎
-    ├── trading-engine         # 二进制
-    ├── config/
-    │   └── engine-production.toml
-    ├── logs/
-    └── start.sh
+├── trading-engine/            # 交易引擎
+│   ├── trading-engine         # 二进制
+│   ├── config/
+│   │   └── engine-production.toml
+│   └── logs/
+│
+└── trading-data/              # 归档数据
+    ├── parquet/               # Parquet 历史数据
+    └── logs/                  # 归档日志
 ```
 
 ## 首次部署
