@@ -15,8 +15,15 @@ NC='\033[0m'
 # 目录配置
 APPS_DIR="$HOME/apps"
 ARCHIVE_BIN="$APPS_DIR/trading-core/archive_klines"
+CONFIG_FILE="$APPS_DIR/trading-core/config/production.toml"
 PARQUET_DIR="$APPS_DIR/trading-data/parquet"
 LOG_DIR="$APPS_DIR/trading-data/logs"
+
+# 从配置文件读取数据库 URL
+if [ -f "$CONFIG_FILE" ]; then
+    DATABASE_URL=$(grep '^url' "$CONFIG_FILE" | grep postgresql | head -1 | sed 's/.*= *"\(.*\)"/\1/')
+fi
+export DATABASE_URL
 
 # 默认参数
 DAYS=7
