@@ -26,7 +26,7 @@ echo -e "${GREEN}  代码更新完成${NC}"
 
 # 2. 编译 release
 echo -e "\n${YELLOW}[2/4] 编译 release (可能需要几分钟)...${NC}"
-cargo build --release
+cargo build --release -p trading-core -p trading-engine -p archive-klines
 echo -e "${GREEN}  编译完成${NC}"
 
 # 3. 停止服务 → 部署 → 启动

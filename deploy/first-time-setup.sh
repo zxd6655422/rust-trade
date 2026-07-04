@@ -41,7 +41,7 @@ echo -e "${GREEN}  Rust $(rustc --version) ✓${NC}"
 # ============================================================
 echo -e "\n${YELLOW}[2/7] 编译 release 版本 (可能需要几分钟)...${NC}"
 cd "$REPO_DIR"
-cargo build --release
+cargo build --release -p trading-core -p trading-engine -p archive-klines
 echo -e "${GREEN}  编译完成 ✓${NC}"
 
 # ============================================================

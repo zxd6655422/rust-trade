@@ -9,6 +9,7 @@
 use chrono::{DateTime, Duration, Utc};
 use clap::Parser;
 use sqlx::postgres::PgPoolOptions;
+use sqlx::Row;
 use std::path::PathBuf;
 use trading_common::data::{
     polars_repository::{PolarsRepository, PolarsRepositoryConfig},
@@ -37,10 +38,10 @@ struct Args {
 
 /// 从数据库获取可用的 symbol 列表
 async fn get_symbols(pool: &sqlx::PgPool) -> Result<Vec<String>, sqlx::Error> {
-    let rows = sqlx::query_scalar!("SELECT DISTINCT symbol FROM kline_1m ORDER BY symbol")
+    let rows = sqlx::query("SELECT DISTINCT symbol FROM kline_1m ORDER BY symbol")
         .fetch_all(pool)
         .await?;
-    Ok(rows)
+    Ok(rows.iter().map(|r| r.get::<String, _>(0)).collect())
 }
 
 /// 从数据库获取指定时间之前的 K线数据
@@ -50,28 +51,28 @@ async fn get_klines_before(
     before: DateTime<Utc>,
     limit: i64,
 ) -> Result<Vec<OHLCData>, sqlx::Error> {
-    let rows = sqlx::query!(
+    let rows = sqlx::query(
         "SELECT timestamp, symbol, open, high, low, close, volume, trade_count \
          FROM kline_1m WHERE symbol = $1 AND timestamp < $2 ORDER BY timestamp ASC LIMIT $3",
-        symbol,
-        before,
-        limit
     )
+    .bind(symbol)
+    .bind(before)
+    .bind(limit)
     .fetch_all(pool)
     .await?;
 
     let klines = rows
         .into_iter()
         .map(|row| OHLCData {
-            timestamp: row.timestamp,
-            symbol: row.symbol,
+            timestamp: row.get("timestamp"),
+            symbol: row.get("symbol"),
             timeframe: Timeframe::OneMinute,
-            open: row.open,
-            high: row.high,
-            low: row.low,
-            close: row.close,
-            volume: row.volume,
-            trade_count: row.trade_count as u64,
+            open: row.get("open"),
+            high: row.get("high"),
+            low: row.get("low"),
+            close: row.get("close"),
+            volume: row.get("volume"),
+            trade_count: row.get::<i32, _>("trade_count") as u64,
         })
         .collect();
 
