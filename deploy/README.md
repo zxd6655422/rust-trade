@@ -3,97 +3,48 @@
 ## 服务器架构
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                      应用服务器 (40GB)                           │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  /opt/trading/                                                   │
-│  ├── bin/                    # 二进制文件                        │
-│  │   ├── trading-core                                            │
-│  │   ├── trading-engine                                          │
-│  │   └── archive_klines.rs                                      │
-│  │                                                               │
-│  ├── config/                 # 配置文件                          │
-│  │   ├── production.toml                                        │
-│  │   └── engine-production.toml                                 │
-│  │                                                               │
-│  ├── data/                   # 数据文件                          │
-│  │   └── parquet/            # Parquet 历史数据                  │
-│  │       ├── BTCUSDT/                                           │
-│  │       ├── ETHUSDT/                                           │
-│  │       └── ...                                                │
-│  │                                                               │
-│  ├── logs/                   # 日志文件                          │
-│  │   ├── trading-collector.log                                  │
-│  │   └── trading-engine.log                                     │
-│  │                                                               │
-│  └── backups/                # 备份文件                          │
-│      └── backup_*.tar.gz                                        │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────────┐
-│                      数据库服务器                                │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  PostgreSQL: 存储实时数据、订单、持仓                            │
-│  Redis: 缓存行情数据                                             │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
+~/rust-trade/                  # 代码仓库
+~/apps/
+├── trading-core/              # 数据采集服务
+│   ├── trading-core           # 二进制
+│   ├── config/
+│   │   └── production.toml    # 配置
+│   ├── logs/
+│   └── start.sh               # 手动启动脚本
+│
+└── trading-engine/            # 交易引擎
+    ├── trading-engine         # 二进制
+    ├── config/
+    │   └── engine-production.toml
+    ├── logs/
+    └── start.sh
 ```
 
-## 快速部署
-
-### 1. 准备工作
+## 首次部署
 
 ```bash
-# 安装 Rust
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-# 安装系统依赖
-sudo apt-get update
-sudo apt-get install -y postgresql-client redis-tools curl wget unzip logrotate
-```
-
-### 2. 部署
-
-```bash
-# 克隆代码
+# 1. 克隆代码
 git clone <repo_url> ~/rust-trade
 cd ~/rust-trade/deploy
-
-# 添加执行权限
 chmod +x *.sh
 
-# 运行部署脚本
-./deploy.sh
-```
+# 2. 执行首次部署脚本
+bash first-time-setup.sh
 
-### 3. 配置
+# 3. 编辑配置（脚本会提示具体路径）
+vim ~/apps/trading-core/config/production.toml
+vim ~/apps/trading-engine/config/engine-production.toml
 
-```bash
-# 编辑环境变量
-vim /opt/trading/.env
-
-# 配置内容:
-DATABASE_URL=postgresql://user:password@db-host:5432/trading_core
-REDIS_URL=redis://redis-host:6379
-BINANCE_API_KEY=your_api_key
-BINANCE_API_SECRET=your_api_secret
-```
-
-### 4. 启动服务
-
-```bash
-# 启动数据采集服务
+# 4. 启动服务
 sudo systemctl start trading-collector
-
-# 启动交易引擎
 sudo systemctl start trading-engine
+```
 
-# 查看状态
-sudo systemctl status trading-collector
-sudo systemctl status trading-engine
+## 日常更新
+
+```bash
+# 一条命令完成：拉取 → 编译 → 停服 → 部署 → 启动
+bash ~/rust-trade/deploy/publish.sh
 ```
 
 ## 日常运维
@@ -220,9 +171,10 @@ find /opt/trading/backups -name "*.tar.gz" -mtime +30 -delete
 
 ## 脚本说明
 
-| 脚本 | 用途 |
-|------|------|
-| `deploy.sh` | 首次部署，编译、配置、安装服务 |
-| `archive.sh` | 数据归档，PostgreSQL → Parquet |
-| `monitor.sh` | 服务监控，检查状态和资源 |
-| `backup.sh` | 数据备份，支持增量备份 |
+| 脚本 | 用途 | 执行频率 |
+|------|------|----------|
+| `first-time-setup.sh` | 首次部署：编译、创建目录、安装 systemd | 只需一次 |
+| `publish.sh` | 日常更新：拉取、编译、替换二进制、重启 | 每次更新 |
+| `monitor.sh` | 服务监控，检查状态和资源 | 按需 |
+| `archive.sh` | 数据归档，PostgreSQL → Parquet | 定期 |
+| `backup.sh` | 数据备份，支持增量备份 | 定期 |

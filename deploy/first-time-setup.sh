@@ -1,0 +1,191 @@
+#!/bin/bash
+# ============================================================
+# 首次部署脚本（只需执行一次）
+# 用法: bash ~/rust-trade/deploy/first-time-setup.sh
+#
+# 完成后日常更新用: bash ~/rust-trade/deploy/publish.sh
+# ============================================================
+
+set -e
+
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+NC='\033[0m'
+
+# 目录配置
+REPO_DIR="$HOME/rust-trade"
+APPS_DIR="$HOME/apps"
+COLLECTOR_DIR="$APPS_DIR/trading-core"
+ENGINE_DIR="$APPS_DIR/trading-engine"
+CURRENT_USER=$(whoami)
+
+echo -e "${GREEN}========================================${NC}"
+echo -e "${GREEN}  Trading System - 首次部署${NC}"
+echo -e "${GREEN}========================================${NC}"
+echo ""
+
+# ============================================================
+# 1. 检查 Rust 环境
+# ============================================================
+echo -e "${YELLOW}[1/7] 检查 Rust 环境...${NC}"
+if ! command -v cargo &> /dev/null; then
+    echo -e "${RED}  未找到 Rust，请先安装:${NC}"
+    echo "  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
+    exit 1
+fi
+echo -e "${GREEN}  Rust $(rustc --version) ✓${NC}"
+
+# ============================================================
+# 2. 编译 release
+# ============================================================
+echo -e "\n${YELLOW}[2/7] 编译 release 版本 (可能需要几分钟)...${NC}"
+cd "$REPO_DIR"
+cargo build --release
+echo -e "${GREEN}  编译完成 ✓${NC}"
+
+# ============================================================
+# 3. 创建目录结构
+# ============================================================
+echo -e "\n${YELLOW}[3/7] 创建目录结构...${NC}"
+for dir in "$COLLECTOR_DIR" "$COLLECTOR_DIR/config" "$COLLECTOR_DIR/logs" \
+           "$ENGINE_DIR" "$ENGINE_DIR/config" "$ENGINE_DIR/logs"; do
+    mkdir -p "$dir"
+done
+echo -e "${GREEN}  $COLLECTOR_DIR/${NC}"
+echo -e "${GREEN}  $ENGINE_DIR/   ✓${NC}"
+
+# ============================================================
+# 4. 复制二进制文件
+# ============================================================
+echo -e "\n${YELLOW}[4/7] 部署二进制文件...${NC}"
+cp "$REPO_DIR/target/release/trading-core" "$COLLECTOR_DIR/trading-core"
+chmod +x "$COLLECTOR_DIR/trading-core"
+echo -e "  ${GREEN}trading-core ✓${NC}"
+
+cp "$REPO_DIR/target/release/trading-engine" "$ENGINE_DIR/trading-engine"
+chmod +x "$ENGINE_DIR/trading-engine"
+echo -e "  ${GREEN}trading-engine ✓${NC}"
+
+# ============================================================
+# 5. 复制配置和启动脚本（不覆盖已有配置）
+# ============================================================
+echo -e "\n${YELLOW}[5/7] 复制配置和启动脚本...${NC}"
+
+# trading-core 配置（从 dist/ 复制，已有则跳过）
+if [ ! -f "$COLLECTOR_DIR/config/production.toml" ]; then
+    cp "$REPO_DIR/dist/trading-core/config/production.toml" "$COLLECTOR_DIR/config/production.toml"
+    echo -e "  ${GREEN}production.toml (新建)${NC}"
+else
+    echo -e "  ${YELLOW}production.toml (已存在，跳过)${NC}"
+fi
+
+# trading-engine 配置
+if [ ! -f "$ENGINE_DIR/config/engine-production.toml" ]; then
+    cp "$REPO_DIR/dist/trading-engine/config/engine-production.toml" "$ENGINE_DIR/config/engine-production.toml"
+    echo -e "  ${GREEN}engine-production.toml (新建)${NC}"
+else
+    echo -e "  ${YELLOW}engine-production.toml (已存在，跳过)${NC}"
+fi
+
+# 复制 start.sh
+cp "$REPO_DIR/dist/trading-core/start.sh" "$COLLECTOR_DIR/start.sh"
+cp "$REPO_DIR/dist/trading-engine/start.sh" "$ENGINE_DIR/start.sh"
+chmod +x "$COLLECTOR_DIR/start.sh" "$ENGINE_DIR/start.sh"
+echo -e "  ${GREEN}start.sh ✓${NC}"
+
+# ============================================================
+# 6. 安装 systemd 服务
+# ============================================================
+echo -e "\n${YELLOW}[6/7] 安装 systemd 服务...${NC}"
+
+# trading-collector.service
+sudo tee /etc/systemd/system/trading-collector.service > /dev/null << EOF
+[Unit]
+Description=Trading Data Collector Service
+After=network.target postgresql.service redis.service
+Wants=postgresql.service redis.service
+
+[Service]
+Type=simple
+User=$CURRENT_USER
+WorkingDirectory=$COLLECTOR_DIR
+ExecStart=$COLLECTOR_DIR/trading-core service
+Restart=always
+RestartSec=10
+
+Environment=RUN_MODE=production
+Environment=RUST_LOG=info
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=trading-collector
+
+[Install]
+WantedBy=multi-user.target
+EOF
+echo -e "  ${GREEN}trading-collector.service ✓${NC}"
+
+# trading-engine.service
+sudo tee /etc/systemd/system/trading-engine.service > /dev/null << EOF
+[Unit]
+Description=Trading Engine Service
+After=network.target trading-collector.service postgresql.service redis.service
+Wants=postgresql.service redis.service
+
+[Service]
+Type=simple
+User=$CURRENT_USER
+WorkingDirectory=$ENGINE_DIR
+ExecStart=$ENGINE_DIR/trading-engine
+Restart=always
+RestartSec=10
+
+EnvironmentFile=$ENGINE_DIR/.env
+Environment=RUST_LOG=info
+Environment=RUN_MODE=production
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=trading-engine
+
+[Install]
+WantedBy=multi-user.target
+EOF
+echo -e "  ${GREEN}trading-engine.service ✓${NC}"
+
+sudo systemctl daemon-reload
+sudo systemctl enable trading-collector trading-engine 2>/dev/null || true
+echo -e "  ${GREEN}systemd 已重载并设置开机自启 ✓${NC}"
+
+# ============================================================
+# 7. 完成
+# ============================================================
+echo -e "\n${GREEN}========================================${NC}"
+echo -e "${GREEN}  首次部署完成！${NC}"
+echo -e "${GREEN}========================================${NC}"
+echo ""
+echo -e "${YELLOW}接下来需要手动完成:${NC}"
+echo ""
+echo "  1. 编辑配置文件:"
+echo "     vim $COLLECTOR_DIR/config/production.toml"
+echo "     vim $ENGINE_DIR/config/engine-production.toml"
+echo ""
+echo "  2. 创建环境变量文件 (trading-engine 需要):"
+echo "     vim $ENGINE_DIR/.env"
+echo "     # 内容: DATABASE_URL=postgresql://... REDIS_URL=redis://..."
+echo ""
+echo "  3. 启动服务:"
+echo "     sudo systemctl start trading-collector"
+echo "     sudo systemctl start trading-engine"
+echo ""
+echo "  4. 查看状态:"
+echo "     sudo systemctl status trading-collector"
+echo "     sudo systemctl status trading-engine"
+echo ""
+echo "  5. 查看日志:"
+echo "     sudo journalctl -u trading-collector -f"
+echo "     sudo journalctl -u trading-engine -f"
+echo ""
+echo "  后续更新代码用: bash ~/rust-trade/deploy/publish.sh"
+echo ""
