@@ -1,0 +1,29 @@
+# trading-core 日志轮转
+/home/ubuntu/apps/trading-core/logs/*.log {
+    daily
+    rotate 30
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0644 ubuntu ubuntu
+    sharedscripts
+    postrotate
+        systemctl reload-or-restart trading-collector.service > /dev/null 2>&1 || true
+    endscript
+}
+
+# trading-engine 日志轮转
+/home/ubuntu/apps/trading-engine/logs/*.log {
+    daily
+    rotate 30
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0644 ubuntu ubuntu
+    sharedscripts
+    postrotate
+        systemctl reload-or-restart trading-engine.service > /dev/null 2>&1 || true
+    endscript
+}

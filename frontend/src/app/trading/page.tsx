@@ -21,9 +21,10 @@ import PerformancePanel from '@/components/trading/PerformancePanel';
 import CommissionStats from '@/components/trading/CommissionStats';
 import StrategyWinRate from '@/components/trading/StrategyWinRate';
 
-// 回测页面内容 (内联导入)
+// 子页面内容 (内联导入)
 import BacktestContent from './BacktestContent';
 import AdvancedBacktestContent from './AdvancedBacktestContent';
+import PaperTradingContent from './PaperTradingContent';
 
 type MarketType = 'spot' | 'futures';
 
@@ -147,14 +148,7 @@ export default function TradingPage() {
 
         {/* ============ Paper Trading Tab ============ */}
         <TabsContent value="paper">
-          <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
-            <FlaskConical className="w-16 h-16 mb-4 opacity-30" />
-            <h2 className="text-xl font-semibold mb-2">{t.trading.paperTrading}</h2>
-            <p className="text-sm max-w-md text-center">
-              {t.trading.paperTradingDesc}
-            </p>
-            <Badge variant="outline" className="mt-4">{t.common.comingSoon}</Badge>
-          </div>
+          <PaperTradingContent />
         </TabsContent>
 
         {/* ============ Advanced Backtest Tab ============ */}

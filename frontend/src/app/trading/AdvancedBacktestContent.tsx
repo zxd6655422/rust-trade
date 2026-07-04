@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import {
-  Loader2, AlertCircle, CheckCircle, Play, TrendingUp,
+  Loader2, AlertCircle, Play, TrendingUp,
   BarChart3, GitBranch, TestTube, Globe, Activity, Shield
 } from 'lucide-react';
 import {

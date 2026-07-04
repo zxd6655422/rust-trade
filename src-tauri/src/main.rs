@@ -86,7 +86,16 @@ fn main() {
             run_walk_forward_test,
             run_out_of_sample_test,
             run_multi_symbol_backtest,
-            analyze_market_state
+            analyze_market_state,
+            // Paper Trading: 模拟交易
+            start_paper_trading,
+            stop_paper_trading,
+            get_paper_status,
+            place_paper_order,
+            get_paper_trades,
+            get_paper_pending_orders,
+            cancel_paper_order,
+            reset_paper_trading
         ])
         .setup(|app| {
             tracing::info!("Tauri setup started");

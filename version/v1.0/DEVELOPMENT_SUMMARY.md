@@ -340,24 +340,124 @@ trading-common/src/data/
 
 ---
 
-## 待完成任务 (Phase 6)
+### Phase 6: 监控桌面应用前端 ✅
 
-### 监控桌面应用前端
-1. ⏳ 实时行情图表界面
-2. ⏳ 持仓监控界面
-3. ⏳ 交易历史界面
-4. ⏳ 统计分析界面
-5. ⏳ 资金曲线图表
+**完成时间**: 2026-07-04
+
+#### 已完成任务
+1. ✅ 实时行情图表界面 (PriceTicker + KlineChart)
+2. ✅ 持仓监控界面 (PositionTable)
+3. ✅ 交易历史界面 (TradeHistory + PnlSummaryCards)
+4. ✅ 统计分析界面 (PerformancePanel + CommissionStats + StrategyWinRate)
+5. ✅ 资金曲线图表 (EquityCurve)
+6. ✅ 回测界面 (BacktestContent + AdvancedBacktestContent 5子标签)
+7. ✅ Dashboard 系统概览 (OHLC预览 + 策略矩阵 + 快速回测)
+8. ✅ i18n 中英文切换 (19个翻译模块)
+9. ✅ WebSocket 实时数据 + Tauri 轮询回退
+10. ✅ Settings 主题切换修复
+11. ✅ 清理重复代码和未使用依赖
+
+#### 产出文件
+```
+frontend/src/
+├── app/
+│   ├── page.tsx                    # Dashboard (827行)
+│   ├── trading/
+│   │   ├── page.tsx                # Trading Center (4标签)
+│   │   ├── BacktestContent.tsx     # 回测标签
+│   │   └── AdvancedBacktestContent.tsx  # 高级回测 (5子标签)
+│   └── settings/
+│       └── page.tsx                # 设置页面
+├── components/
+│   ├── layout/                     # Header + Sidebar
+│   ├── trading/                    # 10个监控组件
+│   └── ui/                         # 8个UI组件 (shadcn)
+├── lib/
+│   ├── config.ts                   # 服务连接配置
+│   ├── useRealtimeData.ts          # WebSocket + 轮询 hook
+│   └── i18n/                       # 中英文翻译
+└── types/
+    ├── trading.ts                  # 交易数据类型
+    └── backtest.ts                 # 回测数据类型
+```
+
+---
+
+### Paper Trading 模拟交易 ✅
+
+**完成时间**: 2026-07-04
+
+#### 已完成任务
+1. ✅ PaperTrader 核心引擎 (trading-common/src/paper/)
+2. ✅ 复用 backtest::Portfolio 进行持仓和PnL跟踪
+3. ✅ 市价单（即时成交+滑点模拟）
+4. ✅ 限价单/止损单/止盈单（挂单+自动触发）
+5. ✅ 8个 Tauri Commands
+6. ✅ Frontend Paper Trading UI（配置/概览/下单/持仓/记录）
+7. ✅ i18n 中英文翻译
+
+#### 产出文件
+```
+trading-common/src/paper/
+├── mod.rs                    # 模块定义
+└── trader.rs                 # PaperTrader 核心 (350行)
+
+src-tauri/src/
+├── commands.rs               # 新增 8 个 Paper Trading 命令
+├── types.rs                  # 新增 Paper Trading 类型
+└── state.rs                  # 添加 SharedPaperTrader 状态
+
+frontend/src/app/trading/
+└── PaperTradingContent.tsx   # Paper Trading UI (400行)
+```
+
+---
+
+### 基础设施完善 + Bybit 适配器 ✅
+
+**完成时间**: 2026-07-04
+
+#### 已完成任务
+1. ✅ systemd 服务配置 (trading-collector + trading-engine)
+2. ✅ 日志轮转配置 (logrotate, 30天轮转+压缩)
+3. ✅ 告警机制 (AlertNotifier: 日志+Webhook, 冷却机制)
+4. ✅ WebSocket 用户数据流 (订单状态实时推送)
+5. ✅ Bybit 交易所适配器 (骨架, V5 API 签名)
+6. ✅ 自动化部署脚本 (setup.sh)
+
+#### 产出文件
+```
+deploy/
+├── systemd/
+│   ├── trading-collector.service    # 数据采集服务
+│   └── trading-engine.service       # 交易引擎服务
+├── logrotate/
+│   └── trading                      # 日志轮转配置
+└── setup.sh                         # 自动化部署脚本
+
+trading-common/src/alert/
+├── mod.rs                           # 告警模块
+└── notifier.rs                      # 告警通知器
+
+trading-engine/src/
+├── engine/trading_loop.rs           # 集成用户数据流
+└── exchange/adapters/
+    └── bybit_adapter.rs             # Bybit 适配器骨架
+```
+
+---
+
+## 待完成任务
 
 ### 部署任务
 1. ✅ 服务器部署 (Ubuntu)
-2. ⏳ systemd 服务配置
-3. ⏳ 日志轮转配置
-4. ⏳ 告警机制
+2. ✅ systemd 服务配置
+3. ✅ 日志轮转配置
+4. ✅ 告警机制
 
 ### 可选功能
-1. ⏳ WebSocket 用户数据流 (订单状态实时更新)
-2. ⏳ 更多交易所 (Bybit, Huobi)
+1. ✅ WebSocket 用户数据流 (订单状态实时更新)
+2. ✅ 更多交易所 (Bybit 适配器骨架)
 3. ⏳ 移动端监控
 
 ---
@@ -415,6 +515,11 @@ RUN_MODE=production cargo run -p trading-engine
 - ✅ 回测引擎 (样本外/滚动前进/多交易对)
 - ✅ 监控桌面应用 API (P8-P10)
 - ✅ 服务器部署 (Ubuntu)
+- ✅ 监控桌面应用前端 (Phase 6)
+- ✅ Paper Trading 模拟交易
+- ✅ 运维基础设施 (systemd + logrotate + 告警)
+- ✅ WebSocket 用户数据流
+- ✅ Bybit 交易所适配器 (骨架)
 
 ### 系统能力
 1. ✅ 连接真实交易所 (Binance + OKX)
@@ -427,11 +532,20 @@ RUN_MODE=production cargo run -p trading-engine
 8. ✅ 多时间框架分析 (1m→4h)
 9. ✅ 历史回测 (抗过拟合)
 10. ✅ 监控 API (实时行情/持仓/统计)
+11. ✅ 监控桌面应用 (10个组件 + i18n)
+12. ✅ Paper Trading 模拟交易 (虚拟资金 + 实时行情)
+13. ✅ 运维基础设施 (systemd + logrotate + 告警)
+14. ✅ WebSocket 用户数据流 (订单实时推送)
+15. ✅ 多交易所支持 (Binance + OKX + Bybit)
 
 ### 下一步
-系统已完成 P0-P10 开发，可以开始：
+系统已完成所有核心功能开发，剩余可选任务：
+1. ⏳ 移动端监控
+2. ⏳ Bybit 适配器完整实现 (当前为骨架)
+3. ⏳ 更多交易所 (Huobi, Gate.io 等)
+系统已完成 P0-P11 开发，可以开始：
 1. ✅ 服务器部署已完成 (Ubuntu)
-2. ⏳ 开发监控桌面应用前端界面
+2. ✅ 监控桌面应用前端已完成
 3. ⏳ 配置 systemd 服务实现开机自启
 4. ⏳ 设置日志轮转和告警机制
 5. ⏳ 实盘验证策略有效性

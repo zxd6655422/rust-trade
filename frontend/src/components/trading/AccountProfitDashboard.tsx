@@ -6,7 +6,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
-  Loader2, TrendingUp, TrendingDown, DollarSign, Percent,
+  Loader2, TrendingUp, DollarSign, Percent,
   RefreshCw, ArrowUpRight, ArrowDownRight, Trophy, Target
 } from 'lucide-react';
 import { PnlSummary, PerformanceMetrics } from '@/types/trading';

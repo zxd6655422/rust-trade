@@ -1,10 +1,13 @@
 use std::sync::Arc;
+use tokio::sync::RwLock;
 use trading_common::data::{repository::TickDataRepository, cache::TieredCache};
+use trading_common::paper::{PaperTrader, PaperTraderConfig, SharedPaperTrader};
 use sqlx::PgPool;
 use std::time::Duration;
 
 pub struct AppState {
     pub repository: Arc<TickDataRepository>,
+    pub paper_trader: SharedPaperTrader,
 }
 
 #[derive(Debug, Clone)]
@@ -34,8 +37,12 @@ impl AppState {
 
         let repository = TickDataRepository::new(pool, cache);
 
+        // 初始化 Paper Trader (默认配置，未启动)
+        let paper_trader = PaperTrader::new(PaperTraderConfig::default());
+
         Ok(Self {
             repository: Arc::new(repository),
+            paper_trader: Arc::new(RwLock::new(paper_trader)),
         })
     }
 }

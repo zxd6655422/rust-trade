@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import { useLanguage } from '@/lib/i18n/context';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -7,6 +8,22 @@ import { Settings as SettingsIcon, Globe, Moon, Sun } from 'lucide-react';
 
 export default function Settings() {
   const { language, setLanguage, t } = useLanguage();
+  const [isDark, setIsDark] = useState(true);
+
+  // 读取 localStorage 中的主题偏好
+  useEffect(() => {
+    const saved = localStorage.getItem('theme');
+    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const dark = saved === 'dark' || (!saved && prefersDark);
+    setIsDark(dark);
+  }, []);
+
+  // 切换主题并同步到 localStorage 和 DOM
+  const setTheme = (dark: boolean) => {
+    setIsDark(dark);
+    document.documentElement.classList.toggle('dark', dark);
+    localStorage.setItem('theme', dark ? 'dark' : 'light');
+  };
 
   return (
     <div className="space-y-6">
@@ -69,13 +86,29 @@ export default function Settings() {
             {t.settingsPage.themeDesc}
           </p>
           <div className="flex gap-3">
-            <button className="flex items-center gap-2 px-4 py-2.5 rounded-lg border-2 border-muted hover:border-muted-foreground/50 text-muted-foreground hover:text-foreground transition-all">
+            <button
+              onClick={() => setTheme(false)}
+              className={`flex items-center gap-2 px-4 py-2.5 rounded-lg border-2 transition-all ${
+                !isDark
+                  ? 'border-primary bg-primary/10 text-primary font-medium'
+                  : 'border-muted hover:border-muted-foreground/50 text-muted-foreground hover:text-foreground'
+              }`}
+            >
               <Sun className="w-4 h-4" />
               {t.settings.lightMode}
+              {!isDark && <Badge variant="default" className="ml-2 text-xs">当前</Badge>}
             </button>
-            <button className="flex items-center gap-2 px-4 py-2.5 rounded-lg border-2 border-primary bg-primary/10 text-primary font-medium">
+            <button
+              onClick={() => setTheme(true)}
+              className={`flex items-center gap-2 px-4 py-2.5 rounded-lg border-2 transition-all ${
+                isDark
+                  ? 'border-primary bg-primary/10 text-primary font-medium'
+                  : 'border-muted hover:border-muted-foreground/50 text-muted-foreground hover:text-foreground'
+              }`}
+            >
               <Moon className="w-4 h-4" />
               {t.settings.darkMode}
+              {isDark && <Badge variant="default" className="ml-2 text-xs">当前</Badge>}
             </button>
           </div>
         </CardContent>

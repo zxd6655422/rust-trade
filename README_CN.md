@@ -369,6 +369,48 @@ npm run build
 
 - **交易核心**：详见 `trading-core/README.md` 获取后端文档
 - **桌面应用**：详见 `src-tauri/README.md` 获取 Tauri 应用详情
+- **服务器部署**：详见 `docs/DEPLOYMENT.md` 获取部署指南
+
+---
+
+## 🚢 服务器部署
+
+### 首次部署
+
+```bash
+# 1. 克隆代码到服务器
+git clone <repo_url> ~/rust-trade
+cd ~/rust-trade
+
+# 2. 安装 systemd 服务 (推荐)
+sudo bash deploy/install-systemd.sh
+
+# 3. 配置环境变量
+nano ~/apps/trading-engine/.env
+
+# 4. 启动服务
+sudo systemctl start trading-collector
+sudo systemctl start trading-engine
+sudo systemctl enable trading-collector trading-engine
+```
+
+### 日常发布
+
+```bash
+cd ~/rust-trade
+bash deploy/publish.sh
+```
+
+自动完成：拉取代码 → 编译 → 停止服务 → 部署新版本 → 启动服务
+
+### 查看日志
+
+```bash
+sudo journalctl -u trading-collector -f
+sudo journalctl -u trading-engine -f
+```
+
+> 详细文档见 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)
 
 ## 🤝 贡献指南
 

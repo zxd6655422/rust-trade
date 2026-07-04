@@ -1121,3 +1121,242 @@ pub async fn analyze_market_state(
         summary: report.summary,
     })
 }
+// ===== Paper Trading Commands =====
+
+/// 启动模拟交易
+#[tauri::command]
+pub async fn start_paper_trading(
+    state: State<'_, AppState>,
+    request: Option<PaperStartRequest>,
+) -> Result<PaperStatusResponse, String> {
+    info!("Starting paper trading");
+
+    let mut trader = state.paper_trader.write().await;
+
+    // 如果已在运行，先停止
+    if trader.is_running() {
+        trader.stop();
+    }
+
+    // 如果提供了新配置，重新创建 trader
+    if let Some(req) = request {
+        let config = trading_common::paper::PaperTraderConfig {
+            initial_capital: req.initial_capital
+                .and_then(|s| Decimal::from_str(&s).ok())
+                .unwrap_or(Decimal::from(10000)),
+            commission_rate: req.commission_rate
+                .and_then(|s| Decimal::from_str(&s).ok())
+                .unwrap_or(Decimal::from_str("0.001").unwrap()),
+            slippage_pct: req.slippage_pct
+                .and_then(|s| Decimal::from_str(&s).ok())
+                .unwrap_or(Decimal::from_str("0.0001").unwrap()),
+            symbols: req.symbols.unwrap_or_else(|| vec!["BTCUSDT".to_string(), "ETHUSDT".to_string()]),
+        };
+        *trader = trading_common::paper::PaperTrader::new(config);
+    }
+
+    // 尝试从数据库获取最新价格作为初始价格
+    let symbols = trader.get_config().symbols.clone();
+    for symbol in &symbols {
+        if let Ok(Some(tick)) = state.repository.get_latest_tick(symbol).await {
+            trader.update_price(symbol, tick.price);
+        }
+    }
+
+    trader.start();
+    let status = trader.get_status();
+
+    Ok(convert_paper_status(status))
+}
+
+/// 停止模拟交易
+#[tauri::command]
+pub async fn stop_paper_trading(
+    state: State<'_, AppState>,
+) -> Result<PaperStatusResponse, String> {
+    info!("Stopping paper trading");
+
+    let mut trader = state.paper_trader.write().await;
+    trader.stop();
+    let status = trader.get_status();
+
+    Ok(convert_paper_status(status))
+}
+
+/// 获取模拟交易状态
+#[tauri::command]
+pub async fn get_paper_status(
+    state: State<'_, AppState>,
+) -> Result<PaperStatusResponse, String> {
+    let mut trader = state.paper_trader.write().await;
+
+    // 更新最新价格
+    let symbols = trader.get_config().symbols.clone();
+    for symbol in &symbols {
+        if let Ok(Some(tick)) = state.repository.get_latest_tick(symbol).await {
+            trader.update_price(symbol, tick.price);
+        }
+    }
+
+    let status = trader.get_status();
+    Ok(convert_paper_status(status))
+}
+
+/// 模拟交易手动下单
+#[tauri::command]
+pub async fn place_paper_order(
+    state: State<'_, AppState>,
+    request: PaperOrderRequest,
+) -> Result<PaperTradeResponse, String> {
+    info!("Paper order: {} {} {}", request.side, request.quantity, request.symbol);
+
+    let mut trader = state.paper_trader.write().await;
+
+    // 更新价格
+    if let Ok(Some(tick)) = state.repository.get_latest_tick(&request.symbol).await {
+        trader.update_price(&request.symbol, tick.price);
+    }
+
+    let quantity = Decimal::from_str(&request.quantity)
+        .map_err(|e| format!("Invalid quantity: {}", e))?;
+
+    let side = match request.side.to_lowercase().as_str() {
+        "buy" => TradeSide::Buy,
+        "sell" => TradeSide::Sell,
+        _ => return Err("Invalid side: must be 'buy' or 'sell'".to_string()),
+    };
+
+    let order = match request.order_type.as_deref().unwrap_or("market") {
+        "market" => trader.place_market_order(&request.symbol, side, quantity),
+        "limit" => {
+            let price = request.price
+                .and_then(|s| Decimal::from_str(&s).ok())
+                .ok_or("Limit order requires price")?;
+            trader.place_limit_order(&request.symbol, side, quantity, price)
+        }
+        "stop_loss" => {
+            let price = request.price
+                .and_then(|s| Decimal::from_str(&s).ok())
+                .ok_or("Stop loss order requires price")?;
+            trader.place_stop_loss_order(&request.symbol, side, quantity, price)
+        }
+        "take_profit" => {
+            let price = request.price
+                .and_then(|s| Decimal::from_str(&s).ok())
+                .ok_or("Take profit order requires price")?;
+            trader.place_take_profit_order(&request.symbol, side, quantity, price)
+        }
+        _ => return Err("Invalid order type: market, limit, stop_loss, take_profit".to_string()),
+    };
+
+    order.map(convert_paper_trade)
+}
+
+/// 获取模拟交易记录
+#[tauri::command]
+pub async fn get_paper_trades(
+    state: State<'_, AppState>,
+) -> Result<Vec<PaperTradeResponse>, String> {
+    let trader = state.paper_trader.read().await;
+    let trades = trader.get_trades();
+
+    Ok(trades.into_iter().map(convert_paper_trade).collect())
+}
+
+/// 获取模拟交易挂单
+#[tauri::command]
+pub async fn get_paper_pending_orders(
+    state: State<'_, AppState>,
+) -> Result<Vec<PaperTradeResponse>, String> {
+    let trader = state.paper_trader.read().await;
+    let orders = trader.get_pending_orders();
+
+    Ok(orders.into_iter().map(convert_paper_trade).collect())
+}
+
+/// 取消模拟交易挂单
+#[tauri::command]
+pub async fn cancel_paper_order(
+    state: State<'_, AppState>,
+    order_id: String,
+) -> Result<(), String> {
+    let mut trader = state.paper_trader.write().await;
+    trader.cancel_order(&order_id)
+}
+
+/// 重置模拟交易
+#[tauri::command]
+pub async fn reset_paper_trading(
+    state: State<'_, AppState>,
+) -> Result<PaperStatusResponse, String> {
+    info!("Resetting paper trading");
+
+    let mut trader = state.paper_trader.write().await;
+    trader.reset();
+    let status = trader.get_status();
+
+    Ok(convert_paper_status(status))
+}
+
+// ===== Paper Trading 辅助函数 =====
+
+fn convert_paper_status(status: trading_common::paper::PaperTraderStatus) -> PaperStatusResponse {
+    PaperStatusResponse {
+        running: status.running,
+        initial_capital: status.initial_capital.to_string(),
+        cash: status.cash.to_string(),
+        total_value: status.total_value.to_string(),
+        total_pnl: status.total_pnl.to_string(),
+        total_pnl_pct: format!("{:.2}", status.total_pnl_pct),
+        realized_pnl: status.realized_pnl.to_string(),
+        unrealized_pnl: status.unrealized_pnl.to_string(),
+        total_commission: status.total_commission.to_string(),
+        total_trades: status.total_trades,
+        win_rate: format!("{:.1}", status.win_rate),
+        positions: status.positions.into_iter().map(|p| PaperPositionResponse {
+            symbol: p.symbol,
+            side: p.side,
+            quantity: p.quantity.to_string(),
+            avg_price: p.avg_price.to_string(),
+            current_price: p.current_price.to_string(),
+            market_value: p.market_value.to_string(),
+            unrealized_pnl: p.unrealized_pnl.to_string(),
+            unrealized_pnl_pct: format!("{:.2}", p.unrealized_pnl_pct),
+        }).collect(),
+        pending_orders: status.pending_orders,
+        latest_prices: status.latest_prices.into_iter()
+            .map(|(k, v)| (k, v.to_string()))
+            .collect(),
+        started_at: status.started_at.map(|t| t.to_rfc3339()),
+    }
+}
+
+fn convert_paper_trade(order: trading_common::paper::PaperOrder) -> PaperTradeResponse {
+    PaperTradeResponse {
+        order_id: order.order_id,
+        symbol: order.symbol,
+        side: match order.side {
+            TradeSide::Buy => "Buy".to_string(),
+            TradeSide::Sell => "Sell".to_string(),
+        },
+        order_type: match order.order_type {
+            trading_common::paper::PaperOrderType::Market => "Market".to_string(),
+            trading_common::paper::PaperOrderType::Limit => "Limit".to_string(),
+            trading_common::paper::PaperOrderType::StopLoss => "StopLoss".to_string(),
+            trading_common::paper::PaperOrderType::TakeProfit => "TakeProfit".to_string(),
+        },
+        quantity: order.quantity.to_string(),
+        price: order.price.map(|p| p.to_string()),
+        status: match order.status {
+            trading_common::paper::PaperOrderStatus::Pending => "Pending".to_string(),
+            trading_common::paper::PaperOrderStatus::Filled => "Filled".to_string(),
+            trading_common::paper::PaperOrderStatus::Canceled => "Canceled".to_string(),
+            trading_common::paper::PaperOrderStatus::Rejected => "Rejected".to_string(),
+        },
+        filled_price: order.filled_price.map(|p| p.to_string()),
+        commission: order.commission.to_string(),
+        created_at: order.created_at.to_rfc3339(),
+        filled_at: order.filled_at.map(|t| t.to_rfc3339()),
+        reject_reason: order.reject_reason,
+    }
+}

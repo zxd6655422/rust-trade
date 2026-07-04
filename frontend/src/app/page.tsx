@@ -306,7 +306,7 @@ export default function Home() {
             )}
             {t.dashboard.quickTest}
           </Button>
-          <Link href="/backtest">
+          <Link href="/trading">
             <Button className="flex items-center gap-2">
               <Play className="w-4 h-4" />
               {t.dashboard.fullBacktest}
@@ -407,7 +407,7 @@ export default function Home() {
           {/* OHLC Controls */}
           <div className="flex flex-wrap gap-3 mt-3">
             <div className="flex items-center gap-2">
-              <label className="text-sm font-medium">{t.dashboard.selectSymbol}:
+              <label className="text-sm font-medium">{t.dashboard.selectSymbol}:</label>
               <select
                 value={selectedSymbol}
                 onChange={(e) => setSelectedSymbol(e.target.value)}
@@ -422,9 +422,9 @@ export default function Home() {
                 ))}
               </select>
             </div>
-            
+
             <div className="flex items-center gap-2">
-              <label className="text-sm font-medium">{t.dashboard.selectTimeframe}:
+              <label className="text-sm font-medium">{t.dashboard.selectTimeframe}:</label>
               <select
                 value={selectedTimeframe}
                 onChange={(e) => setSelectedTimeframe(e.target.value)}
@@ -630,7 +630,7 @@ export default function Home() {
           </div>
           
           <div className="mt-6 pt-4 border-t">
-            <Link href="/backtest">
+            <Link href="/trading">
               <Button className="w-full">
                 {t.dashboard.configureAdvancedBacktest}
               </Button>

@@ -119,6 +119,9 @@ impl TradingLoop {
             }
         });
 
+        // 启动用户数据流 WebSocket (订单状态实时推送)
+        self.start_user_data_stream().await;
+
         // 主处理循环
         let mut poll_interval = interval(Duration::from_millis(self.poll_interval_ms));
         let mut reconciliation_interval = interval(Duration::from_secs(3600)); // 每小时对账一次
@@ -277,6 +280,36 @@ impl TradingLoop {
                         break;
                     }
                 }
+            }
+        });
+    }
+
+    /// 启动用户数据流 WebSocket (订单状态实时推送)
+    async fn start_user_data_stream(&self) {
+        let exchange = self.exchange.clone();
+        let order_manager = self.order_manager.clone();
+        let shutdown_rx = self.shutdown_tx.subscribe();
+
+        tokio::spawn(async move {
+            info!("Starting user data stream WebSocket");
+            if let Err(e) = exchange
+                .subscribe_user_data(
+                    Box::new(move |update| {
+                        let order_manager = order_manager.clone();
+                        tokio::spawn(async move {
+                            info!(
+                                "Order update received: {} {} {:?} {:?}",
+                                update.symbol, update.order_id, update.status, update.side
+                            );
+                            // 更新订单管理器中的订单状态
+                            order_manager.handle_order_update(update).await;
+                        });
+                    }),
+                    shutdown_rx,
+                )
+                .await
+            {
+                error!("User data stream subscription failed: {}", e);
             }
         });
     }

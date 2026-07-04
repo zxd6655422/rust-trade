@@ -427,3 +427,83 @@ pub struct MonthlyCommission {
     pub total_commission: String,
     pub trade_count: i64,
 }
+
+// ===== Paper Trading 类型 =====
+
+/// Paper Trading 启动配置
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PaperStartRequest {
+    /// 初始资金 (USDT)
+    pub initial_capital: Option<String>,
+    /// 手续费率 (如 "0.001" = 0.1%)
+    pub commission_rate: Option<String>,
+    /// 滑点百分比 (如 "0.0001" = 0.01%)
+    pub slippage_pct: Option<String>,
+    /// 监控的交易对
+    pub symbols: Option<Vec<String>>,
+}
+
+/// Paper Trading 手动下单请求
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PaperOrderRequest {
+    /// 交易对
+    pub symbol: String,
+    /// 方向: "buy" / "sell"
+    pub side: String,
+    /// 数量
+    pub quantity: String,
+    /// 订单类型: "market" / "limit" / "stop_loss" / "take_profit"
+    pub order_type: Option<String>,
+    /// 价格 (限价/止损/止盈单)
+    pub price: Option<String>,
+}
+
+/// Paper Trading 状态响应
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PaperStatusResponse {
+    pub running: bool,
+    pub initial_capital: String,
+    pub cash: String,
+    pub total_value: String,
+    pub total_pnl: String,
+    pub total_pnl_pct: String,
+    pub realized_pnl: String,
+    pub unrealized_pnl: String,
+    pub total_commission: String,
+    pub total_trades: usize,
+    pub win_rate: String,
+    pub positions: Vec<PaperPositionResponse>,
+    pub pending_orders: usize,
+    pub latest_prices: std::collections::HashMap<String, String>,
+    pub started_at: Option<String>,
+}
+
+/// Paper Trading 持仓响应
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PaperPositionResponse {
+    pub symbol: String,
+    pub side: String,
+    pub quantity: String,
+    pub avg_price: String,
+    pub current_price: String,
+    pub market_value: String,
+    pub unrealized_pnl: String,
+    pub unrealized_pnl_pct: String,
+}
+
+/// Paper Trading 交易记录响应
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PaperTradeResponse {
+    pub order_id: String,
+    pub symbol: String,
+    pub side: String,
+    pub order_type: String,
+    pub quantity: String,
+    pub price: Option<String>,
+    pub status: String,
+    pub filled_price: Option<String>,
+    pub commission: String,
+    pub created_at: String,
+    pub filled_at: Option<String>,
+    pub reject_reason: Option<String>,
+}

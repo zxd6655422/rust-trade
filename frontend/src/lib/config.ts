@@ -79,6 +79,7 @@ export function getApiBaseUrl(config: TradingCoreConfig): string {
 /**
  * 深度合并对象
  */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function deepMerge(target: any, source: any): any {
   const result = { ...target };
   for (const key of Object.keys(source)) {

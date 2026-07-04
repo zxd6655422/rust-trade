@@ -1,5 +1,164 @@
 # Changelog
 
+## [2026-07-04] 基础设施完善 + Bybit 适配器
+
+### 已完成
+
+| 模块 | 状态 | 说明 |
+|------|------|------|
+| systemd 服务 | ✅ | trading-collector.service + trading-engine.service |
+| 日志轮转 | ✅ | logrotate 配置，30天轮转+压缩 |
+| 告警机制 | ✅ | AlertNotifier 支持日志+Webhook，含冷却机制 |
+| WebSocket 用户数据流 | ✅ | 订单状态实时推送，替代轮询 |
+| Bybit 适配器 | ✅ | 骨架实现，支持 V5 API 签名 |
+| 部署脚本 | ✅ | setup.sh 自动化部署 |
+
+### 文件改动
+
+| 文件 | 改动 |
+|------|------|
+| `deploy/systemd/trading-collector.service` | 新建 数据采集服务配置 |
+| `deploy/systemd/trading-engine.service` | 新建 交易引擎服务配置 |
+| `deploy/logrotate/trading` | 新建 日志轮转配置 |
+| `deploy/setup.sh` | 新建 自动化部署脚本 |
+| `trading-common/src/alert/mod.rs` | 新建 告警模块 |
+| `trading-common/src/alert/notifier.rs` | 新建 告警通知器 |
+| `trading-common/src/lib.rs` | 添加 alert 模块导出 |
+| `trading-common/Cargo.toml` | 添加 reqwest 依赖 |
+| `trading-engine/src/engine/trading_loop.rs` | 集成用户数据流 |
+| `trading-engine/src/exchange/adapters/bybit_adapter.rs` | 新建 Bybit 适配器骨架 |
+| `trading-engine/src/exchange/adapters/mod.rs` | 导出 BybitAdapter |
+
+### 告警类型
+
+| 类型 | 级别 | 触发场景 |
+|------|------|----------|
+| TradeFailure | Warning | 交易执行失败 |
+| RiskControl | Warning | 风控规则触发 |
+| ServiceError | Critical | 服务异常 |
+| ConnectionLost | Warning | 连接断开 |
+| BlackSwan | Critical | 黑天鹅检测 |
+| CircuitBreaker | Critical | 熔断触发 |
+
+### 部署命令
+
+```bash
+# 在服务器上执行
+sudo bash deploy/setup.sh
+
+# 启动服务
+sudo systemctl start trading-collector
+sudo systemctl start trading-engine
+
+# 设置开机自启
+sudo systemctl enable trading-collector
+sudo systemctl enable trading-engine
+
+# 查看日志
+sudo journalctl -u trading-collector -f
+sudo journalctl -u trading-engine -f
+```
+
+---
+
+## [2026-07-04] Paper Trading 模拟交易
+
+### 已完成
+
+| 模块 | 状态 | 说明 |
+|------|------|------|
+| PaperTrader (Rust) | ✅ | 虚拟交易引擎，复用 Portfolio，支持市价/限价/止损/止盈单 |
+| Tauri Commands | ✅ | 8个命令: start/stop/status/order/trades/pending/cancel/reset |
+| Frontend UI | ✅ | 配置面板、状态概览、手动下单、持仓列表、交易记录 |
+| i18n | ✅ | 中英文翻译 (paperTrading 模块) |
+
+### 技术实现
+
+**trading-common/src/paper/**
+- `PaperTrader` - 模拟交易器核心
+- 复用 `backtest::Portfolio` 进行持仓和PnL跟踪
+- 支持市价单（即时成交+滑点）、限价单、止损单、止盈单
+- 挂单在价格更新时自动检查触发
+- `SharedPaperTrader = Arc<RwLock<PaperTrader>>` 支持 Tauri 多线程访问
+
+**src-tauri/src/commands.rs**
+- `start_paper_trading` - 启动（可配置初始资金、手续费率、滑点、交易对）
+- `stop_paper_trading` / `reset_paper_trading` - 停止/重置
+- `get_paper_status` - 获取状态快照（余额、持仓、PnL、胜率）
+- `place_paper_order` - 手动下单（市价/限价/止损/止盈）
+- `get_paper_trades` / `get_paper_pending_orders` - 查询记录
+- `cancel_paper_order` - 取消挂单
+
+**frontend/src/app/trading/PaperTradingContent.tsx**
+- 配置面板（初始资金、交易对选择）
+- 状态概览（总资产、PnL、胜率、手续费）
+- 手动下单面板（买卖方向、订单类型、数量、价格）
+- 持仓列表（实时更新）
+- 交易记录表格（分页显示）
+- 5秒自动刷新
+
+### 文件改动
+
+| 文件 | 改动 |
+|------|------|
+| `trading-common/src/paper/mod.rs` | 新建 模块定义 |
+| `trading-common/src/paper/trader.rs` | 新建 PaperTrader 核心 |
+| `trading-common/src/lib.rs` | 添加 paper 模块导出 |
+| `src-tauri/src/state.rs` | 添加 SharedPaperTrader 状态 |
+| `src-tauri/src/commands.rs` | 新增 8 个 Tauri 命令 |
+| `src-tauri/src/types.rs` | 新增 Paper Trading 类型 |
+| `src-tauri/src/main.rs` | 注册新命令 |
+| `frontend/src/app/trading/page.tsx` | 替换占位符为 PaperTradingContent |
+| `frontend/src/app/trading/PaperTradingContent.tsx` | 新建 Paper Trading UI |
+| `frontend/src/lib/i18n/translations/en.ts` | 添加 paperTrading 翻译 |
+| `frontend/src/lib/i18n/translations/zh.ts` | 添加 paperTrading 翻译 |
+
+---
+
+## [2026-07-04] Phase 6: 监控桌面应用前端
+
+### 已完成
+
+| 模块 | 状态 | 说明 |
+|------|------|------|
+| Dashboard | ✅ | 系统概览、OHLC预览、策略矩阵、快速回测 (827行) |
+| Trading Center | ✅ | 4标签: 实时交易、回测、模拟(占位)、高级回测 |
+| 实时行情组件 | ✅ | PriceTicker (WebSocket+轮询回退) + KlineChart |
+| 持仓/交易组件 | ✅ | PositionTable + TradeHistory + PnlSummaryCards |
+| 统计分析组件 | ✅ | PerformancePanel + CommissionStats + StrategyWinRate |
+| 资金曲线 | ✅ | EquityCurve (recharts AreaChart) |
+| 高级回测 | ✅ | 5子标签: 多TF/滚动前进/样本外/多交易对/市场状态 |
+| i18n | ✅ | 中英文切换，19个翻译模块，localStorage持久化 |
+| 主题切换 | ✅ | Dark/Light模式，Settings页面 + Header双入口 |
+| 代码清理 | ✅ | 移除重复backtest页面、移除未使用lightweight-charts依赖 |
+
+### 文件改动
+
+| 文件 | 改动 |
+|------|------|
+| `frontend/src/app/settings/page.tsx` | 修复主题切换按钮功能 |
+| `frontend/src/app/backtest/page.tsx` | 删除（合并到Trading Center） |
+| `frontend/src/app/page.tsx` | 更新链接指向 /trading |
+| `frontend/package.json` | 移除未使用的 lightweight-charts |
+| `frontend/src/app/page.tsx` | 修复未闭合的 label 标签 |
+| `frontend/src/lib/i18n/translations/en.ts` | 补充 advancedBacktest.totalTrades 翻译 |
+| `frontend/src/lib/i18n/translations/zh.ts` | 补充 advancedBacktest.totalTrades 翻译 |
+| `frontend/src/lib/config.ts` | 修复 ESLint any 类型警告 |
+| `frontend/src/app/trading/AdvancedBacktestContent.tsx` | 移除未使用的 CheckCircle 导入 |
+| `frontend/src/components/trading/AccountProfitDashboard.tsx` | 移除未使用的 TrendingDown 导入 |
+| `version/v1.0/DEVELOPMENT_SUMMARY.md` | 更新Phase 6状态 |
+| `version/v1.0/PHASE6_COMPLETE.md` | 新建完成报告 |
+
+### 技术架构
+
+- Next.js 15 App Router + React 18 + TypeScript
+- Tauri 2 IPC (21个commands)
+- Tailwind CSS + shadcn/ui组件
+- recharts 图表库
+- WebSocket实时数据 + Tauri轮询回退
+
+---
+
 ## 开发进度总结 (2026-07-01)
 
 ### ✅ 已完成

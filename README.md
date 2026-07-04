@@ -331,6 +331,48 @@ npm run build
 
 - **Trading Core**: See `trading-core/README.md` for detailed backend documentation
 - **Desktop App**: See `src-tauri/README.md` for Tauri application details
+- **Server Deployment**: See `docs/DEPLOYMENT.md` for deployment guide
+
+---
+
+## 🚢 Server Deployment
+
+### First Time Setup
+
+```bash
+# 1. Clone code on server
+git clone <repo_url> ~/rust-trade
+cd ~/rust-trade
+
+# 2. Install systemd services (recommended)
+sudo bash deploy/install-systemd.sh
+
+# 3. Configure environment variables
+nano ~/apps/trading-engine/.env
+
+# 4. Start services
+sudo systemctl start trading-collector
+sudo systemctl start trading-engine
+sudo systemctl enable trading-collector trading-engine
+```
+
+### Daily Release
+
+```bash
+cd ~/rust-trade
+bash deploy/publish.sh
+```
+
+Automatically: pull code → build → stop services → deploy → start services
+
+### View Logs
+
+```bash
+sudo journalctl -u trading-collector -f
+sudo journalctl -u trading-engine -f
+```
+
+> See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for detailed documentation
 
 ## 🤝 Contributing
 
