@@ -12,6 +12,7 @@ import {
   BacktestRequest,
   BacktestResponse,
 } from '@/types/backtest';
+import { useLanguage } from '@/lib/i18n/context';
 
 interface BacktestParams {
   strategy_id: string;
@@ -25,6 +26,7 @@ interface BacktestParams {
 }
 
 export default function BacktestPage() {
+  const { t } = useLanguage();
   // State for data info
   const [dataInfo, setDataInfo] = useState<DataInfoResponse | null>(null);
   const [strategies, setStrategies] = useState<StrategyInfo[]>([]);
@@ -155,14 +157,14 @@ export default function BacktestPage() {
     return (
       <div className="flex items-center justify-center h-screen">
         <Loader2 className="w-8 h-8 animate-spin" />
-        <span className="ml-2">Loading trading data...</span>
+        <span className="ml-2">{t.backtestContent.loading}</span>
       </div>
     );
   }
 
   return (
     <div className="p-6 space-y-6">
-      <h1 className="text-3xl font-bold">Strategy Backtesting</h1>
+      <h1 className="text-3xl font-bold">{t.backtestContent.title}</h1>
 
       {/* Data Information Section */}
       {dataInfo && (
@@ -170,27 +172,27 @@ export default function BacktestPage() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Database className="w-5 h-5" />
-              Database Information
+              {t.dashboard.marketDataOverview}
             </CardTitle>
           </CardHeader>
           <CardContent>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
               <div>
-                <p className="text-sm text-gray-500">Total Records</p>
+                <p className="text-sm text-gray-500">{t.dashboard.totalRecords}</p>
                 <p className="text-2xl font-bold">{dataInfo.total_records.toLocaleString()}</p>
               </div>
               <div>
-                <p className="text-sm text-gray-500">Available Symbols</p>
+                <p className="text-sm text-gray-500">{t.dashboard.tradingPairs}</p>
                 <p className="text-2xl font-bold">{dataInfo.symbols_count}</p>
               </div>
               <div>
-                <p className="text-sm text-gray-500">Earliest Data</p>
+                <p className="text-sm text-gray-500">{t.dashboard.dataCoverage}</p>
                 <p className="text-sm font-medium">
                   {dataInfo.earliest_time ? new Date(dataInfo.earliest_time).toLocaleDateString() : 'N/A'}
                 </p>
               </div>
               <div>
-                <p className="text-sm text-gray-500">Latest Data</p>
+                <p className="text-sm text-gray-500">{t.dashboard.dataCoverage}</p>
                 <p className="text-sm font-medium">
                   {dataInfo.latest_time ? new Date(dataInfo.latest_time).toLocaleDateString() : 'N/A'}
                 </p>
@@ -198,12 +200,12 @@ export default function BacktestPage() {
             </div>
             
             <div className="mt-4">
-              <p className="text-sm font-medium mb-2">Top Symbols by Records:</p>
+              <p className="text-sm font-medium mb-2">{t.dashboard.topSymbolsByVolume}:</p>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
                 {dataInfo.symbol_info.slice(0, 6).map((symbol) => (
                   <div key={symbol.symbol} className="text-xs bg-gray-100 dark:bg-gray-800 p-2 rounded">
                     <span className="font-medium">{symbol.symbol}</span>
-                    <span className="text-gray-500 ml-2">({symbol.records_count.toLocaleString()} records)</span>
+                    <span className="text-gray-500 ml-2">({symbol.records_count.toLocaleString()} {t.dashboard.totalRecords2})</span>
                   </div>
                 ))}
               </div>
@@ -217,7 +219,7 @@ export default function BacktestPage() {
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <TrendingUp className="w-5 h-5" />
-            Backtest Configuration
+            {t.backtestContent.title}
             {configValid !== null && (
               configValid ? (
                 <CheckCircle className="w-5 h-5 text-green-500" />
@@ -231,13 +233,13 @@ export default function BacktestPage() {
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {/* Strategy Selection */}
             <div>
-              <label className="block text-sm font-medium mb-1">Strategy</label>
+              <label className="block text-sm font-medium mb-1">{t.backtestContent.strategy}</label>
               <select
                 value={params.strategy_id}
                 onChange={(e) => setParams({ ...params, strategy_id: e.target.value })}
                 className="w-full p-2 border rounded dark:bg-gray-800 dark:border-gray-600"
               >
-                <option value="">Select Strategy</option>
+                <option value="">{t.backtestContent.selectStrategy}</option>
                 {strategies.map((strategy) => (
                   <option key={strategy.id} value={strategy.id}>
                     {strategy.name}
@@ -253,16 +255,16 @@ export default function BacktestPage() {
 
             {/* Symbol Selection */}
             <div>
-              <label className="block text-sm font-medium mb-1">Symbol</label>
+              <label className="block text-sm font-medium mb-1">{t.backtestContent.symbol}</label>
               <select
                 value={params.symbol}
                 onChange={(e) => setParams({ ...params, symbol: e.target.value })}
                 className="w-full p-2 border rounded dark:bg-gray-800 dark:border-gray-600"
               >
-                <option value="">Select Symbol</option>
+                <option value="">{t.backtestContent.selectSymbol}</option>
                 {dataInfo?.symbol_info.map((symbol) => (
                   <option key={symbol.symbol} value={symbol.symbol}>
-                    {symbol.symbol} ({symbol.records_count.toLocaleString()} records)
+                    {symbol.symbol} ({symbol.records_count.toLocaleString()} {t.dashboard.totalRecords2})
                   </option>
                 ))}
               </select>
@@ -270,7 +272,7 @@ export default function BacktestPage() {
 
             {/* Data Count */}
             <div>
-              <label className="block text-sm font-medium mb-1">Data Points</label>
+              <label className="block text-sm font-medium mb-1">{t.backtestContent.dataPoints}</label>
               <input
                 type="number"
                 value={params.data_count}
@@ -288,7 +290,7 @@ export default function BacktestPage() {
 
             {/* Initial Capital */}
             <div>
-              <label className="block text-sm font-medium mb-1">Initial Capital ($)</label>
+              <label className="block text-sm font-medium mb-1">{t.backtestContent.initialCapital}</label>
               <input
                 type="text"
                 value={params.initial_capital}
@@ -300,7 +302,7 @@ export default function BacktestPage() {
 
             {/* Commission Rate */}
             <div>
-              <label className="block text-sm font-medium mb-1">Commission Rate (%)</label>
+              <label className="block text-sm font-medium mb-1">{t.backtestContent.commission}</label>
               <input
                 type="text"
                 value={(parseFloat(params.commission_rate) * 100).toString()}
@@ -317,7 +319,7 @@ export default function BacktestPage() {
             {params.strategy_id === 'sma' && (
               <>
                 <div>
-                  <label className="block text-sm font-medium mb-1">Short Period</label>
+                  <label className="block text-sm font-medium mb-1">{t.backtestContent.shortPeriod}</label>
                   <input
                     type="number"
                     value={params.short_period}
@@ -328,7 +330,7 @@ export default function BacktestPage() {
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium mb-1">Long Period</label>
+                  <label className="block text-sm font-medium mb-1">{t.backtestContent.longPeriod}</label>
                   <input
                     type="number"
                     value={params.long_period}
@@ -348,12 +350,12 @@ export default function BacktestPage() {
               {configValid ? (
                 <p className="flex items-center gap-2">
                   <CheckCircle className="w-4 h-4" />
-                  Configuration is valid and ready for backtesting
+                  {t.backtestContent.configValid}
                 </p>
               ) : (
                 <p className="flex items-center gap-2">
                   <AlertCircle className="w-4 h-4" />
-                  Insufficient data for the selected configuration
+                  {t.backtestContent.configInvalid}
                 </p>
               )}
             </div>
@@ -372,10 +374,10 @@ export default function BacktestPage() {
             {isRunning ? (
               <span className="flex items-center gap-2">
                 <Loader2 className="w-4 h-4 animate-spin" />
-                Running Backtest...
+                {t.backtestContent.running}
               </span>
             ) : (
-              'Run Backtest'
+              t.backtestContent.runBacktest
             )}
           </button>
         </CardContent>
@@ -387,7 +389,7 @@ export default function BacktestPage() {
           <CardContent className="pt-6">
             <div className="flex items-center gap-2 text-red-800 dark:text-red-200">
               <AlertCircle className="w-5 h-5" />
-              <span className="font-medium">Error:</span>
+              <span className="font-medium">{t.common.error}:</span>
               <span>{error}</span>
             </div>
           </CardContent>
@@ -401,15 +403,15 @@ export default function BacktestPage() {
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center justify-between">
-                <span>Backtest Results - {result.strategy_name}</span>
+                <span>{t.backtestContent.results} - {result.strategy_name}</span>
                 <span className={`text-sm px-3 py-1 rounded-full ${
                   result.data_source.startsWith('OHLC') 
                     ? 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200'
                     : 'bg-gray-100 text-gray-800 dark:bg-gray-900 dark:text-gray-200'
                 }`}>
-                  {result.data_source.startsWith('OHLC') 
-                    ? `${result.data_source} K-line Data` 
-                    : 'Tick Data'
+                  {result.data_source.startsWith('OHLC')
+                    ? `${result.data_source} K-line Data`
+                    : t.dashboard.tickData
                   }
                 </span>
               </CardTitle>
@@ -424,47 +426,47 @@ export default function BacktestPage() {
               )}
               <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
                 <div>
-                  <p className="text-sm text-gray-500">Total Return</p>
+                  <p className="text-sm text-gray-500">{t.backtestContent.returnValue}</p>
                   <p className={`text-xl font-bold ${parseFloat(result.return_percentage) >= 0 ? 'text-green-500' : 'text-red-500'}`}>
                     {formatPercentage(result.return_percentage)}%
                   </p>
                 </div>
                 <div>
-                  <p className="text-sm text-gray-500">Final Value</p>
+                  <p className="text-sm text-gray-500">{t.backtestContent.finalValue}</p>
                   <p className="text-xl font-bold">${formatPrice(result.final_value)}</p>
                 </div>
                 <div>
-                  <p className="text-sm text-gray-500">Total P&L</p>
+                  <p className="text-sm text-gray-500">{t.backtestContent.totalPnl}</p>
                   <p className={`text-xl font-bold ${parseFloat(result.total_pnl) >= 0 ? 'text-green-500' : 'text-red-500'}`}>
                     ${formatPrice(result.total_pnl)}
                   </p>
                 </div>
                 <div>
-                  <p className="text-sm text-gray-500">Sharpe Ratio</p>
+                  <p className="text-sm text-gray-500">{t.backtestContent.sharpe}</p>
                   <p className="text-xl font-bold">{formatPercentage(result.sharpe_ratio)}</p>
                 </div>
                 <div>
-                  <p className="text-sm text-gray-500">Max Drawdown</p>
+                  <p className="text-sm text-gray-500">{t.backtestContent.maxDd}</p>
                   <p className="text-xl font-bold text-red-500">{formatPercentage(result.max_drawdown)}%</p>
                 </div>
                 <div>
-                  <p className="text-sm text-gray-500">Win Rate</p>
+                  <p className="text-sm text-gray-500">{t.backtestContent.winRate}</p>
                   <p className="text-xl font-bold">{formatPercentage(result.win_rate)}%</p>
                 </div>
                 <div>
-                  <p className="text-sm text-gray-500">Total Trades</p>
+                  <p className="text-sm text-gray-500">{t.backtestContent.trades}</p>
                   <p className="text-xl font-bold">{result.total_trades}</p>
                 </div>
                 <div>
-                  <p className="text-sm text-gray-500">Winning Trades</p>
+                  <p className="text-sm text-gray-500">{t.backtestContent.wins}</p>
                   <p className="text-xl font-bold text-green-500">{result.winning_trades}</p>
                 </div>
                 <div>
-                  <p className="text-sm text-gray-500">Losing Trades</p>
+                  <p className="text-sm text-gray-500">{t.backtestContent.losses}</p>
                   <p className="text-xl font-bold text-red-500">{result.losing_trades}</p>
                 </div>
                 <div>
-                  <p className="text-sm text-gray-500">Profit Factor</p>
+                  <p className="text-sm text-gray-500">{t.backtestContent.profitFactor}</p>
                   <p className="text-xl font-bold">{formatPercentage(result.profit_factor)}</p>
                 </div>
               </div>
@@ -475,7 +477,7 @@ export default function BacktestPage() {
           {result.equity_curve && result.equity_curve.length > 0 && (
             <Card>
               <CardHeader>
-                <CardTitle>Portfolio Equity Curve</CardTitle>
+                <CardTitle>{t.backtestContent.equityCurve}</CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="h-96">
@@ -496,7 +498,7 @@ export default function BacktestPage() {
                         tickFormatter={(value) => `$${value.toFixed(0)}`}
                       />
                       <Tooltip
-                        formatter={(value: number) => [`$${value.toFixed(2)}`, 'Portfolio Value']}
+                        formatter={(value: number) => [`$${value.toFixed(2)}`, t.backtestContent.equityCurve]}
                         labelFormatter={(index) => `Trade #${index}`}
                       />
                       <Line
@@ -517,7 +519,7 @@ export default function BacktestPage() {
           {result.trades && result.trades.length > 0 && (
             <Card>
               <CardHeader>
-                <CardTitle>Trade History ({result.trades.length} trades)</CardTitle>
+                <CardTitle>{t.backtestContent.tradesCount} ({result.trades.length} {t.common.trades})</CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="overflow-x-auto">
@@ -525,13 +527,13 @@ export default function BacktestPage() {
                     <thead>
                       <tr className="text-left border-b">
                         <th className="pb-2">#</th>
-                        <th className="pb-2">Time</th>
-                        <th className="pb-2">Side</th>
-                        <th className="pb-2">Symbol</th>
-                        <th className="pb-2">Quantity</th>
-                        <th className="pb-2">Price</th>
-                        <th className="pb-2">P&L</th>
-                        <th className="pb-2">Commission</th>
+                        <th className="pb-2">{t.dashboard.time}</th>
+                        <th className="pb-2">{t.positionTable.side}</th>
+                        <th className="pb-2">{t.backtestContent.symbol}</th>
+                        <th className="pb-2">{t.positionTable.quantity}</th>
+                        <th className="pb-2">{t.tradeHistory.price}</th>
+                        <th className="pb-2">{t.backtestContent.totalPnl}</th>
+                        <th className="pb-2">{t.commissionStats.totalCommission}</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -559,7 +561,7 @@ export default function BacktestPage() {
                   </table>
                   {result.trades.length > 50 && (
                     <p className="text-sm text-gray-500 mt-2">
-                      Showing first 50 trades of {result.trades.length} total trades
+                      {t.common.showing} first 50 {t.common.trades} / {result.trades.length}
                     </p>
                   )}
                 </div>

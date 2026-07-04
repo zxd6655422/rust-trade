@@ -265,11 +265,23 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
             let shutdown_rx = tick_tx.subscribe();
 
             Some(tokio::spawn(async move {
+                let pool = match create_database_pool_for_service().await {
+                    Ok(p) => p,
+                    Err(e) => {
+                        error!("Failed to create database pool for tick collection: {}", e);
+                        return;
+                    }
+                };
+                let cache = match create_cache_for_service().await {
+                    Ok(c) => c,
+                    Err(e) => {
+                        error!("Failed to create cache for tick collection: {}", e);
+                        return;
+                    }
+                };
+
                 let service = MarketDataService::new(exchange, Arc::new(TickDataRepository::new(
-                    // This is a bit of a hack - we need a separate repository for the collection task
-                    // In production, you'd want to share the same pool
-                    create_database_pool_for_service().await.unwrap(),
-                    create_cache_for_service().await.unwrap(),
+                    pool, cache,
                 )), symbols);
 
                 if let Err(e) = service.start().await {
@@ -287,12 +299,24 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
                 BinanceExchange::with_futures_symbols(futures_symbols.clone())
             );
             let symbols = settings.symbols.clone();
+            let price_tx = tick_tx.clone();
 
             Some(tokio::spawn(async move {
-                let repo = Arc::new(TickDataRepository::new(
-                    create_database_pool_for_service().await.unwrap(),
-                    create_cache_for_service().await.unwrap(),
-                ));
+                let pool = match create_database_pool_for_service().await {
+                    Ok(p) => p,
+                    Err(e) => {
+                        error!("Failed to create database pool for candle1m collection: {}", e);
+                        return;
+                    }
+                };
+                let cache = match create_cache_for_service().await {
+                    Ok(c) => c,
+                    Err(e) => {
+                        error!("Failed to create cache for candle1m collection: {}", e);
+                        return;
+                    }
+                };
+                let repo = Arc::new(TickDataRepository::new(pool, cache));
 
                 // Step 1: Backfill historical data (if enabled)
                 // API 限制: Binance 20 req/s, OKX 12 req/s
@@ -300,7 +324,13 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
                 if backfill_enabled {
                     match NaiveDate::parse_from_str(&backfill_start, "%Y-%m-%d") {
                         Ok(date) => {
-                            let start_dt = date.and_hms_opt(0, 0, 0).unwrap().and_utc();
+                            let start_dt = match date.and_hms_opt(0, 0, 0) {
+                                Some(dt) => dt.and_utc(),
+                                None => {
+                                    error!("Invalid backfill_start_date '{}': failed to create datetime", backfill_start);
+                                    return;
+                                }
+                            };
 
                             // 限制最大并发数为 5，每个 symbol 内部限速 200ms
                             // 总速率 = 5 * 5 req/s = 25 req/s (远低于 20 req/s 限制)
@@ -319,7 +349,13 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
 
                                 let handle = tokio::spawn(async move {
                                     // 获取许可，限制并发
-                                    let _permit = sem.acquire().await.unwrap();
+                                    let _permit = match sem.acquire().await {
+                                        Ok(permit) => permit,
+                                        Err(e) => {
+                                            error!("Failed to acquire semaphore for {}: {}", sym, e);
+                                            return;
+                                        }
+                                    };
                                     info!("📊 Starting backfill for {}", sym);
 
                                     let backfill = BackfillService::new(
@@ -395,10 +431,25 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
                         // 等待当前批次完成
                         let results = futures::future::join_all(fetch_futures).await;
 
-                        // 批量插入数据
+                        // 批量插入数据 + 广播最新价格
                         for result in results.into_iter().flatten() {
                             let (symbol, ohlc_list) = result;
                             let count = ohlc_list.len();
+
+                            // 广播最新价格给 WebSocket 客户端
+                            if let Some(latest) = ohlc_list.last() {
+                                let tick = trading_common::data::types::TickData {
+                                    trade_id: "0".to_string(),
+                                    symbol: latest.symbol.clone(),
+                                    price: latest.close,
+                                    quantity: latest.volume,
+                                    timestamp: latest.timestamp,
+                                    side: trading_common::data::types::TradeSide::Buy,
+                                    is_buyer_maker: false,
+                                };
+                                let _ = price_tx.send(tick);
+                            }
+
                             match repo.batch_insert_klines(ohlc_list).await {
                                 Ok(inserted) => {
                                     debug!(

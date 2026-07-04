@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line } from 'recharts';
 import { Loader2, Database, TrendingUp, Activity, Zap, Clock, BarChart3, Play, Eye, Coins, Layers, Timer, Sparkles } from 'lucide-react';
 import Link from 'next/link';
+import { useLanguage } from '@/lib/i18n/context';
 
 interface DataInfoResponse {
   total_records: number;
@@ -54,6 +55,7 @@ interface QuickBacktestResult {
 }
 
 export default function Home() {
+  const { t } = useLanguage();
   const [loading, setLoading] = useState(true);
   const [dataInfo, setDataInfo] = useState<DataInfoResponse | null>(null);
   const [strategyCapabilities, setStrategyCapabilities] = useState<StrategyCapability[]>([]);
@@ -265,7 +267,7 @@ export default function Home() {
     return (
       <div className="flex items-center justify-center h-screen">
         <Loader2 className="w-8 h-8 animate-spin mr-2" />
-        <span>Loading trading system dashboard...</span>
+        <span>{t.dashboard.loadDashboard}</span>
       </div>
     );
   }
@@ -280,14 +282,14 @@ export default function Home() {
       <div className="flex justify-between items-center">
         <div>
           <div className="flex items-center gap-3 mb-2">
-            <h1 className="text-3xl font-bold">Trading System Dashboard</h1>
+            <h1 className="text-3xl font-bold">{t.dashboard.title}</h1>
             <Badge variant="secondary" className="flex items-center gap-1">
               <Layers className="w-3 h-3" />
-              OHLC Enhanced
+              {t.dashboard.ohlcEnhanced}
             </Badge>
           </div>
           <p className="text-gray-600 dark:text-gray-400">
-            High-performance quantitative trading with dual data modes (Tick + OHLC)
+            {t.dashboard.subtitle}
           </p>
         </div>
         <div className="flex gap-2">
@@ -302,12 +304,12 @@ export default function Home() {
             ) : (
               <Zap className="w-4 h-4" />
             )}
-            Quick Test
+            {t.dashboard.quickTest}
           </Button>
           <Link href="/backtest">
             <Button className="flex items-center gap-2">
               <Play className="w-4 h-4" />
-              Full Backtest
+              {t.dashboard.fullBacktest}
             </Button>
           </Link>
         </div>
@@ -317,7 +319,7 @@ export default function Home() {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Total Records</CardTitle>
+            <CardTitle className="text-sm font-medium">{t.dashboard.totalRecords}</CardTitle>
             <Database className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
@@ -325,14 +327,14 @@ export default function Home() {
               {dataInfo?.total_records.toLocaleString() || '0'}
             </div>
             <p className="text-xs text-muted-foreground">
-              High-frequency tick data
+              {t.dashboard.totalRecordsDesc}
             </p>
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Trading Pairs</CardTitle>
+            <CardTitle className="text-sm font-medium">{t.dashboard.tradingPairs}</CardTitle>
             <Coins className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
@@ -340,14 +342,14 @@ export default function Home() {
               {dataInfo?.symbols_count || 0}
             </div>
             <p className="text-xs text-muted-foreground">
-              Cryptocurrency markets
+              {t.dashboard.tradingPairsDesc}
             </p>
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Data Coverage</CardTitle>
+            <CardTitle className="text-sm font-medium">{t.dashboard.dataCoverage}</CardTitle>
             <Clock className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
@@ -355,14 +357,14 @@ export default function Home() {
               {getDataCoverageDays()}
             </div>
             <p className="text-xs text-muted-foreground">
-              Days of market data
+              {t.dashboard.dataCoverageDesc}
             </p>
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Total Strategies</CardTitle>
+            <CardTitle className="text-sm font-medium">{t.dashboard.totalStrategies}</CardTitle>
             <TrendingUp className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
@@ -370,14 +372,14 @@ export default function Home() {
               {strategyCapabilities.length}
             </div>
             <p className="text-xs text-muted-foreground">
-              Available algorithms
+              {t.dashboard.totalStrategiesDesc}
             </p>
           </CardContent>
         </Card>
 
         <Card className="border-2 border-blue-200 bg-blue-50 dark:border-blue-800 dark:bg-blue-900/20">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">OHLC Support</CardTitle>
+            <CardTitle className="text-sm font-medium">{t.dashboard.ohlcSupport}</CardTitle>
             <Sparkles className="h-4 w-4 text-blue-600" />
           </CardHeader>
           <CardContent>
@@ -385,7 +387,7 @@ export default function Home() {
               {ohlcSupportCount}/{strategyCapabilities.length}
             </div>
             <p className="text-xs text-blue-600">
-              Strategies support OHLC
+              {t.dashboard.ohlcSupportDesc}
             </p>
           </CardContent>
         </Card>
@@ -396,7 +398,7 @@ export default function Home() {
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <BarChart3 className="w-5 h-5 text-blue-600" />
-            Live OHLC Data Preview
+            {t.dashboard.liveOhlcPreview}
             <Badge variant="outline" className="ml-2">
               {selectedSymbol} • {selectedTimeframe.toUpperCase()}
             </Badge>
@@ -405,7 +407,7 @@ export default function Home() {
           {/* OHLC Controls */}
           <div className="flex flex-wrap gap-3 mt-3">
             <div className="flex items-center gap-2">
-              <label className="text-sm font-medium">Symbol:</label>
+              <label className="text-sm font-medium">{t.dashboard.selectSymbol}:
               <select
                 value={selectedSymbol}
                 onChange={(e) => setSelectedSymbol(e.target.value)}
@@ -422,7 +424,7 @@ export default function Home() {
             </div>
             
             <div className="flex items-center gap-2">
-              <label className="text-sm font-medium">Timeframe:</label>
+              <label className="text-sm font-medium">{t.dashboard.selectTimeframe}:
               <select
                 value={selectedTimeframe}
                 onChange={(e) => setSelectedTimeframe(e.target.value)}
@@ -451,7 +453,7 @@ export default function Home() {
               ) : (
                 <Activity className="w-3 h-3" />
               )}
-              Refresh
+              {t.common.refresh}
             </Button>
           </div>
         </CardHeader>
@@ -487,10 +489,10 @@ export default function Home() {
                   {loadingOhlcPreview ? (
                     <div className="flex items-center gap-2">
                       <Loader2 className="w-5 h-5 animate-spin" />
-                      <span>Loading OHLC data...</span>
+                      <span>{t.dashboard.loadingOhlc}</span>
                     </div>
                   ) : (
-                    <span>No OHLC data available for current selection</span>
+                    <span>{t.dashboard.noOhlcData}</span>
                   )}
                 </div>
               )}
@@ -499,7 +501,7 @@ export default function Home() {
             <div className="space-y-4">
               <div>
                 <h4 className="font-medium text-blue-800 dark:text-blue-200 mb-2">
-                  Latest OHLC Candle
+                  {t.dashboard.latestOhlcCandle}
                 </h4>
                 {ohlcPreview.length > 0 ? (
                   <div className="space-y-2 text-sm">
@@ -536,30 +538,30 @@ export default function Home() {
                   </div>
                 ) : (
                   <div className="text-sm text-gray-500 italic">
-                    {loadingOhlcPreview ? 'Loading OHLC data...' : 'No OHLC data available'}
+                    {loadingOhlcPreview ? t.dashboard.loadingOhlc : t.dashboard.noOhlcData}
                   </div>
                 )}
               </div>
               
               <div className="pt-2 border-t">
                 <p className="text-xs text-blue-600 dark:text-blue-400">
-                  OHLC data provides cleaner signals and faster backtesting for supported strategies
+                  {t.dashboard.ohlcNote}
                 </p>
                 <p className="text-xs text-gray-500 mt-1">
-                  Timeframe: {selectedTimeframe.toUpperCase()} • 
-                  Candles: {ohlcPreview.length} • 
-                  {selectedTimeframe === '1m' && 'Last hour'} 
-                  {selectedTimeframe === '5m' && 'Last 4 hours'}
-                  {selectedTimeframe === '15m' && 'Last 8 hours'}
-                  {selectedTimeframe === '30m' && 'Last 12 hours'}
-                  {selectedTimeframe === '1h' && 'Last day'}
-                  {selectedTimeframe === '4h' && 'Last 4 days'}
-                  {selectedTimeframe === '1d' && 'Last month'}
-                  {selectedTimeframe === '1w' && 'Last 3 months'}
+                  {t.dashboard.selectTimeframe}: {selectedTimeframe.toUpperCase()} •
+                  {t.dashboard.candles}: {ohlcPreview.length} •
+                  {selectedTimeframe === '1m' && t.dashboard.lastHour}
+                  {selectedTimeframe === '5m' && t.dashboard.last4Hours}
+                  {selectedTimeframe === '15m' && t.dashboard.last8Hours}
+                  {selectedTimeframe === '30m' && t.dashboard.last12Hours}
+                  {selectedTimeframe === '1h' && t.dashboard.lastDay}
+                  {selectedTimeframe === '4h' && t.dashboard.last4Days}
+                  {selectedTimeframe === '1d' && t.dashboard.lastMonth}
+                  {selectedTimeframe === '1w' && t.dashboard.last3Months}
                 </p>
                 {symbolInfo && (
                   <p className="text-xs text-gray-500 mt-1">
-                    Total records: {symbolInfo.records_count.toLocaleString()}
+                    {t.dashboard.totalRecords2}: {symbolInfo.records_count.toLocaleString()}
                   </p>
                 )}
               </div>
@@ -573,7 +575,7 @@ export default function Home() {
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Activity className="w-5 h-5" />
-            Strategy Capabilities Matrix
+            {t.dashboard.strategyCapabilities}
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -613,7 +615,7 @@ export default function Home() {
                       strategy.supports_ohlc ? 'text-blue-600' : 'text-gray-500'
                     }`}>
                       <Layers className="w-3 h-3" />
-                      {strategy.supports_ohlc ? 'OHLC Ready' : 'Tick Only'}
+                      {strategy.supports_ohlc ? t.dashboard.ohlcReady : t.dashboard.tickOnly}
                     </span>
                     {strategy.preferred_timeframe && (
                       <span className="flex items-center gap-1 text-purple-600">
@@ -630,7 +632,7 @@ export default function Home() {
           <div className="mt-6 pt-4 border-t">
             <Link href="/backtest">
               <Button className="w-full">
-                Configure & Run Advanced Backtest
+                {t.dashboard.configureAdvancedBacktest}
               </Button>
             </Link>
           </div>
@@ -643,7 +645,7 @@ export default function Home() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Zap className="w-5 h-5" />
-              Quick Strategy Performance Test
+              {t.dashboard.quickStrategyTest}
               {isRunningQuick && <Loader2 className="w-4 h-4 animate-spin ml-2" />}
             </CardTitle>
           </CardHeader>
@@ -651,7 +653,7 @@ export default function Home() {
             {isRunningQuick && quickResults.length === 0 && (
               <div className="flex items-center justify-center py-8">
                 <Loader2 className="w-6 h-6 animate-spin mr-2" />
-                <span>Running quick backtests on top symbols...</span>
+                <span>{t.dashboard.runningQuickTests}</span>
               </div>
             )}
             
@@ -662,25 +664,25 @@ export default function Home() {
                     <p className="text-2xl font-bold text-green-600">
                       {quickResults.filter(r => r.return_pct > 0).length}
                     </p>
-                    <p className="text-sm text-gray-500">Profitable Tests</p>
+                    <p className="text-sm text-gray-500">{t.dashboard.profitableTests}</p>
                   </div>
                   <div className="text-center">
                     <p className="text-2xl font-bold text-blue-600">
                       {getAvgProcessingTime().toFixed(0)}ms
                     </p>
-                    <p className="text-sm text-gray-500">Avg Processing Time</p>
+                    <p className="text-sm text-gray-500">{t.dashboard.avgProcessingTime}</p>
                   </div>
                   <div className="text-center">
                     <p className="text-2xl font-bold text-purple-600">
                       {quickResults.reduce((sum, r) => sum + r.trades, 0)}
                     </p>
-                    <p className="text-sm text-gray-500">Total Trades</p>
+                    <p className="text-sm text-gray-500">{t.dashboard.totalTrades}</p>
                   </div>
                   <div className="text-center">
                     <p className="text-2xl font-bold text-orange-600">
                       {quickResults.filter(r => r.data_source.startsWith('OHLC')).length}
                     </p>
-                    <p className="text-sm text-gray-500">OHLC Tests</p>
+                    <p className="text-sm text-gray-500">{t.dashboard.ohlcTests}</p>
                   </div>
                 </div>
 
@@ -688,13 +690,13 @@ export default function Home() {
                   <table className="w-full">
                     <thead>
                       <tr className="text-left border-b">
-                        <th className="pb-2">Strategy</th>
-                        <th className="pb-2">Symbol</th>
-                        <th className="pb-2">Data Source</th>
-                        <th className="pb-2">Return</th>
-                        <th className="pb-2">Final Value</th>
-                        <th className="pb-2">Trades</th>
-                        <th className="pb-2">Time</th>
+                        <th className="pb-2">{t.dashboard.strategy}</th>
+                        <th className="pb-2">{t.dashboard.symbol}</th>
+                        <th className="pb-2">{t.dashboard.dataSource}</th>
+                        <th className="pb-2">{t.dashboard.returnValue}</th>
+                        <th className="pb-2">{t.dashboard.finalValue}</th>
+                        <th className="pb-2">{t.dashboard.totalTrades}</th>
+                        <th className="pb-2">{t.dashboard.time}</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -739,13 +741,13 @@ export default function Home() {
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Eye className="w-5 h-5" />
-            Market Data Overview
+            {t.dashboard.marketDataOverview}
           </CardTitle>
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div>
-              <h4 className="font-medium mb-3">Top Symbols by Volume</h4>
+              <h4 className="font-medium mb-3">{t.dashboard.topSymbolsByVolume}</h4>
               <div className="space-y-2">
                 {dataInfo?.symbol_info
                   .sort((a, b) => b.records_count - a.records_count)
@@ -763,7 +765,7 @@ export default function Home() {
                         {symbol.records_count.toLocaleString()} records
                       </span>
                       <Badge variant="outline" className="text-xs">
-                        OHLC Ready
+                        {t.dashboard.ohlcReady}
                       </Badge>
                     </div>
                   </div>
@@ -772,19 +774,19 @@ export default function Home() {
             </div>
             
             <div>
-              <h4 className="font-medium mb-3">Data Capabilities</h4>
+              <h4 className="font-medium mb-3">{t.dashboard.dataCapabilities}</h4>
               <div className="space-y-3">
                 <div className="flex items-center justify-between p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
                   <div className="flex items-center gap-2">
                     <Layers className="w-4 h-4 text-blue-600" />
-                    <span className="font-medium">OHLC Generation</span>
+                    <span className="font-medium">{t.dashboard.ohlcGeneration}</span>
                   </div>
-                  <Badge variant="secondary">Active</Badge>
+                  <Badge variant="secondary">{t.dashboard.active}</Badge>
                 </div>
                 <div className="flex items-center justify-between p-3 bg-green-50 dark:bg-green-900/20 rounded-lg">
                   <div className="flex items-center gap-2">
                     <Database className="w-4 h-4 text-green-600" />
-                    <span className="font-medium">Tick Data</span>
+                    <span className="font-medium">{t.dashboard.tickData}</span>
                   </div>
                   <Badge variant="secondary">
                     {dataInfo?.total_records.toLocaleString() || '0'}
@@ -793,17 +795,17 @@ export default function Home() {
                 <div className="flex items-center justify-between p-3 bg-purple-50 dark:bg-purple-900/20 rounded-lg">
                   <div className="flex items-center gap-2">
                     <Timer className="w-4 h-4 text-purple-600" />
-                    <span className="font-medium">Timeframes</span>
+                    <span className="font-medium">{t.dashboard.timeframes}</span>
                   </div>
                   <Badge variant="secondary">1m-1w</Badge>
                 </div>
                 <div className="flex items-center justify-between p-3 bg-orange-50 dark:bg-orange-900/20 rounded-lg">
                   <div className="flex items-center gap-2">
                     <Clock className="w-4 h-4 text-orange-600" />
-                    <span className="font-medium">Coverage</span>
+                    <span className="font-medium">{t.dashboard.coverage}</span>
                   </div>
                   <Badge variant="secondary">
-                    {getDataCoverageDays()} days
+                    {getDataCoverageDays()} {t.dashboard.days}
                   </Badge>
                 </div>
               </div>

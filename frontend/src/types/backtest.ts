@@ -73,3 +73,140 @@ export interface TickDataResponse {
   quantity: string;
   side: string;
 }
+
+// ============ P11: 高级回测类型 ============
+
+export interface MultiTimeframeBacktestRequest {
+  strategy: string;
+  symbol: string;
+  capital: number;
+  data_count: number;
+  commission_rate: number;
+  strategy_params?: Record<string, string>;
+}
+
+export interface WalkForwardRequest {
+  strategy: string;
+  symbol: string;
+  capital: number;
+  commission_rate: number;
+  train_candles: number;
+  test_candles: number;
+  step_candles: number;
+  data_count: number;
+  strategy_params?: Record<string, string>;
+}
+
+export interface OutOfSampleRequest {
+  strategy: string;
+  symbol: string;
+  capital: number;
+  commission_rate: number;
+  train_ratio: number;
+  data_count: number;
+  strategy_params?: Record<string, string>;
+}
+
+export interface MultiSymbolBacktestRequest {
+  strategy: string;
+  symbols: string[];
+  capital: number;
+  commission_rate: number;
+  data_count: number;
+  market_state_window: number;
+  strategy_params?: Record<string, string>;
+}
+
+export interface MarketStateAnalysisRequest {
+  symbol: string;
+  data_count: number;
+  window: number;
+}
+
+export interface WalkForwardRoundSummary {
+  round: number;
+  train_start: string;
+  train_end: string;
+  test_start: string;
+  test_end: string;
+  train_return_pct: string;
+  train_sharpe: string;
+  train_trades: number;
+  test_return_pct: string;
+  test_sharpe: string;
+  test_trades: number;
+  test_win_rate: string;
+  test_max_drawdown: string;
+  overfit_ratio: string;
+}
+
+export interface WalkForwardResult {
+  total_rounds: number;
+  profitable_rounds: number;
+  overall_test_return_pct: string;
+  overall_test_sharpe: string;
+  overall_test_max_drawdown: string;
+  overall_test_win_rate: string;
+  avg_overfit_ratio: string;
+  is_overfit: boolean;
+  rounds: WalkForwardRoundSummary[];
+}
+
+export interface OutOfSampleResult {
+  train_return_pct: string;
+  train_sharpe: string;
+  train_max_drawdown: string;
+  train_win_rate: string;
+  train_trades: number;
+  train_profit_factor: string;
+  test_return_pct: string;
+  test_sharpe: string;
+  test_max_drawdown: string;
+  test_win_rate: string;
+  test_trades: number;
+  test_profit_factor: string;
+  overfit_ratio: string;
+  is_overfit: boolean;
+}
+
+export interface SymbolBacktestResultItem {
+  symbol: string;
+  return_pct: string;
+  sharpe: string;
+  win_rate: string;
+  max_drawdown: string;
+  total_trades: number;
+  profit_factor: string;
+  market_state: string;
+  data_quality: string;
+}
+
+export interface MultiSymbolBacktestResult {
+  total_symbols: number;
+  profitable_symbols: number;
+  losing_symbols: number;
+  avg_return_pct: string;
+  avg_sharpe: string;
+  avg_win_rate: string;
+  avg_max_drawdown: string;
+  total_trades: number;
+  best_symbol: string;
+  best_return_pct: string;
+  worst_symbol: string;
+  worst_return_pct: string;
+  cross_symbol_correlation: string;
+  symbols: SymbolBacktestResultItem[];
+}
+
+export interface MarketStateResult {
+  symbol: string;
+  total_candles: number;
+  analysis_window: number;
+  state_distribution: Record<string, string>;
+  avg_volatility: string;
+  avg_trend_strength: string;
+  trend_ratio: string;
+  ranging_ratio: string;
+  data_quality_score: string;
+  summary: string;
+}

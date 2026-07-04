@@ -21,6 +21,11 @@ pub struct AppState {
     pub backtest_lock: Arc<Mutex<()>>,
 }
 
+// Safe unwrap for known-good Decimal constants
+fn default_commission_decimal() -> Decimal {
+    Decimal::from_str("0.001").unwrap_or(Decimal::ZERO)
+}
+
 /// 回测请求
 #[derive(Debug, Deserialize)]
 pub struct BacktestRequest {
@@ -228,7 +233,7 @@ pub async fn run_backtest(
     // 创建配置
     let initial_capital = Decimal::from_str(&req.capital.to_string()).unwrap_or(Decimal::from(10000));
     let commission_rate = Decimal::from_str(&(req.commission_rate / 100.0).to_string())
-        .unwrap_or(Decimal::from_str("0.001").unwrap());
+        .unwrap_or(default_commission_decimal());
     let config = BacktestConfig::new(initial_capital).with_commission_rate(commission_rate);
 
     // 尝试使用 OHLC 数据
@@ -269,8 +274,8 @@ pub async fn run_backtest(
                             sharpe_ratio: format!("{:.2}", result.sharpe_ratio),
                             profit_factor: format!("{:.2}", result.profit_factor),
                             data_points: ohlc_data.len(),
-                            data_range_start: ohlc_data.first().unwrap().timestamp.format("%Y-%m-%d %H:%M:%S").to_string(),
-                            data_range_end: ohlc_data.last().unwrap().timestamp.format("%Y-%m-%d %H:%M:%S").to_string(),
+                            data_range_start: ohlc_data.first().map_or("N/A".to_string(), |d| d.timestamp.format("%Y-%m-%d %H:%M:%S").to_string()),
+                            data_range_end: ohlc_data.last().map_or("N/A".to_string(), |d| d.timestamp.format("%Y-%m-%d %H:%M:%S").to_string()),
                         }),
                     };
 
@@ -334,8 +339,8 @@ pub async fn run_backtest(
             sharpe_ratio: format!("{:.2}", result.sharpe_ratio),
             profit_factor: format!("{:.2}", result.profit_factor),
             data_points: tick_data.len(),
-            data_range_start: tick_data.first().unwrap().timestamp.format("%Y-%m-%d %H:%M:%S").to_string(),
-            data_range_end: tick_data.last().unwrap().timestamp.format("%Y-%m-%d %H:%M:%S").to_string(),
+            data_range_start: tick_data.first().map_or("N/A".to_string(), |d| d.timestamp.format("%Y-%m-%d %H:%M:%S").to_string()),
+            data_range_end: tick_data.last().map_or("N/A".to_string(), |d| d.timestamp.format("%Y-%m-%d %H:%M:%S").to_string()),
         }),
     };
 
@@ -458,7 +463,7 @@ pub async fn run_multi_timeframe_backtest(
     // 创建配置
     let initial_capital = Decimal::from_str(&req.capital.to_string()).unwrap_or(Decimal::from(10000));
     let commission_rate = Decimal::from_str(&(req.commission_rate / 100.0).to_string())
-        .unwrap_or(Decimal::from_str("0.001").unwrap());
+        .unwrap_or(default_commission_decimal());
     let mut config = trading_common::backtest::engine::BacktestConfig::new(initial_capital)
         .with_commission_rate(commission_rate);
 
@@ -503,8 +508,8 @@ pub async fn run_multi_timeframe_backtest(
             sharpe_ratio: format!("{:.2}", result.sharpe_ratio),
             profit_factor: format!("{:.2}", result.profit_factor),
             data_points: klines_1m.len(),
-            data_range_start: klines_1m.first().unwrap().timestamp.format("%Y-%m-%d %H:%M:%S").to_string(),
-            data_range_end: klines_1m.last().unwrap().timestamp.format("%Y-%m-%d %H:%M:%S").to_string(),
+            data_range_start: klines_1m.first().map_or("N/A".to_string(), |d| d.timestamp.format("%Y-%m-%d %H:%M:%S").to_string()),
+            data_range_end: klines_1m.last().map_or("N/A".to_string(), |d| d.timestamp.format("%Y-%m-%d %H:%M:%S").to_string()),
         }),
     };
 
@@ -617,7 +622,7 @@ pub async fn run_walk_forward_backtest(
 
     let initial_capital = Decimal::from_str(&req.capital.to_string()).unwrap_or(Decimal::from(10000));
     let commission_rate = Decimal::from_str(&(req.commission_rate / 100.0).to_string())
-        .unwrap_or(Decimal::from_str("0.001").unwrap());
+        .unwrap_or(default_commission_decimal());
     let mut bt_config = trading_common::backtest::BacktestConfig::new(initial_capital)
         .with_commission_rate(commission_rate);
     if let Some(params) = &req.strategy_params {
@@ -633,7 +638,13 @@ pub async fn run_walk_forward_backtest(
 
     let strategy_id = req.strategy.clone();
     let result = trading_common::backtest::WalkForwardEngine::run(
-        || trading_common::backtest::strategy::create_multi_timeframe_strategy(&strategy_id).unwrap(),
+        || trading_common::backtest::strategy::create_multi_timeframe_strategy(&strategy_id)
+            .unwrap_or_else(|e| {
+                error!("Failed to create strategy '{}': {}", strategy_id, e);
+                // Fallback to trend strategy to prevent panic
+                trading_common::backtest::strategy::create_multi_timeframe_strategy("trend")
+                    .expect("Fallback strategy 'trend' must exist")
+            }),
         &bt_config,
         &wf_config,
         &klines_1m,
@@ -726,7 +737,7 @@ pub async fn run_out_of_sample_backtest(
 
     let initial_capital = Decimal::from_str(&req.capital.to_string()).unwrap_or(Decimal::from(10000));
     let commission_rate = Decimal::from_str(&(req.commission_rate / 100.0).to_string())
-        .unwrap_or(Decimal::from_str("0.001").unwrap());
+        .unwrap_or(default_commission_decimal());
     let mut bt_config = trading_common::backtest::BacktestConfig::new(initial_capital)
         .with_commission_rate(commission_rate);
     if let Some(params) = &req.strategy_params {
@@ -742,7 +753,12 @@ pub async fn run_out_of_sample_backtest(
 
     let strategy_id = req.strategy.clone();
     let result = trading_common::backtest::WalkForwardEngine::run_out_of_sample(
-        || trading_common::backtest::strategy::create_multi_timeframe_strategy(&strategy_id).unwrap(),
+        || trading_common::backtest::strategy::create_multi_timeframe_strategy(&strategy_id)
+            .unwrap_or_else(|e| {
+                error!("Failed to create strategy '{}': {}", strategy_id, e);
+                trading_common::backtest::strategy::create_multi_timeframe_strategy("trend")
+                    .expect("Fallback strategy 'trend' must exist")
+            }),
         &bt_config,
         &os_config,
         &klines_1m,
@@ -896,7 +912,7 @@ pub async fn run_multi_symbol_backtest(
 
     let initial_capital = Decimal::from_str(&req.capital.to_string()).unwrap_or(Decimal::from(10000));
     let commission_rate = Decimal::from_str(&(req.commission_rate / 100.0).to_string())
-        .unwrap_or(Decimal::from_str("0.001").unwrap());
+        .unwrap_or(default_commission_decimal());
     let mut bt_config = trading_common::backtest::BacktestConfig::new(initial_capital)
         .with_commission_rate(commission_rate);
     if let Some(params) = &req.strategy_params {
@@ -907,7 +923,12 @@ pub async fn run_multi_symbol_backtest(
 
     let strategy_id = req.strategy.clone();
     let result = trading_common::backtest::MultiSymbolBacktestEngine::run(
-        move || trading_common::backtest::strategy::create_multi_timeframe_strategy(&strategy_id).unwrap(),
+        move || trading_common::backtest::strategy::create_multi_timeframe_strategy(&strategy_id)
+            .unwrap_or_else(|e| {
+                error!("Failed to create strategy '{}': {}", strategy_id, e);
+                trading_common::backtest::strategy::create_multi_timeframe_strategy("trend")
+                    .expect("Fallback strategy 'trend' must exist")
+            }),
         &bt_config,
         &symbol_data,
         req.market_state_window,

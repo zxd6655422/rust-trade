@@ -16,6 +16,7 @@ import {
   BacktestRequest,
   BacktestResponse,
 } from '@/types/backtest';
+import { useLanguage } from '@/lib/i18n/context';
 
 interface BacktestParams {
   strategy_id: string;
@@ -29,6 +30,7 @@ interface BacktestParams {
 }
 
 export default function BacktestContent() {
+  const { t } = useLanguage();
   const [dataInfo, setDataInfo] = useState<DataInfoResponse | null>(null);
   const [strategies, setStrategies] = useState<StrategyInfo[]>([]);
   const [loading, setLoading] = useState(true);
@@ -123,7 +125,7 @@ export default function BacktestContent() {
     return (
       <div className="flex items-center justify-center py-20">
         <Loader2 className="w-6 h-6 animate-spin mr-2" />
-        <span>Loading backtest data...</span>
+        <span>{t.backtestContent.loading}</span>
       </div>
     );
   }
@@ -135,7 +137,7 @@ export default function BacktestContent() {
         <CardHeader className="pb-3">
           <CardTitle className="flex items-center gap-2 text-lg">
             <BarChart3 className="w-5 h-5" />
-            Backtest Configuration
+            {t.backtestContent.title}
             {configValid !== null && (
               configValid ? (
                 <CheckCircle className="w-4 h-4 text-emerald-500" />
@@ -148,13 +150,13 @@ export default function BacktestContent() {
         <CardContent>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             <div>
-              <label className="block text-sm font-medium mb-1.5">Strategy</label>
+              <label className="block text-sm font-medium mb-1.5">{t.backtestContent.strategy}</label>
               <select
                 value={params.strategy_id}
                 onChange={(e) => setParams({ ...params, strategy_id: e.target.value })}
                 className="w-full p-2.5 border rounded-md bg-background text-sm"
               >
-                <option value="">Select Strategy</option>
+                <option value="">{t.backtestContent.selectStrategy}</option>
                 {strategies.map((s) => (
                   <option key={s.id} value={s.id}>{s.name}</option>
                 ))}
@@ -167,13 +169,13 @@ export default function BacktestContent() {
             </div>
 
             <div>
-              <label className="block text-sm font-medium mb-1.5">Symbol</label>
+              <label className="block text-sm font-medium mb-1.5">{t.backtestContent.symbol}</label>
               <select
                 value={params.symbol}
                 onChange={(e) => setParams({ ...params, symbol: e.target.value })}
                 className="w-full p-2.5 border rounded-md bg-background text-sm"
               >
-                <option value="">Select Symbol</option>
+                <option value="">{t.backtestContent.selectSymbol}</option>
                 {dataInfo?.symbol_info.map((s) => (
                   <option key={s.symbol} value={s.symbol}>
                     {s.symbol} ({s.records_count.toLocaleString()})
@@ -183,7 +185,7 @@ export default function BacktestContent() {
             </div>
 
             <div>
-              <label className="block text-sm font-medium mb-1.5">Data Points</label>
+              <label className="block text-sm font-medium mb-1.5">{t.backtestContent.dataPoints}</label>
               <input
                 type="number"
                 value={params.data_count}
@@ -195,7 +197,7 @@ export default function BacktestContent() {
             </div>
 
             <div>
-              <label className="block text-sm font-medium mb-1.5">Initial Capital ($)</label>
+              <label className="block text-sm font-medium mb-1.5">{t.backtestContent.initialCapital}</label>
               <input
                 type="text"
                 value={params.initial_capital}
@@ -205,7 +207,7 @@ export default function BacktestContent() {
             </div>
 
             <div>
-              <label className="block text-sm font-medium mb-1.5">Commission (%)</label>
+              <label className="block text-sm font-medium mb-1.5">{t.backtestContent.commission}</label>
               <input
                 type="text"
                 value={(parseFloat(params.commission_rate) * 100).toString()}
@@ -220,7 +222,7 @@ export default function BacktestContent() {
             {params.strategy_id === 'sma' && (
               <>
                 <div>
-                  <label className="block text-sm font-medium mb-1.5">Short Period</label>
+                  <label className="block text-sm font-medium mb-1.5">{t.backtestContent.shortPeriod}</label>
                   <input
                     type="number"
                     value={params.short_period}
@@ -230,7 +232,7 @@ export default function BacktestContent() {
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium mb-1.5">Long Period</label>
+                  <label className="block text-sm font-medium mb-1.5">{t.backtestContent.longPeriod}</label>
                   <input
                     type="number"
                     value={params.long_period}
@@ -252,12 +254,12 @@ export default function BacktestContent() {
               {configValid ? (
                 <span className="flex items-center gap-2">
                   <CheckCircle className="w-4 h-4" />
-                  Configuration valid — ready to backtest
+                  {t.backtestContent.configValid}
                 </span>
               ) : (
                 <span className="flex items-center gap-2">
                   <AlertCircle className="w-4 h-4" />
-                  Insufficient data for this configuration
+                  {t.backtestContent.configInvalid}
                 </span>
               )}
             </div>
@@ -271,12 +273,12 @@ export default function BacktestContent() {
             {isRunning ? (
               <span className="flex items-center gap-2">
                 <Loader2 className="w-4 h-4 animate-spin" />
-                Running...
+                {t.backtestContent.running}
               </span>
             ) : (
               <span className="flex items-center gap-2">
                 <Play className="w-4 h-4" />
-                Run Backtest
+                {t.backtestContent.runBacktest}
               </span>
             )}
           </Button>
@@ -302,7 +304,7 @@ export default function BacktestContent() {
           <Card>
             <CardHeader className="pb-3">
               <div className="flex items-center justify-between">
-                <CardTitle className="text-lg">{result.strategy_name} Results</CardTitle>
+                <CardTitle className="text-lg">{result.strategy_name} {t.backtestContent.results}</CardTitle>
                 <Badge variant={result.data_source.startsWith('OHLC') ? 'default' : 'secondary'}>
                   {result.data_source}
                 </Badge>
@@ -311,47 +313,47 @@ export default function BacktestContent() {
             <CardContent>
               <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
                 <div>
-                  <p className="text-xs text-muted-foreground">Return</p>
+                  <p className="text-xs text-muted-foreground">{t.backtestContent.returnValue}</p>
                   <p className={`text-xl font-bold ${parseFloat(result.return_percentage) >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
                     {parseFloat(result.return_percentage).toFixed(2)}%
                   </p>
                 </div>
                 <div>
-                  <p className="text-xs text-muted-foreground">Final Value</p>
+                  <p className="text-xs text-muted-foreground">{t.backtestContent.finalValue}</p>
                   <p className="text-xl font-bold">${parseFloat(result.final_value).toFixed(2)}</p>
                 </div>
                 <div>
-                  <p className="text-xs text-muted-foreground">P&L</p>
+                  <p className="text-xs text-muted-foreground">{t.backtestContent.totalPnl}</p>
                   <p className={`text-xl font-bold ${parseFloat(result.total_pnl) >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
                     ${parseFloat(result.total_pnl).toFixed(2)}
                   </p>
                 </div>
                 <div>
-                  <p className="text-xs text-muted-foreground">Sharpe</p>
+                  <p className="text-xs text-muted-foreground">{t.backtestContent.sharpe}</p>
                   <p className="text-xl font-bold">{parseFloat(result.sharpe_ratio).toFixed(2)}</p>
                 </div>
                 <div>
-                  <p className="text-xs text-muted-foreground">Max DD</p>
+                  <p className="text-xs text-muted-foreground">{t.backtestContent.maxDd}</p>
                   <p className="text-xl font-bold text-red-500">{parseFloat(result.max_drawdown).toFixed(2)}%</p>
                 </div>
                 <div>
-                  <p className="text-xs text-muted-foreground">Win Rate</p>
+                  <p className="text-xs text-muted-foreground">{t.backtestContent.winRate}</p>
                   <p className="text-xl font-bold">{parseFloat(result.win_rate).toFixed(1)}%</p>
                 </div>
                 <div>
-                  <p className="text-xs text-muted-foreground">Trades</p>
+                  <p className="text-xs text-muted-foreground">{t.backtestContent.trades}</p>
                   <p className="text-xl font-bold">{result.total_trades}</p>
                 </div>
                 <div>
-                  <p className="text-xs text-muted-foreground">Wins</p>
+                  <p className="text-xs text-muted-foreground">{t.backtestContent.wins}</p>
                   <p className="text-xl font-bold text-emerald-500">{result.winning_trades}</p>
                 </div>
                 <div>
-                  <p className="text-xs text-muted-foreground">Losses</p>
+                  <p className="text-xs text-muted-foreground">{t.backtestContent.losses}</p>
                   <p className="text-xl font-bold text-red-500">{result.losing_trades}</p>
                 </div>
                 <div>
-                  <p className="text-xs text-muted-foreground">Profit Factor</p>
+                  <p className="text-xs text-muted-foreground">{t.backtestContent.profitFactor}</p>
                   <p className="text-xl font-bold">{parseFloat(result.profit_factor).toFixed(2)}</p>
                 </div>
               </div>
@@ -362,7 +364,7 @@ export default function BacktestContent() {
           {result.equity_curve?.length > 0 && (
             <Card>
               <CardHeader className="pb-3">
-                <CardTitle className="text-lg">Equity Curve</CardTitle>
+                <CardTitle className="text-lg">{t.backtestContent.equityCurve}</CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="h-72">
@@ -404,7 +406,7 @@ export default function BacktestContent() {
             <Card>
               <CardHeader className="pb-3">
                 <CardTitle className="text-lg">
-                  Trades ({result.trades.length})
+                  {t.backtestContent.tradesCount} ({result.trades.length})
                 </CardTitle>
               </CardHeader>
               <CardContent>

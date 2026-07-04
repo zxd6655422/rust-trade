@@ -146,7 +146,10 @@ impl BackfillService {
                     }
 
                     let count = klines.len();
-                    let last_ts = klines.last().unwrap().timestamp;
+                    let last_ts = match klines.last() {
+                        Some(k) => k.timestamp,
+                        None => continue, // Should not happen due to is_empty check above
+                    };
 
                     // 转换为 OHLCData 并写入
                     let ohlc_list = klines_to_ohlc(klines);

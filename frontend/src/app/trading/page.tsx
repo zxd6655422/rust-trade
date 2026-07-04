@@ -5,7 +5,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import {
   Activity, LineChart, FlaskConical, Zap,
-  CircleDot, Layers
+  CircleDot, Layers, TrendingUp
 } from 'lucide-react';
 import { useLanguage } from '@/lib/i18n/context';
 
@@ -23,6 +23,7 @@ import StrategyWinRate from '@/components/trading/StrategyWinRate';
 
 // 回测页面内容 (内联导入)
 import BacktestContent from './BacktestContent';
+import AdvancedBacktestContent from './AdvancedBacktestContent';
 
 type MarketType = 'spot' | 'futures';
 
@@ -61,6 +62,10 @@ export default function TradingPage() {
           <TabsTrigger value="paper" className="gap-2 px-4">
             <FlaskConical className="w-4 h-4" />
             {t.trading.paperTrading}
+          </TabsTrigger>
+          <TabsTrigger value="advanced" className="gap-2 px-4">
+            <TrendingUp className="w-4 h-4" />
+            Advanced Backtest
           </TabsTrigger>
         </TabsList>
 
@@ -150,6 +155,11 @@ export default function TradingPage() {
             </p>
             <Badge variant="outline" className="mt-4">{t.common.comingSoon}</Badge>
           </div>
+        </TabsContent>
+
+        {/* ============ Advanced Backtest Tab ============ */}
+        <TabsContent value="advanced">
+          <AdvancedBacktestContent />
         </TabsContent>
       </Tabs>
     </div>

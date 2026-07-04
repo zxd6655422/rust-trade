@@ -4,10 +4,11 @@ import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Loader2, TrendingUp, TrendingDown, RefreshCw } from 'lucide-react';
+import { Loader2, TrendingUp, TrendingDown, RefreshCw, Wifi, WifiOff, Radio } from 'lucide-react';
 import { RealtimePrice } from '@/types/trading';
 import { Button } from '@/components/ui/button';
 import { useLanguage } from '@/lib/i18n/context';
+import { useRealtimeData, DataSource } from '@/lib/useRealtimeData';
 
 interface PriceTickerProps {
   symbols?: string[];
@@ -15,33 +16,66 @@ interface PriceTickerProps {
   selectedSymbol?: string;
 }
 
-export default function PriceTicker({ symbols, onSymbolSelect, selectedSymbol }: PriceTickerProps) {
-  const [prices, setPrices] = useState<RealtimePrice[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const { t } = useLanguage();
+/** 数据源状态指示器 */
+function DataSourceIndicator({ source }: { source: DataSource }) {
+  if (source === 'websocket') {
+    return (
+      <Badge variant="default" className="text-[10px] px-1.5 py-0 gap-1 bg-emerald-500">
+        <Radio className="w-2.5 h-2.5" />
+        Live
+      </Badge>
+    );
+  }
+  if (source === 'polling') {
+    return (
+      <Badge variant="secondary" className="text-[10px] px-1.5 py-0 gap-1">
+        <Wifi className="w-2.5 h-2.5" />
+        Polling
+      </Badge>
+    );
+  }
+  return (
+    <Badge variant="destructive" className="text-[10px] px-1.5 py-0 gap-1">
+      <WifiOff className="w-2.5 h-2.5" />
+      Offline
+    </Badge>
+  );
+}
 
-  const fetchPrices = async () => {
-    try {
-      setLoading(true);
-      setError(null);
-      const result = await invoke<RealtimePrice[]>('get_realtime_prices', {
-        symbols: symbols || null
-      });
-      setPrices(result);
-    } catch (err) {
-      console.error('Failed to fetch prices:', err);
-      setError(err instanceof Error ? err.message : t.common.error);
-    } finally {
-      setLoading(false);
-    }
-  };
+export default function PriceTicker({ symbols, onSymbolSelect, selectedSymbol }: PriceTickerProps) {
+  const { t } = useLanguage();
+  const defaultSymbols = symbols || ['BTCUSDT', 'ETHUSDT', 'SOLUSDT'];
+
+  // 使用实时数据 hook（自动选择 WebSocket 或轮询）
+  const { prices: realtimePrices, dataSource, isConnected, reconnect } = useRealtimeData({
+    symbols: defaultSymbols,
+  });
+
+  // 降级：如果实时数据为空，用 Tauri 命令加载初始数据
+  const [fallbackPrices, setFallbackPrices] = useState<RealtimePrice[]>([]);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetchPrices();
-    const interval = setInterval(fetchPrices, 10000);
-    return () => clearInterval(interval);
+    const loadInitial = async () => {
+      try {
+        const result = await invoke<RealtimePrice[]>('get_realtime_prices', {
+          symbols: symbols || null,
+        });
+        setFallbackPrices(result);
+      } catch {
+        // 静默失败
+      } finally {
+        setLoading(false);
+      }
+    };
+    loadInitial();
   }, [symbols?.join(',')]);
+
+  // 合并实时数据和降级数据
+  const prices: RealtimePrice[] =
+    realtimePrices.size > 0
+      ? Array.from(realtimePrices.values())
+      : fallbackPrices;
 
   const formatPrice = (price: string) => {
     const num = parseFloat(price);
@@ -71,23 +105,20 @@ export default function PriceTicker({ symbols, onSymbolSelect, selectedSymbol }:
     );
   }
 
-  if (error) {
-    return (
-      <Card className="border-destructive/50 bg-destructive/5">
-        <CardContent className="pt-6">
-          <p className="text-sm text-destructive">{error}</p>
-        </CardContent>
-      </Card>
-    );
-  }
-
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
-        <h3 className="text-sm font-medium text-muted-foreground">{t.priceTicker.marketPrices}</h3>
-        <Button variant="ghost" size="sm" onClick={fetchPrices} disabled={loading}>
-          <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} />
-        </Button>
+        <div className="flex items-center gap-2">
+          <h3 className="text-sm font-medium text-muted-foreground">{t.priceTicker.marketPrices}</h3>
+          <DataSourceIndicator source={dataSource} />
+        </div>
+        <div className="flex items-center gap-1">
+          {!isConnected && dataSource !== 'polling' && (
+            <Button variant="ghost" size="sm" onClick={reconnect} title="Reconnect">
+              <RefreshCw className="w-3 h-3" />
+            </Button>
+          )}
+        </div>
       </div>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         {prices.map((price) => {

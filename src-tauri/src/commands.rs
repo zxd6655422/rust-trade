@@ -703,3 +703,421 @@ pub async fn get_commission_stats(
     info!("Commission stats retrieved: total={}", stats.total_commission);
     Ok(stats)
 }
+
+// ============ P11: 高级回测 Commands ============
+
+/// 执行多时间框架回测（完整模拟交易）
+#[tauri::command]
+pub async fn run_multi_timeframe_backtest(
+    state: State<'_, AppState>,
+    request: MultiTimeframeBacktestRequest,
+) -> Result<BacktestResponse, String> {
+    info!("Starting multi-timeframe backtest: strategy={}, symbol={}, data_count={}",
+          request.strategy, request.symbol, request.data_count);
+
+    // 验证策略
+    if !trading_common::backtest::strategy::is_multi_timeframe_strategy(&request.strategy) {
+        return Err(format!("Strategy '{}' is not a multi-timeframe strategy", request.strategy));
+    }
+
+    let initial_capital = Decimal::from_str(&request.capital.to_string())
+        .map_err(|_| "Invalid initial capital")?;
+    let commission_rate = Decimal::from_str(&(request.commission_rate / 100.0).to_string())
+        .map_err(|_| "Invalid commission rate")?;
+
+    let mut config = trading_common::backtest::engine::BacktestConfig::new(initial_capital)
+        .with_commission_rate(commission_rate);
+
+    if let Some(params) = &request.strategy_params {
+        for (key, value) in params {
+            config = config.with_param(key, value);
+        }
+    }
+
+    // 获取 1m K线数据
+    let candle_count = request.data_count.max(1000) as u32;
+    let klines_1m = state.repository
+        .get_klines(&request.symbol, candle_count)
+        .await
+        .map_err(|e| {
+            error!("Failed to get klines: {}", e);
+            e.to_string()
+        })?;
+
+    if klines_1m.is_empty() {
+        return Err("No 1m kline data available. Ensure candle1m data collection is running.".to_string());
+    }
+
+    info!("Loaded {} 1m klines for multi-timeframe backtest", klines_1m.len());
+
+    // 创建策略和引擎
+    let strategy = trading_common::backtest::strategy::create_multi_timeframe_strategy(&request.strategy)?;
+    let mut engine = trading_common::backtest::MultiTimeframeBacktestEngine::new(
+        strategy,
+        config,
+        request.symbol.clone(),
+    ).map_err(|e| {
+        error!("Failed to create backtest engine: {}", e);
+        e
+    })?;
+
+    let result = engine.run(klines_1m.clone());
+
+    info!("Multi-timeframe backtest completed: {} trades, return={:.2}%",
+          result.total_trades, result.return_percentage);
+
+    Ok(BacktestResponse {
+        strategy_name: format!("{} (Multi-TF)", request.strategy),
+        initial_capital: initial_capital.to_string(),
+        final_value: result.final_value.to_string(),
+        total_pnl: result.total_pnl.to_string(),
+        return_percentage: result.return_percentage.to_string(),
+        total_trades: result.total_trades,
+        winning_trades: result.winning_trades,
+        losing_trades: result.losing_trades,
+        max_drawdown: result.max_drawdown.to_string(),
+        sharpe_ratio: result.sharpe_ratio.to_string(),
+        volatility: result.volatility.to_string(),
+        win_rate: result.win_rate.to_string(),
+        profit_factor: result.profit_factor.to_string(),
+        total_commission: result.total_commission.to_string(),
+        data_source: "1m-kline".to_string(),
+        trades: result.trades.into_iter().map(|trade| TradeInfo {
+            timestamp: trade.timestamp.to_rfc3339(),
+            symbol: trade.symbol,
+            side: match trade.side {
+                trading_common::data::types::TradeSide::Buy => "Buy".to_string(),
+                trading_common::data::types::TradeSide::Sell => "Sell".to_string(),
+            },
+            quantity: trade.quantity.to_string(),
+            price: trade.price.to_string(),
+            realized_pnl: trade.realized_pnl.map(|pnl| pnl.to_string()),
+            commission: trade.commission.to_string(),
+        }).collect(),
+        equity_curve: result.equity_curve.into_iter().map(|v| v.to_string()).collect(),
+    })
+}
+
+/// 执行滚动前进测试
+#[tauri::command]
+pub async fn run_walk_forward_test(
+    state: State<'_, AppState>,
+    request: WalkForwardRequest,
+) -> Result<WalkForwardResult, String> {
+    info!("Starting walk-forward test: strategy={}, symbol={}", request.strategy, request.symbol);
+
+    if !trading_common::backtest::strategy::is_multi_timeframe_strategy(&request.strategy) {
+        return Err(format!("Strategy '{}' is not a multi-timeframe strategy", request.strategy));
+    }
+
+    let initial_capital = Decimal::from_str(&request.capital.to_string())
+        .map_err(|_| "Invalid initial capital")?;
+    let commission_rate = Decimal::from_str(&(request.commission_rate / 100.0).to_string())
+        .map_err(|_| "Invalid commission rate")?;
+
+    let mut bt_config = trading_common::backtest::BacktestConfig::new(initial_capital)
+        .with_commission_rate(commission_rate);
+    if let Some(params) = &request.strategy_params {
+        for (key, value) in params {
+            bt_config = bt_config.with_param(key, value);
+        }
+    }
+
+    let wf_config = trading_common::backtest::WalkForwardConfig::default()
+        .with_train_candles(request.train_candles)
+        .with_test_candles(request.test_candles)
+        .with_step_candles(request.step_candles);
+
+    // 获取 1m K线数据
+    let klines_1m = state.repository
+        .get_klines(&request.symbol, request.data_count)
+        .await
+        .map_err(|e| {
+            error!("Failed to get klines: {}", e);
+            e.to_string()
+        })?;
+
+    if klines_1m.is_empty() {
+        return Err("No 1m kline data available for walk-forward analysis".to_string());
+    }
+
+    info!("Loaded {} 1m klines for walk-forward", klines_1m.len());
+
+    let strategy_id = request.strategy.clone();
+    let result = trading_common::backtest::WalkForwardEngine::run(
+        || trading_common::backtest::strategy::create_multi_timeframe_strategy(&strategy_id)
+            .unwrap_or_else(|e| {
+                error!("Failed to create strategy '{}': {}", strategy_id, e);
+                trading_common::backtest::strategy::create_multi_timeframe_strategy("trend")
+                    .expect("Fallback strategy 'trend' must exist")
+            }),
+        &bt_config,
+        &wf_config,
+        &klines_1m,
+        &request.symbol,
+    ).map_err(|e| {
+        error!("Walk-forward failed: {}", e);
+        e
+    })?;
+
+    let rounds: Vec<WalkForwardRoundSummary> = result.round_summaries.iter().map(|r| {
+        WalkForwardRoundSummary {
+            round: r.round,
+            train_start: r.train_start.to_rfc3339(),
+            train_end: r.train_end.to_rfc3339(),
+            test_start: r.test_start.to_rfc3339(),
+            test_end: r.test_end.to_rfc3339(),
+            train_return_pct: format!("{:.2}%", r.train_return_pct),
+            train_sharpe: format!("{:.2}", r.train_sharpe),
+            train_trades: r.train_trades,
+            test_return_pct: format!("{:.2}%", r.test_return_pct),
+            test_sharpe: format!("{:.2}", r.test_sharpe),
+            test_trades: r.test_trades,
+            test_win_rate: format!("{:.2}%", r.test_win_rate),
+            test_max_drawdown: format!("{:.2}%", r.test_max_drawdown),
+            overfit_ratio: format!("{:.2}", r.overfit_ratio),
+        }
+    }).collect();
+
+    Ok(WalkForwardResult {
+        total_rounds: result.total_rounds,
+        profitable_rounds: result.profitable_rounds,
+        overall_test_return_pct: format!("{:.2}%", result.overall_test_return_pct),
+        overall_test_sharpe: format!("{:.2}", result.overall_test_sharpe),
+        overall_test_max_drawdown: format!("{:.2}%", result.overall_test_max_drawdown),
+        overall_test_win_rate: format!("{:.2}%", result.overall_test_win_rate),
+        avg_overfit_ratio: format!("{:.2}", result.avg_overfit_ratio),
+        is_overfit: result.is_overfit,
+        rounds,
+    })
+}
+
+/// 执行样本外测试
+#[tauri::command]
+pub async fn run_out_of_sample_test(
+    state: State<'_, AppState>,
+    request: OutOfSampleRequest,
+) -> Result<OutOfSampleResult, String> {
+    info!("Starting out-of-sample test: strategy={}, symbol={}", request.strategy, request.symbol);
+
+    if !trading_common::backtest::strategy::is_multi_timeframe_strategy(&request.strategy) {
+        return Err(format!("Strategy '{}' is not a multi-timeframe strategy", request.strategy));
+    }
+
+    let initial_capital = Decimal::from_str(&request.capital.to_string())
+        .map_err(|_| "Invalid initial capital")?;
+    let commission_rate = Decimal::from_str(&(request.commission_rate / 100.0).to_string())
+        .map_err(|_| "Invalid commission rate")?;
+
+    let mut bt_config = trading_common::backtest::BacktestConfig::new(initial_capital)
+        .with_commission_rate(commission_rate);
+    if let Some(params) = &request.strategy_params {
+        for (key, value) in params {
+            bt_config = bt_config.with_param(key, value);
+        }
+    }
+
+    let os_config = trading_common::backtest::OutOfSampleConfig {
+        train_ratio: Decimal::from_str(&request.train_ratio.to_string())
+            .unwrap_or_else(|_| Decimal::new(7, 1)),
+    };
+
+    let klines_1m = state.repository
+        .get_klines(&request.symbol, request.data_count)
+        .await
+        .map_err(|e| {
+            error!("Failed to get klines: {}", e);
+            e.to_string()
+        })?;
+
+    if klines_1m.is_empty() {
+        return Err("No 1m kline data available for out-of-sample analysis".to_string());
+    }
+
+    info!("Loaded {} 1m klines for out-of-sample", klines_1m.len());
+
+    let strategy_id = request.strategy.clone();
+    let result = trading_common::backtest::WalkForwardEngine::run_out_of_sample(
+        || trading_common::backtest::strategy::create_multi_timeframe_strategy(&strategy_id)
+            .unwrap_or_else(|e| {
+                error!("Failed to create strategy '{}': {}", strategy_id, e);
+                trading_common::backtest::strategy::create_multi_timeframe_strategy("trend")
+                    .expect("Fallback strategy 'trend' must exist")
+            }),
+        &bt_config,
+        &os_config,
+        &klines_1m,
+        &request.symbol,
+    ).map_err(|e| {
+        error!("Out-of-sample failed: {}", e);
+        e
+    })?;
+
+    Ok(OutOfSampleResult {
+        train_return_pct: format!("{:.2}%", result.train_result.return_percentage),
+        train_sharpe: format!("{:.2}", result.train_sharpe),
+        train_max_drawdown: format!("{:.2}%", result.train_result.max_drawdown),
+        train_win_rate: format!("{:.2}%", result.train_result.win_rate),
+        train_trades: result.train_result.total_trades,
+        train_profit_factor: format!("{:.2}", result.train_result.profit_factor),
+        test_return_pct: format!("{:.2}%", result.test_result.return_percentage),
+        test_sharpe: format!("{:.2}", result.test_sharpe),
+        test_max_drawdown: format!("{:.2}%", result.test_result.max_drawdown),
+        test_win_rate: format!("{:.2}%", result.test_result.win_rate),
+        test_trades: result.test_result.total_trades,
+        test_profit_factor: format!("{:.2}", result.test_result.profit_factor),
+        overfit_ratio: format!("{:.2}", result.overfit_ratio),
+        is_overfit: result.is_overfit,
+    })
+}
+
+/// 执行多交易对回测
+#[tauri::command]
+pub async fn run_multi_symbol_backtest(
+    state: State<'_, AppState>,
+    request: MultiSymbolBacktestRequest,
+) -> Result<MultiSymbolBacktestResult, String> {
+    info!("Starting multi-symbol backtest: strategy={}, symbols={:?}",
+          request.strategy, request.symbols);
+
+    if !trading_common::backtest::strategy::is_multi_timeframe_strategy(&request.strategy) {
+        return Err(format!("Strategy '{}' is not a multi-timeframe strategy", request.strategy));
+    }
+
+    let initial_capital = Decimal::from_str(&request.capital.to_string())
+        .map_err(|_| "Invalid initial capital")?;
+    let commission_rate = Decimal::from_str(&(request.commission_rate / 100.0).to_string())
+        .map_err(|_| "Invalid commission rate")?;
+
+    let mut bt_config = trading_common::backtest::BacktestConfig::new(initial_capital)
+        .with_commission_rate(commission_rate);
+    if let Some(params) = &request.strategy_params {
+        for (key, value) in params {
+            bt_config = bt_config.with_param(key, value);
+        }
+    }
+
+    // 确定 symbol 列表
+    let symbols = if request.symbols.is_empty() {
+        let data_info = state.repository.get_backtest_data_info()
+            .await
+            .map_err(|e| e.to_string())?;
+        data_info.get_available_symbols()
+    } else {
+        request.symbols.clone()
+    };
+
+    if symbols.is_empty() {
+        return Err("No symbols available for backtest".to_string());
+    }
+
+    // 加载每个 symbol 的数据
+    let mut symbol_data = std::collections::HashMap::new();
+    for symbol in &symbols {
+        match state.repository.get_klines(symbol, request.data_count).await {
+            Ok(klines) if !klines.is_empty() => {
+                info!("Loaded {} klines for {}", klines.len(), symbol);
+                symbol_data.insert(symbol.clone(), klines);
+            }
+            _ => {
+                info!("No kline data for {}, skipping", symbol);
+            }
+        }
+    }
+
+    if symbol_data.is_empty() {
+        return Err("No kline data available for any symbol".to_string());
+    }
+
+    let strategy_id = request.strategy.clone();
+    let result = trading_common::backtest::MultiSymbolBacktestEngine::run(
+        move || trading_common::backtest::strategy::create_multi_timeframe_strategy(&strategy_id)
+            .unwrap_or_else(|e| {
+                error!("Failed to create strategy '{}': {}", strategy_id, e);
+                trading_common::backtest::strategy::create_multi_timeframe_strategy("trend")
+                    .expect("Fallback strategy 'trend' must exist")
+            }),
+        &bt_config,
+        &symbol_data,
+        request.market_state_window,
+    ).map_err(|e| {
+        error!("Multi-symbol backtest failed: {}", e);
+        e
+    })?;
+
+    let symbols_result: Vec<SymbolBacktestResultItem> = result.results.iter().map(|r| {
+        SymbolBacktestResultItem {
+            symbol: r.symbol.clone(),
+            return_pct: format!("{:.2}%", r.result.return_percentage),
+            sharpe: format!("{:.2}", r.result.sharpe_ratio),
+            win_rate: format!("{:.2}%", r.result.win_rate),
+            max_drawdown: format!("{:.2}%", r.result.max_drawdown),
+            total_trades: r.result.total_trades,
+            profit_factor: format!("{:.2}", r.result.profit_factor),
+            market_state: r.market_state.summary.clone(),
+            data_quality: format!("{:.0}/100", r.market_state.data_quality_score),
+        }
+    }).collect();
+
+    Ok(MultiSymbolBacktestResult {
+        total_symbols: result.total_symbols,
+        profitable_symbols: result.profitable_symbols,
+        losing_symbols: result.losing_symbols,
+        avg_return_pct: format!("{:.2}%", result.avg_return_pct),
+        avg_sharpe: format!("{:.2}", result.avg_sharpe),
+        avg_win_rate: format!("{:.2}%", result.avg_win_rate),
+        avg_max_drawdown: format!("{:.2}%", result.avg_max_drawdown),
+        total_trades: result.total_trades,
+        best_symbol: result.best_symbol,
+        best_return_pct: format!("{:.2}%", result.best_return_pct),
+        worst_symbol: result.worst_symbol,
+        worst_return_pct: format!("{:.2}%", result.worst_return_pct),
+        cross_symbol_correlation: format!("{:.2}", result.cross_symbol_correlation),
+        symbols: symbols_result,
+    })
+}
+
+/// 分析市场状态
+#[tauri::command]
+pub async fn analyze_market_state(
+    state: State<'_, AppState>,
+    request: MarketStateAnalysisRequest,
+) -> Result<MarketStateResult, String> {
+    info!("Analyzing market state: symbol={}, data_count={}, window={}",
+          request.symbol, request.data_count, request.window);
+
+    let klines_1m = state.repository
+        .get_klines(&request.symbol, request.data_count)
+        .await
+        .map_err(|e| {
+            error!("Failed to get klines: {}", e);
+            e.to_string()
+        })?;
+
+    if klines_1m.is_empty() {
+        return Err(format!("No kline data available for {}", request.symbol));
+    }
+
+    info!("Loaded {} klines for market state analysis", klines_1m.len());
+
+    let report = trading_common::backtest::MarketStateAnalyzer::analyze(&klines_1m, request.window);
+
+    let state_distribution: std::collections::HashMap<String, String> = report
+        .state_percentages
+        .iter()
+        .map(|(k, v)| (k.clone(), format!("{:.1}%", v)))
+        .collect();
+
+    Ok(MarketStateResult {
+        symbol: request.symbol,
+        total_candles: report.total_candles,
+        analysis_window: report.analysis_window,
+        state_distribution,
+        avg_volatility: format!("{:.2}%", report.avg_volatility),
+        avg_trend_strength: format!("{:.2}", report.avg_trend_strength),
+        trend_ratio: format!("{:.1}%", report.trend_ratio),
+        ranging_ratio: format!("{:.1}%", report.ranging_ratio),
+        data_quality_score: format!("{:.0}/100", report.data_quality_score),
+        summary: report.summary,
+    })
+}

@@ -1,6 +1,165 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+// ============ P11: 高级回测类型 ============
+
+/// 多时间框架回测请求
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MultiTimeframeBacktestRequest {
+    pub strategy: String,
+    pub symbol: String,
+    pub capital: f64,
+    pub data_count: i64,
+    pub commission_rate: f64,
+    pub strategy_params: Option<HashMap<String, String>>,
+}
+
+/// 滚动前进测试请求
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WalkForwardRequest {
+    pub strategy: String,
+    pub symbol: String,
+    pub capital: f64,
+    pub commission_rate: f64,
+    pub train_candles: usize,
+    pub test_candles: usize,
+    pub step_candles: usize,
+    pub data_count: u32,
+    pub strategy_params: Option<HashMap<String, String>>,
+}
+
+/// 样本外测试请求
+#[derive(Debug, Serialize, Deserialize)]
+pub struct OutOfSampleRequest {
+    pub strategy: String,
+    pub symbol: String,
+    pub capital: f64,
+    pub commission_rate: f64,
+    pub train_ratio: f64,
+    pub data_count: u32,
+    pub strategy_params: Option<HashMap<String, String>>,
+}
+
+/// 多交易对回测请求
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MultiSymbolBacktestRequest {
+    pub strategy: String,
+    pub symbols: Vec<String>,
+    pub capital: f64,
+    pub commission_rate: f64,
+    pub data_count: u32,
+    pub market_state_window: usize,
+    pub strategy_params: Option<HashMap<String, String>>,
+}
+
+/// 市场状态分析请求
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MarketStateAnalysisRequest {
+    pub symbol: String,
+    pub data_count: u32,
+    pub window: usize,
+}
+
+/// 滚动前进测试轮次摘要
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WalkForwardRoundSummary {
+    pub round: usize,
+    pub train_start: String,
+    pub train_end: String,
+    pub test_start: String,
+    pub test_end: String,
+    pub train_return_pct: String,
+    pub train_sharpe: String,
+    pub train_trades: usize,
+    pub test_return_pct: String,
+    pub test_sharpe: String,
+    pub test_trades: usize,
+    pub test_win_rate: String,
+    pub test_max_drawdown: String,
+    pub overfit_ratio: String,
+}
+
+/// 滚动前进测试结果
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WalkForwardResult {
+    pub total_rounds: usize,
+    pub profitable_rounds: usize,
+    pub overall_test_return_pct: String,
+    pub overall_test_sharpe: String,
+    pub overall_test_max_drawdown: String,
+    pub overall_test_win_rate: String,
+    pub avg_overfit_ratio: String,
+    pub is_overfit: bool,
+    pub rounds: Vec<WalkForwardRoundSummary>,
+}
+
+/// 样本外测试结果
+#[derive(Debug, Serialize, Deserialize)]
+pub struct OutOfSampleResult {
+    pub train_return_pct: String,
+    pub train_sharpe: String,
+    pub train_max_drawdown: String,
+    pub train_win_rate: String,
+    pub train_trades: usize,
+    pub train_profit_factor: String,
+    pub test_return_pct: String,
+    pub test_sharpe: String,
+    pub test_max_drawdown: String,
+    pub test_win_rate: String,
+    pub test_trades: usize,
+    pub test_profit_factor: String,
+    pub overfit_ratio: String,
+    pub is_overfit: bool,
+}
+
+/// 多交易对回测中单个 symbol 的结果
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SymbolBacktestResultItem {
+    pub symbol: String,
+    pub return_pct: String,
+    pub sharpe: String,
+    pub win_rate: String,
+    pub max_drawdown: String,
+    pub total_trades: usize,
+    pub profit_factor: String,
+    pub market_state: String,
+    pub data_quality: String,
+}
+
+/// 多交易对回测结果
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MultiSymbolBacktestResult {
+    pub total_symbols: usize,
+    pub profitable_symbols: usize,
+    pub losing_symbols: usize,
+    pub avg_return_pct: String,
+    pub avg_sharpe: String,
+    pub avg_win_rate: String,
+    pub avg_max_drawdown: String,
+    pub total_trades: usize,
+    pub best_symbol: String,
+    pub best_return_pct: String,
+    pub worst_symbol: String,
+    pub worst_return_pct: String,
+    pub cross_symbol_correlation: String,
+    pub symbols: Vec<SymbolBacktestResultItem>,
+}
+
+/// 市场状态分析结果
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MarketStateResult {
+    pub symbol: String,
+    pub total_candles: usize,
+    pub analysis_window: usize,
+    pub state_distribution: HashMap<String, String>,
+    pub avg_volatility: String,
+    pub avg_trend_strength: String,
+    pub trend_ratio: String,
+    pub ranging_ratio: String,
+    pub data_quality_score: String,
+    pub summary: String,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DataInfoResponse {
     pub total_records: u64,

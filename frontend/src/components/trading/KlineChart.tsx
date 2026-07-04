@@ -11,6 +11,7 @@ import {
   ResponsiveContainer, BarChart, Bar
 } from 'recharts';
 import { KlineData } from '@/types/trading';
+import { useLanguage } from '@/lib/i18n/context';
 
 const TIMEFRAMES = [
   { value: '1m', label: '1m' },
@@ -27,6 +28,7 @@ interface KlineChartProps {
 }
 
 export default function KlineChart({ symbol }: KlineChartProps) {
+  const { t } = useLanguage();
   const [klines, setKlines] = useState<KlineData[]>([]);
   const [loading, setLoading] = useState(true);
   const [timeframe, setTimeframe] = useState('1h');
@@ -115,7 +117,7 @@ export default function KlineChart({ symbol }: KlineChartProps) {
         {loading && klines.length === 0 ? (
           <div className="flex items-center justify-center h-64">
             <Loader2 className="w-5 h-5 animate-spin mr-2" />
-            <span className="text-sm text-muted-foreground">Loading chart...</span>
+            <span className="text-sm text-muted-foreground">{t.common.loading}</span>
           </div>
         ) : chartData.length > 0 ? (
           <div className="space-y-4">
@@ -149,15 +151,15 @@ export default function KlineChart({ symbol }: KlineChartProps) {
                         <div className="bg-background border rounded-lg shadow-lg p-3 text-xs">
                           <p className="font-medium mb-1">{d.time}</p>
                           <div className="grid grid-cols-2 gap-x-4 gap-y-0.5">
-                            <span className="text-muted-foreground">Open:</span>
+                            <span className="text-muted-foreground">{t.klineChart.open}:</span>
                             <span className="font-mono">${d.open.toFixed(2)}</span>
-                            <span className="text-muted-foreground">High:</span>
+                            <span className="text-muted-foreground">{t.klineChart.high}:</span>
                             <span className="font-mono text-emerald-500">${d.high.toFixed(2)}</span>
-                            <span className="text-muted-foreground">Low:</span>
+                            <span className="text-muted-foreground">{t.klineChart.low}:</span>
                             <span className="font-mono text-red-500">${d.low.toFixed(2)}</span>
-                            <span className="text-muted-foreground">Close:</span>
+                            <span className="text-muted-foreground">{t.klineChart.close}:</span>
                             <span className="font-mono font-bold">${d.price.toFixed(2)}</span>
-                            <span className="text-muted-foreground">Volume:</span>
+                            <span className="text-muted-foreground">{t.klineChart.volume}:</span>
                             <span className="font-mono">{d.volume.toFixed(2)}</span>
                           </div>
                         </div>
@@ -187,7 +189,7 @@ export default function KlineChart({ symbol }: KlineChartProps) {
                       const d = payload[0].payload;
                       return (
                         <div className="bg-background border rounded-lg shadow-lg p-2 text-xs">
-                          <p>Volume: {d.volume.toFixed(2)}</p>
+                          <p>{t.klineChart.volume}: {d.volume.toFixed(2)}</p>
                         </div>
                       );
                     }}
@@ -203,7 +205,7 @@ export default function KlineChart({ symbol }: KlineChartProps) {
           </div>
         ) : (
           <div className="flex items-center justify-center h-64 text-muted-foreground">
-            No data available
+            {t.common.noData}
           </div>
         )}
       </CardContent>

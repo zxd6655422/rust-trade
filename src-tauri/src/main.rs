@@ -80,7 +80,13 @@ fn main() {
             // P10: 统计分析
             get_equity_curve,
             get_performance_metrics,
-            get_commission_stats
+            get_commission_stats,
+            // P11: 高级回测
+            run_multi_timeframe_backtest,
+            run_walk_forward_test,
+            run_out_of_sample_test,
+            run_multi_symbol_backtest,
+            analyze_market_state
         ])
         .setup(|app| {
             tracing::info!("Tauri setup started");
