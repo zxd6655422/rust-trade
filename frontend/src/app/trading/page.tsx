@@ -20,6 +20,8 @@ import EquityCurve from '@/components/trading/EquityCurve';
 import PerformancePanel from '@/components/trading/PerformancePanel';
 import CommissionStats from '@/components/trading/CommissionStats';
 import StrategyWinRate from '@/components/trading/StrategyWinRate';
+import OrderPanel from '@/components/trading/OrderPanel';
+import PriceAlerts from '@/components/trading/PriceAlerts';
 
 // 子页面内容 (内联导入)
 import BacktestContent from './BacktestContent';
@@ -66,7 +68,7 @@ export default function TradingPage() {
           </TabsTrigger>
           <TabsTrigger value="advanced" className="gap-2 px-4">
             <TrendingUp className="w-4 h-4" />
-            Advanced Backtest
+            {t.trading.advancedBacktest}
           </TabsTrigger>
         </TabsList>
 
@@ -112,8 +114,15 @@ export default function TradingPage() {
           {/* Account Profit Dashboard - 醒目位置 */}
           <AccountProfitDashboard symbol={selectedSymbol} />
 
-          {/* K Line Chart */}
-          <KlineChart symbol={selectedSymbol} />
+          {/* K Line Chart + Order Panel */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div className="lg:col-span-2">
+              <KlineChart symbol={selectedSymbol} marketType={marketType} autoRefreshInterval={30000} />
+            </div>
+            <div>
+              <OrderPanel symbol={selectedSymbol} marketType={marketType} />
+            </div>
+          </div>
 
           {/* Positions + PnL Summary Row */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -129,10 +138,16 @@ export default function TradingPage() {
           <StrategyWinRate symbol={selectedSymbol} />
 
           {/* Equity Curve + Performance Row */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <EquityCurve symbol={selectedSymbol} days={90} />
-            <PerformancePanel symbol={selectedSymbol} days={30} />
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div className="lg:col-span-2">
+              <EquityCurve symbol={selectedSymbol} days={90} />
+            </div>
+            <div>
+              <PriceAlerts symbol={selectedSymbol} />
+            </div>
           </div>
+
+          <PerformancePanel symbol={selectedSymbol} days={30} />
 
           {/* Commission Stats */}
           <CommissionStats symbol={selectedSymbol} days={30} />

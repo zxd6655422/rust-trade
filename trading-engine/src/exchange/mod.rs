@@ -6,9 +6,9 @@ pub mod errors;
 pub mod traits;
 pub mod types;
 
-pub use adapters::{BinanceAdapter, BinanceSpotAdapter, OkxAdapter, RedisDataSource, RedisDataSourceConfig};
+pub use adapters::{BinanceAdapter, BinanceSpotAdapter, MockExchange, MockExchangeConfig, OkxAdapter, RedisDataSource, RedisDataSourceConfig};
 pub use errors::ExchangeError;
-pub use traits::Exchange;
+pub use traits::{Exchange, MarketDataProvider, TradingOperations};
 
 /// 交易所工厂
 pub struct ExchangeFactory;
@@ -20,6 +20,7 @@ impl ExchangeFactory {
     /// - "binance"       → Binance USDⓈ-M 合约
     /// - "binance-spot"  → Binance 现货
     /// - "okx"           → OKX 合约
+    /// - "mock"          → Mock 交易所 (本地开发测试)
     pub fn create(
         exchange_id: &str,
         testnet: bool,
@@ -58,6 +59,11 @@ impl ExchangeFactory {
                     simulated: testnet,
                 };
                 let adapter = OkxAdapter::new(config)?;
+                Ok(Box::new(adapter))
+            }
+            "mock" => {
+                let config = MockExchangeConfig::default();
+                let adapter = MockExchange::new(config)?;
                 Ok(Box::new(adapter))
             }
             _ => Err(ExchangeError::Unknown(format!(

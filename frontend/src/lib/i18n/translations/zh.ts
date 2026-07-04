@@ -11,6 +11,7 @@ export const zh: Translations = {
     systemOnline: '系统运行中',
     connected: '已连接',
     disconnected: '未连接',
+    connecting: '连接中',
     selected: '已选择',
     page: '页',
     showing: '显示',
@@ -38,6 +39,7 @@ export const zh: Translations = {
     liveTrading: '实盘交易',
     backtest: '回测',
     paperTrading: '模拟交易',
+    advancedBacktest: '高级回测',
     spot: '现货',
     futures: '合约',
     spotMarket: '现货市场',
@@ -50,6 +52,9 @@ export const zh: Translations = {
   priceTicker: {
     marketPrices: '市场行情',
     vol: '成交量',
+    live: '实时',
+    polling: '轮询',
+    offline: '离线',
   },
 
   // K线图
@@ -391,6 +396,13 @@ export const zh: Translations = {
     equityCurve: '资金曲线',
     tradesCount: '交易记录',
     loading: '加载回测数据...',
+    // 交易表格头部
+    time: '时间',
+    side: '方向',
+    qty: '数量',
+    price: '价格',
+    pnl: '盈亏',
+    showingTrades: '显示前 50 条，共 {count} 条交易',
   },
 
   // 设置页面

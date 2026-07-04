@@ -1,6 +1,8 @@
 // utils/mod.rs
 // 工具模块
 
+pub mod retry;
+
 /// 日志工具
 pub mod logger {
     use tracing_subscriber::{fmt, util::SubscriberInitExt, EnvFilter};

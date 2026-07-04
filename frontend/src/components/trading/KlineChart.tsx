@@ -1,11 +1,11 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Loader2, CandlestickChart, RefreshCw } from 'lucide-react';
+import { Loader2, CandlestickChart, RefreshCw, Pause, Play } from 'lucide-react';
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, BarChart, Bar
@@ -25,13 +25,19 @@ const TIMEFRAMES = [
 
 interface KlineChartProps {
   symbol: string;
+  /** 市场类型 */
+  marketType?: 'spot' | 'futures';
+  /** 自动刷新间隔（毫秒），0 或 undefined 表示禁用 */
+  autoRefreshInterval?: number;
 }
 
-export default function KlineChart({ symbol }: KlineChartProps) {
+export default function KlineChart({ symbol, marketType = 'futures', autoRefreshInterval = 0 }: KlineChartProps) {
   const { t } = useLanguage();
   const [klines, setKlines] = useState<KlineData[]>([]);
   const [loading, setLoading] = useState(true);
   const [timeframe, setTimeframe] = useState('1h');
+  const [autoRefresh, setAutoRefresh] = useState(autoRefreshInterval > 0);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchKlines = useCallback(async () => {
     if (!symbol) return;
@@ -53,9 +59,28 @@ export default function KlineChart({ symbol }: KlineChartProps) {
     }
   }, [symbol, timeframe]);
 
+  // 初始加载和参数变化时获取数据
   useEffect(() => {
     fetchKlines();
   }, [fetchKlines]);
+
+  // 自动刷新
+  useEffect(() => {
+    if (autoRefresh && autoRefreshInterval > 0) {
+      timerRef.current = setInterval(fetchKlines, autoRefreshInterval);
+      return () => {
+        if (timerRef.current) {
+          clearInterval(timerRef.current);
+          timerRef.current = null;
+        }
+      };
+    } else {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+    }
+  }, [autoRefresh, autoRefreshInterval, fetchKlines]);
 
   // 后端返回按时间倒序，图表需要正序（从左到右时间增大）
   const sortedKlines = [...klines].reverse();
@@ -107,6 +132,20 @@ export default function KlineChart({ symbol }: KlineChartProps) {
                 </button>
               ))}
             </div>
+            {autoRefreshInterval > 0 && (
+              <Button
+                variant={autoRefresh ? "default" : "ghost"}
+                size="sm"
+                onClick={() => setAutoRefresh(!autoRefresh)}
+                title={autoRefresh ? "暂停自动刷新" : "开启自动刷新"}
+              >
+                {autoRefresh ? (
+                  <Pause className="w-3 h-3" />
+                ) : (
+                  <Play className="w-3 h-3" />
+                )}
+              </Button>
+            )}
             <Button variant="ghost" size="sm" onClick={fetchKlines} disabled={loading}>
               <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} />
             </Button>

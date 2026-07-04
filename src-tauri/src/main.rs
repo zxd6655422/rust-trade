@@ -95,7 +95,9 @@ fn main() {
             get_paper_trades,
             get_paper_pending_orders,
             cancel_paper_order,
-            reset_paper_trading
+            reset_paper_trading,
+            // 系统状态
+            check_trading_core_status
         ])
         .setup(|app| {
             tracing::info!("Tauri setup started");

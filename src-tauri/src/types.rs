@@ -507,3 +507,10 @@ pub struct PaperTradeResponse {
     pub filled_at: Option<String>,
     pub reject_reason: Option<String>,
 }
+
+/// Trading Core 服务状态响应
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TradingCoreStatusResponse {
+    pub status: String,
+    pub database: bool,
+}

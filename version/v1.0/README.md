@@ -1,12 +1,54 @@
-# v1.0 版本计划 - 真实交易系统
+# v1.0 版本 - 量化交易系统
 
 ## 版本目标
 
-实现完整的真实交易系统，包括：
-- 多交易所支持（Binance、OKX）
-- 高级风控系统
-- 自动化交易
-- Testnet 测试环境
+构建一个**完整、易用、可验证**的量化交易系统，核心目标：
+
+### 🎯 核心能力
+
+| 能力 | 目标 | 状态 |
+|------|------|------|
+| **完整交易** | 支持多交易所（Binance、OKX）现货/合约交易 | ✅ |
+| **数据采集** | 自动采集 K线数据，支持历史回填 | ✅ |
+| **策略回测** | 多时间框架回测、抗过拟合验证 | ✅ |
+| **交易统计** | 完整的盈亏分析、胜率统计、资金曲线 | ✅ |
+| **便捷部署** | systemd 服务化，一键部署脚本 | ✅ |
+
+### 🛠️ 开发体验
+
+| 特性 | 说明 | 状态 |
+|------|------|------|
+| **策略易开发** | 统一的 Strategy trait，支持多时间框架 | ✅ |
+| **策略易测试** | MockExchange 本地测试，不依赖网络 | ✅ |
+| **回测易验证** | 样本外测试、滚动前进测试、过拟合检测 | ✅ |
+| **代码质量** | 47 个单元测试，覆盖核心逻辑 | ✅ |
+
+### 📊 系统架构
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                      量化交易系统 v1.0                           │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────┐ │
+│  │  数据采集服务     │    │   交易引擎服务    │    │  监控应用    │ │
+│  │  (trading-core)  │    │ (trading-engine) │    │ (frontend)  │ │
+│  │                  │    │                  │    │             │ │
+│  │  • K线数据采集   │    │  • 策略执行      │    │  • 行情图表  │ │
+│  │  • 历史数据回填   │    │  • 风控检查      │    │  • 持仓监控  │ │
+│  │  • HTTP API      │    │  • 订单管理      │    │  • 交易记录  │ │
+│  │  • WebSocket     │    │  • 止损止盈      │    │  • 统计分析  │ │
+│  └────────┬─────────┘    └────────┬─────────┘    └──────┬──────┘ │
+│           │                       │                      │       │
+│           └───────────────────────┼──────────────────────┘       │
+│                                   │                              │
+│                    ┌──────────────▼──────────────┐               │
+│                    │     PostgreSQL + Redis       │               │
+│                    │  (数据存储 + 缓存)           │               │
+│                    └──────────────────────────────┘               │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
@@ -500,3 +542,181 @@ WantedBy=multi-user.target
 - [x] 交易历史分页正常
 - [x] 统计指标准确
 - [x] 资金曲线数据正确
+
+### 开发体验验证
+- [x] 策略接口统一易用（Strategy trait）
+- [x] 本地测试不依赖网络（MockExchange）
+- [x] 回测结果可验证（抗过拟合测试）
+- [x] 单元测试覆盖核心逻辑（47 个测试）
+- [x] 错误处理完善（重试机制、超时控制）
+
+---
+
+## 策略开发指南
+
+### 策略接口
+
+```rust
+#[async_trait]
+pub trait Strategy: Send + Sync {
+    /// 策略名称
+    fn name(&self) -> &str;
+
+    /// 分析数据并生成信号
+    fn analyze(&mut self, data: &[OHLCData]) -> Option<Signal>;
+
+    /// 是否应该入场
+    fn should_enter(&self) -> bool;
+
+    /// 是否应该出场
+    fn should_exit(&self) -> bool;
+
+    /// 获取入场方向
+    fn entry_direction(&self) -> EntryDirection;
+}
+```
+
+### 多时间框架策略
+
+```rust
+#[async_trait]
+pub trait MultiTimeframeStrategy: Strategy {
+    /// 需要哪些时间框架
+    fn required_timeframes(&self) -> Vec<Timeframe>;
+
+    /// 多时间框架数据回调
+    fn on_multi_timeframe(
+        &mut self,
+        data: &HashMap<Timeframe, Vec<OHLCData>>,
+    ) -> Signal;
+}
+```
+
+### 本地测试
+
+```toml
+# config/engine-development.toml
+[exchange]
+id = "mock"  # 使用 Mock 交易所
+```
+
+```rust
+// 测试策略
+#[tokio::test]
+async fn test_my_strategy() {
+    let mut exchange = MockExchange::new(MockExchangeConfig::default());
+
+    // 加载历史数据
+    exchange.load_klines("BTCUSDT", historical_klines).await;
+
+    // 设置当前价格
+    exchange.set_price("BTCUSDT", dec!(50000)).await;
+
+    // 执行交易逻辑
+    let result = exchange.place_order(OrderRequest { ... }).await;
+    assert!(result.is_ok());
+}
+```
+
+---
+
+## 快速开始
+
+### 1. 环境准备
+
+```bash
+# 安装依赖
+cargo build --release
+
+# 配置环境变量
+cp .env.example .env.development
+# 编辑 .env.development 填入数据库和 API 配置
+```
+
+### 2. 数据库初始化
+
+```bash
+# 创建数据库
+psql -U postgres -c "CREATE DATABASE trading_core;"
+
+# 初始化表结构
+psql -U postgres -d trading_core -f config/schema_v2.sql
+
+# 优化索引
+psql -U postgres -d trading_core -f version/v1.0/optimize_indexes.sql
+```
+
+### 3. 启动服务
+
+```bash
+# 启动数据采集服务
+cargo run -p trading-core --release -- service
+
+# 启动交易引擎（另一个终端）
+cargo run -p trading-engine --release
+```
+
+### 4. 运行测试
+
+```bash
+# 运行所有单元测试
+cargo test -p trading-common --lib
+cargo test -p trading-engine
+
+# 运行特定测试
+cargo test -p trading-common --lib -- portfolio_tests
+cargo test -p trading-common --lib -- aggregator_tests
+```
+
+### 5. 本地开发（无需网络）
+
+```toml
+# config/engine-development.toml
+[exchange]
+id = "mock"
+```
+
+```bash
+# 使用 Mock 交易所进行本地开发
+cargo run -p trading-engine
+```
+
+---
+
+## 项目结构
+
+```
+rust-trade/
+├── trading-common/          # 共享库
+│   └── src/
+│       ├── backtest/        # 回测引擎
+│       ├── data/            # 数据类型和聚合器
+│       ├── pricing/         # 期权定价
+│       ├── simulation/      # 蒙特卡洛模拟
+│       └── paper/           # 模拟交易
+│
+├── trading-core/            # 数据采集服务
+│   └── src/
+│       ├── api/             # HTTP API + WebSocket
+│       ├── exchange/        # 交易所接口
+│       └── service/         # 数据采集服务
+│
+├── trading-engine/          # 交易引擎
+│   └── src/
+│       ├── engine/          # 交易循环
+│       ├── exchange/        # 交易所适配器
+│       ├── risk/            # 风控系统
+│       ├── order/           # 订单管理
+│       └── portfolio/       # 持仓管理
+│
+├── frontend/                # 前端应用
+│   └── src/
+│       ├── app/             # 页面
+│       └── components/      # 组件
+│
+├── src-tauri/               # Tauri 桌面应用
+│
+└── config/                  # 配置文件
+    ├── schema.sql           # 数据库表结构
+    └── *.toml               # 应用配置
+```

@@ -19,6 +19,7 @@ statrs = "0.16"
 rand = "0.8"
 rand_distr = "0.4"
 reqwest = { version = "0.11", features = ["json"] }
+polars = { version = "0.35", features = ["parquet", "lazy", "rolling_window"] }
 
 [dev-dependencies]
 dotenv = "0.15"

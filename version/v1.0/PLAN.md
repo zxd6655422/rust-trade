@@ -88,9 +88,9 @@
 
 | 模块 | 状态 | 说明 |
 |------|------|------|
-| Exchange trait 分层重构 | 📋 可选 | P11，MarketDataProvider / TradingOperations 分离 |
+| Exchange trait 分层重构 | ✅ 已完成 | P11，MarketDataProvider / TradingOperations 分离 |
 | Polars 集成 | ⏸️ 暂缓 | 先优化数据库索引 |
-| Paper Trading | 📋 待开发 | 模拟测试交易功能 |
+| Paper Trading | ✅ 已完成 | 模拟测试交易功能 |
 
 ---
 
@@ -626,9 +626,9 @@ candle1m 数据源:
 | P8 | 监控桌面应用 - 实时行情图表 | ✅ 已完成 | get_realtime_prices, get_kline_history, get_24h_stats |
 | P9 | 监控桌面应用 - 持仓/交易记录 | ✅ 已完成 | get_positions, get_trade_history, get_pnl_summary |
 | P10 | 监控桌面应用 - 统计分析 | ✅ 已完成 | get_equity_curve, get_performance_metrics, get_commission_stats |
-| P11 | Exchange trait 分层重构（可选） | 📋 可选 | MarketDataProvider / TradingOperations 分离 |
+| P11 | Exchange trait 分层重构 | ✅ 已完成 | MarketDataProvider / TradingOperations 分离 |
 
-**完成进度：P0-P10 ✅ (11/12)，P11 可选**
+**完成进度：P0-P11 ✅ (12/12)**
 
 ---
 

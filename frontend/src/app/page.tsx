@@ -217,12 +217,15 @@ export default function Home() {
 
   const getOhlcChartData = () => {
     if (ohlcPreview.length === 0) return [];
-    
+
+    // 后端返回按时间倒序，图表需要正序（从左到右时间增大）
+    const sortedData = [...ohlcPreview].reverse();
+
     // Calculate how many candles to show based on screen space
     const maxCandles = 20;
-    const startIndex = Math.max(0, ohlcPreview.length - maxCandles);
-    
-    return ohlcPreview.slice(startIndex).map(candle => {
+    const startIndex = Math.max(0, sortedData.length - maxCandles);
+
+    return sortedData.slice(startIndex).map(candle => {
       const timestamp = new Date(candle.timestamp);
       
       // Format time display based on timeframe
@@ -507,32 +510,32 @@ export default function Home() {
                   <div className="space-y-2 text-sm">
                     <div className="flex justify-between">
                       <span>Open:</span>
-                      <span className="font-mono">${parseFloat(ohlcPreview[ohlcPreview.length - 1].open).toFixed(2)}</span>
+                      <span className="font-mono">${parseFloat(ohlcPreview[0].open).toFixed(2)}</span>
                     </div>
                     <div className="flex justify-between">
                       <span>High:</span>
-                      <span className="font-mono text-green-600">${parseFloat(ohlcPreview[ohlcPreview.length - 1].high).toFixed(2)}</span>
+                      <span className="font-mono text-green-600">${parseFloat(ohlcPreview[0].high).toFixed(2)}</span>
                     </div>
                     <div className="flex justify-between">
                       <span>Low:</span>
-                      <span className="font-mono text-red-600">${parseFloat(ohlcPreview[ohlcPreview.length - 1].low).toFixed(2)}</span>
+                      <span className="font-mono text-red-600">${parseFloat(ohlcPreview[0].low).toFixed(2)}</span>
                     </div>
                     <div className="flex justify-between">
                       <span>Close:</span>
-                      <span className="font-mono font-bold">${parseFloat(ohlcPreview[ohlcPreview.length - 1].close).toFixed(2)}</span>
+                      <span className="font-mono font-bold">${parseFloat(ohlcPreview[0].close).toFixed(2)}</span>
                     </div>
                     <div className="flex justify-between">
                       <span>Volume:</span>
-                      <span className="font-mono">{parseFloat(ohlcPreview[ohlcPreview.length - 1].volume).toFixed(4)}</span>
+                      <span className="font-mono">{parseFloat(ohlcPreview[0].volume).toFixed(4)}</span>
                     </div>
                     <div className="flex justify-between">
                       <span>Trades:</span>
-                      <span className="font-mono">{ohlcPreview[ohlcPreview.length - 1].trade_count}</span>
+                      <span className="font-mono">{ohlcPreview[0].trade_count}</span>
                     </div>
                     <div className="flex justify-between">
                       <span>Time:</span>
                       <span className="font-mono text-xs">
-                        {new Date(ohlcPreview[ohlcPreview.length - 1].timestamp).toLocaleString()}
+                        {new Date(ohlcPreview[0].timestamp).toLocaleString()}
                       </span>
                     </div>
                   </div>

@@ -415,13 +415,13 @@ export default function BacktestContent() {
                     <thead>
                       <tr className="border-b text-left">
                         <th className="pb-2 font-medium text-muted-foreground">#</th>
-                        <th className="pb-2 font-medium text-muted-foreground">Time</th>
-                        <th className="pb-2 font-medium text-muted-foreground">Side</th>
-                        <th className="pb-2 font-medium text-muted-foreground">Symbol</th>
-                        <th className="pb-2 font-medium text-muted-foreground text-right">Qty</th>
-                        <th className="pb-2 font-medium text-muted-foreground text-right">Price</th>
-                        <th className="pb-2 font-medium text-muted-foreground text-right">PnL</th>
-                        <th className="pb-2 font-medium text-muted-foreground text-right">Commission</th>
+                        <th className="pb-2 font-medium text-muted-foreground">{t.backtestContent.time}</th>
+                        <th className="pb-2 font-medium text-muted-foreground">{t.backtestContent.side}</th>
+                        <th className="pb-2 font-medium text-muted-foreground">{t.backtestContent.symbol}</th>
+                        <th className="pb-2 font-medium text-muted-foreground text-right">{t.backtestContent.qty}</th>
+                        <th className="pb-2 font-medium text-muted-foreground text-right">{t.backtestContent.price}</th>
+                        <th className="pb-2 font-medium text-muted-foreground text-right">{t.backtestContent.pnl}</th>
+                        <th className="pb-2 font-medium text-muted-foreground text-right">{t.backtestContent.commission}</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -453,7 +453,7 @@ export default function BacktestContent() {
                   </table>
                   {result.trades.length > 50 && (
                     <p className="text-xs text-muted-foreground mt-3">
-                      Showing first 50 of {result.trades.length} trades
+                      {t.backtestContent.showingTrades.replace('{count}', result.trades.length.toString())}
                     </p>
                   )}
                 </div>

@@ -18,11 +18,12 @@ interface PriceTickerProps {
 
 /** 数据源状态指示器 */
 function DataSourceIndicator({ source }: { source: DataSource }) {
+  const { t } = useLanguage();
   if (source === 'websocket') {
     return (
       <Badge variant="default" className="text-[10px] px-1.5 py-0 gap-1 bg-emerald-500">
         <Radio className="w-2.5 h-2.5" />
-        Live
+        {t.priceTicker.live}
       </Badge>
     );
   }
@@ -30,14 +31,14 @@ function DataSourceIndicator({ source }: { source: DataSource }) {
     return (
       <Badge variant="secondary" className="text-[10px] px-1.5 py-0 gap-1">
         <Wifi className="w-2.5 h-2.5" />
-        Polling
+        {t.priceTicker.polling}
       </Badge>
     );
   }
   return (
     <Badge variant="destructive" className="text-[10px] px-1.5 py-0 gap-1">
       <WifiOff className="w-2.5 h-2.5" />
-      Offline
+      {t.priceTicker.offline}
     </Badge>
   );
 }

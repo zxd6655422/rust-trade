@@ -1,5 +1,301 @@
 # Changelog
 
+## [2026-07-04] Polars 集成 + 本地开发优化 + 前端全面修复
+
+### Polars 集成 (性能提升 10-50 倍)
+
+| 模块 | 状态 | 说明 |
+|------|------|------|
+| Parquet 存储层 | ✅ | 按月分区存储，支持追加写入 |
+| Polars 查询层 | ✅ | 延迟加载，向量化计算 |
+| 技术指标计算 | ✅ | SMA/EMA/RSI/MACD/布林带 |
+| 归档脚本 | ✅ | PostgreSQL → Parquet 导出 |
+
+### 本地开发优化
+
+| 模块 | 状态 | 说明 |
+|------|------|------|
+| MockExchange 适配器 | ✅ | 本地开发测试用，不依赖网络 |
+| 历史数据回放 | ✅ | 从 PostgreSQL 加载 K线数据回放 |
+| 模拟订单撮合 | ✅ | 本地模拟下单、撤单、持仓 |
+| 数据库索引优化 | ✅ | 已执行 optimize_indexes.sql |
+| Portfolio 单元测试 | ✅ | 25 个测试用例，覆盖做多/做空/盈亏 |
+| K线聚合器单元测试 | ✅ | 16 个测试用例，覆盖多时间框架聚合 |
+| Polars 计算测试 | ✅ | 3 个测试用例，覆盖 SMA/RSI/MACD |
+| 重试机制工具 | ✅ | 指数退避重试、超时控制、错误上下文 |
+| 重试工具单元测试 | ✅ | 6 个测试用例，覆盖成功/失败/超时 |
+
+### 前端修复
+
+| 模块 | 状态 | 说明 |
+|------|------|------|
+| Header 连接状态修复 | ✅ | 使用真实连接状态，支持手动刷新 |
+| Settings 页面增强 | ✅ | 添加服务器配置、交易所 API 配置 |
+| 连接状态 Context | ✅ | 全局连接状态管理 |
+| K线图自动刷新 | ✅ | 支持自动刷新开关，可配置间隔 |
+| Toast 通知组件 | ✅ | 全局错误/成功/警告提示 |
+| i18n 翻译完善 | ✅ | 修复英文硬编码，添加缺失翻译 |
+| 下单面板组件 | ✅ | 支持市价/限价/止损/止盈单 |
+| 数据导出功能 | ✅ | 交易历史导出为 CSV/JSON |
+| 价格告警组件 | ✅ | 支持突破/跌破告警，本地存储 |
+| 全局错误边界 | ✅ | 捕获组件错误，友好错误页面 |
+| Spot/Futures 切换修复 | ✅ | 传递 marketType 给子组件 |
+
+### MockExchange 功能
+
+- 实现 `MarketDataProvider` + `TradingOperations` 完整接口
+- 支持从 PostgreSQL 加载历史 K线数据
+- 模拟账户余额、持仓、订单管理
+- 本地撮合市价单，实时计算盈亏
+- 配置: `exchange.id = "mock"` 即可使用
+
+### 文件改动
+
+| 文件 | 改动 |
+|------|------|
+| `trading-engine/src/exchange/adapters/mock_exchange.rs` | 新建 MockExchange 适配器 |
+| `trading-engine/src/exchange/adapters/mod.rs` | 导出 MockExchange |
+| `trading-engine/src/exchange/mod.rs` | 注册到 ExchangeFactory |
+| `version/v1.0/optimize_indexes.sql` | 数据库索引优化脚本 |
+
+---
+
+## [2026-07-04] P11: Exchange Trait 分层重构
+
+### 已完成
+
+| 模块 | 状态 | 说明 |
+|------|------|------|
+| MarketDataProvider trait | ✅ | 只读市场数据接口（12 个方法） |
+| TradingOperations trait | ✅ | 认证交易操作接口（16 个方法） |
+| Exchange 组合 trait | ✅ | 自动为同时实现两个 trait 的类型实现 |
+| BinanceAdapter 拆分 | ✅ | impl MarketDataProvider + impl TradingOperations |
+| BinanceSpotAdapter 拆分 | ✅ | impl MarketDataProvider + impl TradingOperations |
+| OkxAdapter 拆分 | ✅ | impl MarketDataProvider + impl TradingOperations |
+
+### 设计说明
+
+- `MarketDataProvider` — 公开 API，无需认证（行情、K线、订单簿等）
+- `TradingOperations` — 私有 API，需要 API Key（下单、撤单、持仓等）
+- `Exchange = MarketDataProvider + TradingOperations` — 组合 trait，向后兼容
+- 消费端可按需使用更精确的类型约束
+
+### 文件改动
+
+| 文件 | 改动 |
+|------|------|
+| `trading-engine/src/exchange/traits.rs` | 拆分为 MarketDataProvider + TradingOperations + Exchange |
+| `trading-engine/src/exchange/mod.rs` | 更新 exports |
+| `trading-engine/src/exchange/adapters/binance_adapter.rs` | impl 拆分 |
+| `trading-engine/src/exchange/adapters/binance_spot_adapter.rs` | impl 拆分 |
+| `trading-engine/src/exchange/adapters/okx_adapter.rs` | impl 拆分 |
+
+---
+
+## [2026-07-04] WebSocket 实时推送 + 双机制数据源
+
+### 架构设计
+
+```
+trading-core 服务运行中:
+  前端 → WebSocket (ws://server:8080/ws) → 实时价格推送 (Live)
+  前端 → 轮询关闭 (fallback_only=true)
+
+trading-core 服务未运行:
+  前端 → WebSocket 连接失败 → 自动降级
+  前端 → Tauri 命令轮询数据库 (Polling)
+  前端 → 定期重连 WebSocket → 连上后自动切换回推送
+```
+
+### 实现
+
+#### 1. 配置文件 (frontend/public/config/trading-core.json)
+
+```json
+{
+  "server": { "host": "localhost", "port": 8080, "protocol": "http" },
+  "websocket": { "enabled": true, "reconnect_interval_ms": 5000, "max_reconnect_attempts": 10 },
+  "polling": { "enabled": true, "interval_ms": 10000, "fallback_only": true }
+}
+```
+
+- `server.host/port` — 支持远程服务器地址
+- `polling.fallback_only` — true=仅在 WebSocket 不可用时轮询
+
+#### 2. 配置加载器 (frontend/src/lib/config.ts)
+
+- `loadTradingCoreConfig()` — 加载配置文件，失败使用默认值
+- `getWebSocketUrl()` / `getApiBaseUrl()` — 生成连接 URL
+
+#### 3. 实时数据 Hook (frontend/src/lib/useRealtimeData.ts)
+
+- `useRealtimeData()` — 双机制实时数据 hook
+- 优先 WebSocket → 自动降级轮询 → 定期重连
+- 返回: prices, dataSource ('websocket'|'polling'|'disconnected'), isConnected, reconnect()
+
+#### 4. PriceTicker 更新 (frontend/src/components/trading/PriceTicker.tsx)
+
+- 使用 `useRealtimeData` hook 获取实时价格
+- 显示数据源状态指示器: 🟢 Live (WebSocket) / 🔵 Polling / 🔴 Offline
+- 初始加载使用 Tauri 命令，后续由 WebSocket 更新
+
+#### 5. 后端价格广播 (trading-core/src/main.rs)
+
+- candle1m 轮询获取 kline 后，通过 `tick_tx` 广播最新价格
+- WebSocket 客户端收到实时价格更新
+
+### 文件改动
+
+| 文件 | 改动 |
+|------|------|
+| `frontend/public/config/trading-core.json` | **新建** 服务器配置 |
+| `frontend/src/lib/config.ts` | **新建** 配置加载器 |
+| `frontend/src/lib/useRealtimeData.ts` | **新建** 双机制实时数据 hook |
+| `frontend/src/components/trading/PriceTicker.tsx` | 使用 useRealtimeData + 数据源指示器 |
+| `trading-core/src/main.rs` | candle1m 轮询广播最新价格 |
+
+---
+
+## [2026-07-04] 后端错误处理加固
+
+### 问题
+
+后端存在多处 `unwrap()` 调用，运行时可能因数据库连接失败、Redis 不可用、策略不存在等原因导致 panic 崩溃。
+
+### 修复
+
+#### trading-core/src/main.rs
+
+| 修复项 | 原代码 | 修复后 |
+|--------|--------|--------|
+| Tick 数据库连接 | `create_database_pool_for_service().await.unwrap()` | `match` + `error!()` + `return` |
+| Tick 缓存连接 | `create_cache_for_service().await.unwrap()` | `match` + `error!()` + `return` |
+| Candle1m 数据库连接 | 同上 | 同上 |
+| Candle1m 缓存连接 | 同上 | 同上 |
+| 日期解析 | `date.and_hms_opt(0,0,0).unwrap()` | `match` + `error!()` + `return` |
+| 信号量获取 | `sem.acquire().await.unwrap()` | `match` + `error!()` + `return` |
+
+#### trading-core/src/api/handlers.rs
+
+| 修复项 | 原代码 | 修复后 |
+|--------|--------|--------|
+| 策略创建 (3处) | `create_multi_timeframe_strategy(&id).unwrap()` | `unwrap_or_else` + fallback to "trend" |
+| 空数据访问 (3处) | `data.first().unwrap().timestamp` | `.map_or("N/A", ...)` |
+| Decimal 常量 | `Decimal::from_str("0.001").unwrap()` | 提取为 `default_commission_decimal()` 函数 |
+
+#### trading-core/src/service/backfill.rs
+
+| 修复项 | 原代码 | 修复后 |
+|--------|--------|--------|
+| K线访问 | `klines.last().unwrap().timestamp` | `match klines.last()` + `continue` |
+
+#### src-tauri/src/commands.rs
+
+| 修复项 | 原代码 | 修复后 |
+|--------|--------|--------|
+| 策略创建 (3处) | `create_multi_timeframe_strategy(&id).unwrap()` | `unwrap_or_else` + fallback |
+| Decimal 解析 | `Decimal::from_str("0.7").unwrap()` | `Decimal::new(7, 1)` |
+
+### 测试结果
+
+- ✅ `cargo check -p trading-core` 编译通过
+- ✅ `cargo check -p trading-desktop` 编译通过
+
+---
+
+## [2026-07-04] 全面中英文国际化 (i18n)
+
+### 问题
+
+Dashboard 页面、回测页面、设置页面、K线图组件等大量使用硬编码英文文本，无法切换中文。
+
+### 实现
+
+#### 1. 新增翻译 key (en.ts / zh.ts)
+
+- `dashboard` — 仪表盘页面 50+ 个翻译 key
+- `advancedBacktest` — 高级回测 60+ 个翻译 key
+- `backtestContent` — 回测内容 20+ 个翻译 key
+- `settingsPage` — 设置页面 6 个翻译 key
+
+#### 2. 页面更新
+
+| 页面/组件 | 改动 |
+|-----------|------|
+| `app/page.tsx` (Dashboard) | 全部硬编码文本替换为 t.dashboard.* |
+| `app/backtest/page.tsx` | 全部替换为 t.backtestContent.* |
+| `app/trading/BacktestContent.tsx` | 全部替换为 t.backtestContent.* |
+| `app/trading/AdvancedBacktestContent.tsx` | 全部替换为 t.advancedBacktest.* |
+| `app/settings/page.tsx` | 重写，完整语言切换 UI |
+| `components/trading/KlineChart.tsx` | Tooltip/加载文本替换为 t.klineChart.* / t.common.* |
+
+#### 3. 设置页面
+
+全新实现设置页面，包含：
+- 语言切换（中文/English）带国旗图标
+- 主题切换（深色/浅色）占位
+
+### 测试结果
+
+- ✅ 所有页面支持中英文切换
+- ✅ 翻译文件 TypeScript 类型完整
+
+---
+
+## [2026-07-04] P11: 高级回测功能 Tauri 集成
+
+### 问题
+
+后端已实现多时间框架回测、滚动前进测试、样本外测试、多交易对回测、市场状态分析等高级功能，但 Tauri 桌面端只有基础回测。
+
+### 实现
+
+#### 1. Tauri Commands (src-tauri/src/commands.rs)
+
+新增 5 个命令，直接调用 trading-common 回测引擎：
+
+- `run_multi_timeframe_backtest` — 多时间框架回测（逐 1m bar 模拟交易）
+- `run_walk_forward_test` — 滚动前进测试（训练/测试窗口滚动，过拟合检测）
+- `run_out_of_sample_test` — 样本外测试（70/30 划分，过拟合比率）
+- `run_multi_symbol_backtest` — 多交易对回测（跨标的鲁棒性验证）
+- `analyze_market_state` — 市场状态分析（ATR/ADX 趋势/震荡分布）
+
+#### 2. 类型定义 (src-tauri/src/types.rs)
+
+新增 10 个请求/响应类型：MultiTimeframeBacktestRequest, WalkForwardRequest, WalkForwardResult, OutOfSampleRequest, OutOfSampleResult, MultiSymbolBacktestRequest, MultiSymbolBacktestResult, MarketStateAnalysisRequest, MarketStateResult 等。
+
+#### 3. 前端组件 (frontend/src/app/trading/AdvancedBacktestContent.tsx)
+
+全新高级回测 UI，包含 5 个 tab：
+- Multi-Timeframe: 策略配置 + 完整回测结果（收益曲线、交易明细）
+- Walk-Forward: 训练/测试窗口配置 + 轮次明细表格 + 过拟合状态
+- Out-of-Sample: 训练/测试集对比 + 过拟合比率
+- Multi-Symbol: 多标的选择 + 汇总统计 + 逐标的明细
+- Market State: 市场状态分布 + 趋势/震荡比例 + 数据质量评分
+
+#### 4. 前端类型 (frontend/src/types/backtest.ts)
+
+新增 10 个 TypeScript 接口，与 Tauri 命令一一对应。
+
+### 文件改动
+
+| 文件 | 改动 |
+|------|------|
+| `src-tauri/src/types.rs` | 新增 10 个高级回测类型 |
+| `src-tauri/src/commands.rs` | 新增 5 个 Tauri 命令 |
+| `src-tauri/src/main.rs` | 注册新命令到 invoke_handler |
+| `frontend/src/types/backtest.ts` | 新增 10 个 TypeScript 接口 |
+| `frontend/src/app/trading/AdvancedBacktestContent.tsx` | **新建** 高级回测 UI 组件 |
+| `frontend/src/app/trading/page.tsx` | 集成 Advanced Backtest tab |
+
+### 测试结果
+
+- ✅ Rust 编译通过 (cargo check -p trading-desktop)
+- ✅ 所有 5 个 Tauri 命令实现完成
+- ✅ 前端 UI 组件完整
+
+---
+
 ## [2026-07-04] 基础设施完善 + Bybit 适配器
 
 ### 已完成

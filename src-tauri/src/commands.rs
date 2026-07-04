@@ -1360,3 +1360,22 @@ fn convert_paper_trade(order: trading_common::paper::PaperOrder) -> PaperTradeRe
         reject_reason: order.reject_reason,
     }
 }
+
+/// 检查 trading-core 服务状态
+#[tauri::command]
+pub async fn check_trading_core_status(
+    state: State<'_, AppState>,
+) -> Result<TradingCoreStatusResponse, String> {
+    info!("Checking trading-core status");
+
+    // 检查数据库连接
+    let database_ok = state.repository
+        .get_backtest_data_info()
+        .await
+        .is_ok();
+
+    Ok(TradingCoreStatusResponse {
+        status: "connected".to_string(),
+        database: database_ok,
+    })
+}

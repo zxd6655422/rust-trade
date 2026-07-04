@@ -1,0 +1,68 @@
+# 交易引擎配置 (生产环境)
+
+[exchange]
+# 交易所: binance / binance-spot / okx / mock
+id = "binance"
+
+# 是否使用测试网
+testnet = false
+
+[trading]
+# 运行模式: testnet / live
+mode = "live"
+
+# 交易策略
+strategy = "rsi"
+
+# 交易对列表
+symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+
+# 行情轮询间隔 (毫秒)
+poll_interval_ms = 100
+
+# 数据源: redis / direct
+data_source = "redis"
+
+[risk_control]
+# ===== 基础风控 =====
+# 单笔最大仓位 (USDT)
+max_position_size = 1000.0
+
+# 单笔最大下单量 (BTC)
+max_order_size = 0.01
+
+# 止损百分比
+stop_loss_pct = 0.02
+
+# 止盈百分比
+take_profit_pct = 0.04
+
+# ===== 中级风控 =====
+# 日最大亏损 (USDT)
+max_daily_loss = 200.0
+
+# 最大回撤百分比
+max_drawdown_pct = 0.15
+
+# 最大曝光百分比
+max_exposure_pct = 0.8
+
+# ===== 高级风控 =====
+# Kelly 公式比例
+kelly_fraction = 0.25
+
+# 波动率回看周期
+volatility_lookback = 20
+
+# 波动率目标
+volatility_target = 0.15
+
+# 黑天鹅阈值
+black_swan_threshold = 0.05
+
+# 熔断冷却时间 (秒)
+circuit_breaker_cooldown = 3600
+
+[logging]
+level = "info"
+file = "/opt/trading/logs/trading-engine.log"

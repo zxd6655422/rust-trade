@@ -1,0 +1,49 @@
+# 数据采集服务配置 (生产环境)
+
+[collector]
+# 数据采集模式: disabled / tick / candle1m
+mode = "candle1m"
+
+# 是否同时启用 tick 采集
+enable_tick = false
+
+# K线轮询间隔 (秒)
+poll_interval_secs = 10
+
+# 历史数据回填
+backfill_enabled = true
+backfill_start_date = "2024-01-01"
+
+[collector.rate_limit]
+# 回填速率限制
+backfill_interval_ms = 200
+max_concurrent_backfills = 5
+
+# 轮询批次
+poll_batch_size = 5
+poll_batch_delay_ms = 500
+
+[database]
+# 从环境变量 DATABASE_URL 加载
+# url = ""
+max_connections = 10
+min_connections = 2
+max_lifetime = 1800
+
+[cache.redis]
+# 从环境变量 REDIS_URL 加载
+# url = ""
+ttl_seconds = 300
+max_ticks_per_symbol = 1000
+
+[symbols]
+list = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "SUIUSDT"]
+
+[server]
+# HTTP API 配置
+host = "0.0.0.0"
+port = 8080
+
+[logging]
+level = "info"
+file = "/opt/trading/logs/trading-collector.log"

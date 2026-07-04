@@ -9,6 +9,7 @@ export const en = {
     systemOnline: 'System Online',
     connected: 'Connected',
     disconnected: 'Disconnected',
+    connecting: 'Connecting',
     selected: 'Selected',
     page: 'Page',
     showing: 'Showing',
@@ -36,6 +37,7 @@ export const en = {
     liveTrading: 'Live Trading',
     backtest: 'Backtest',
     paperTrading: 'Paper Trading',
+    advancedBacktest: 'Advanced Backtest',
     spot: 'Spot',
     futures: 'Futures',
     spotMarket: 'Spot Market',
@@ -48,6 +50,9 @@ export const en = {
   priceTicker: {
     marketPrices: 'Market Prices',
     vol: 'Vol',
+    live: 'Live',
+    polling: 'Polling',
+    offline: 'Offline',
   },
 
   // Kline Chart
@@ -389,6 +394,13 @@ export const en = {
     equityCurve: 'Equity Curve',
     tradesCount: 'Trades',
     loading: 'Loading backtest data...',
+    // Trade table headers
+    time: 'Time',
+    side: 'Side',
+    qty: 'Qty',
+    price: 'Price',
+    pnl: 'P&L',
+    showingTrades: 'Showing first 50 of {count} trades',
   },
 
   // Settings Page

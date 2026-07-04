@@ -18,7 +18,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{error, info, warn};
 
 use crate::exchange::errors::ExchangeError;
-use crate::exchange::traits::{Exchange, SymbolPrecision};
+use crate::exchange::traits::{MarketDataProvider, TradingOperations, SymbolPrecision};
 use crate::exchange::types::*;
 use trading_common::data::types::TickData;
 
@@ -341,9 +341,265 @@ impl BinanceSpotAdapter {
     }
 }
 
+/// MarketDataProvider 实现 - 只读市场数据接口
 #[async_trait]
-impl Exchange for BinanceSpotAdapter {
-    // ===== 行情接口 (WebSocket) =====
+impl MarketDataProvider for BinanceSpotAdapter {
+    // ===== 元信息 =====
+
+    fn exchange_id(&self) -> &str {
+        "binance-spot"
+    }
+
+    fn is_testnet(&self) -> bool {
+        self.config.testnet
+    }
+
+    /// GET /api/v3/time
+    async fn get_server_time(&self) -> Result<DateTime<Utc>, ExchangeError> {
+        let data = self.send_public_request("/api/v3/time", &HashMap::new()).await?;
+        let timestamp = data["serverTime"]
+            .as_i64()
+            .ok_or_else(|| ExchangeError::ParseError("Missing serverTime".to_string()))?;
+
+        DateTime::from_timestamp_millis(timestamp)
+            .ok_or_else(|| ExchangeError::ParseError("Invalid timestamp".to_string()))
+    }
+
+    /// GET /api/v3/exchangeInfo - 现货交易对精度
+    async fn get_symbol_precision(&self, symbol: &str) -> Result<SymbolPrecision, ExchangeError> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+
+        let data = self.send_public_request("/api/v3/exchangeInfo", &params).await?;
+
+        let symbols = data["symbols"]
+            .as_array()
+            .ok_or_else(|| ExchangeError::ParseError("Missing symbols array".to_string()))?;
+
+        let symbol_info = symbols
+            .iter()
+            .find(|s| s["symbol"].as_str() == Some(symbol))
+            .ok_or_else(|| ExchangeError::InvalidSymbol(format!("Symbol not found: {}", symbol)))?;
+
+        Ok(SymbolPrecision {
+            symbol: symbol.to_string(),
+            base_asset_precision: symbol_info["baseAssetPrecision"].as_u64().unwrap_or(8) as u32,
+            quote_asset_precision: symbol_info["quoteAssetPrecision"].as_u64().unwrap_or(8) as u32,
+            min_quantity: symbol_info["filters"]
+                .as_array()
+                .and_then(|filters| {
+                    filters.iter()
+                        .find(|f| f["filterType"].as_str() == Some("LOT_SIZE"))
+                        .and_then(|f| f["minQty"].as_str()?.parse().ok())
+                })
+                .unwrap_or_else(|| Decimal::from(1)),
+            max_quantity: symbol_info["filters"]
+                .as_array()
+                .and_then(|filters| {
+                    filters.iter()
+                        .find(|f| f["filterType"].as_str() == Some("LOT_SIZE"))
+                        .and_then(|f| f["maxQty"].as_str()?.parse().ok())
+                })
+                .unwrap_or_else(|| Decimal::from(1000000)),
+            min_notional: symbol_info["filters"]
+                .as_array()
+                .and_then(|filters| {
+                    // Spot 用 MIN_NOTIONAL 或 NOTIONAL
+                    filters.iter()
+                        .find(|f| f["filterType"].as_str() == Some("NOTIONAL")
+                            || f["filterType"].as_str() == Some("MIN_NOTIONAL"))
+                        .and_then(|f| f["minNotional"].as_str()?.parse().ok())
+                })
+                .unwrap_or_else(|| Decimal::from(5)),
+            step_size: symbol_info["filters"]
+                .as_array()
+                .and_then(|filters| {
+                    filters.iter()
+                        .find(|f| f["filterType"].as_str() == Some("LOT_SIZE"))
+                        .and_then(|f| f["stepSize"].as_str()?.parse().ok())
+                })
+                .unwrap_or_else(|| Decimal::from(1)),
+            tick_size: symbol_info["filters"]
+                .as_array()
+                .and_then(|filters| {
+                    filters.iter()
+                        .find(|f| f["filterType"].as_str() == Some("PRICE_FILTER"))
+                        .and_then(|f| f["tickSize"].as_str()?.parse().ok())
+                })
+                .unwrap_or_else(|| Decimal::from(1)),
+        })
+    }
+
+    // ===== 行情数据接口 =====
+
+    /// GET /api/v3/ticker/24hr - 获取行情快照
+    async fn get_ticker(&self, symbol: &str) -> Result<Ticker, ExchangeError> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+
+        let data = self.send_public_request("/api/v3/ticker/24hr", &params).await?;
+
+        Ok(Ticker {
+            symbol: data["symbol"].as_str().unwrap_or(symbol).to_string(),
+            last_price: Decimal::from_str(data["lastPrice"].as_str().unwrap_or("0")).unwrap_or_default(),
+            bid_price: Decimal::from_str(data["bidPrice"].as_str().unwrap_or("0")).unwrap_or_default(),
+            ask_price: Decimal::from_str(data["askPrice"].as_str().unwrap_or("0")).unwrap_or_default(),
+            high_price: Decimal::from_str(data["highPrice"].as_str().unwrap_or("0")).unwrap_or_default(),
+            low_price: Decimal::from_str(data["lowPrice"].as_str().unwrap_or("0")).unwrap_or_default(),
+            volume: Decimal::from_str(data["volume"].as_str().unwrap_or("0")).unwrap_or_default(),
+            quote_volume: Decimal::from_str(data["quoteVolume"].as_str().unwrap_or("0")).unwrap_or_default(),
+            price_change: Decimal::from_str(data["priceChange"].as_str().unwrap_or("0")).unwrap_or_default(),
+            price_change_percent: Decimal::from_str(data["priceChangePercent"].as_str().unwrap_or("0")).unwrap_or_default(),
+            timestamp: Utc::now(),
+        })
+    }
+
+    /// GET /api/v3/ticker/24hr - 批量获取行情快照
+    async fn get_tickers(&self, symbols: &[String]) -> Result<Vec<Ticker>, ExchangeError> {
+        let params = HashMap::new();
+        let data = self.send_public_request("/api/v3/ticker/24hr", &params).await?;
+
+        let all_tickers: Vec<Ticker> = data
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|item| {
+                        let sym = item["symbol"].as_str()?;
+                        if !symbols.iter().any(|s| s == sym) {
+                            return None;
+                        }
+                        Some(Ticker {
+                            symbol: sym.to_string(),
+                            last_price: Decimal::from_str(item["lastPrice"].as_str()?).ok()?,
+                            bid_price: Decimal::from_str(item["bidPrice"].as_str()?).ok()?,
+                            ask_price: Decimal::from_str(item["askPrice"].as_str()?).ok()?,
+                            high_price: Decimal::from_str(item["highPrice"].as_str()?).ok()?,
+                            low_price: Decimal::from_str(item["lowPrice"].as_str()?).ok()?,
+                            volume: Decimal::from_str(item["volume"].as_str()?).ok()?,
+                            quote_volume: Decimal::from_str(item["quoteVolume"].as_str()?).ok()?,
+                            price_change: Decimal::from_str(item["priceChange"].as_str()?).ok()?,
+                            price_change_percent: Decimal::from_str(item["priceChangePercent"].as_str()?).ok()?,
+                            timestamp: Utc::now(),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(all_tickers)
+    }
+
+    async fn get_mark_price(&self, _symbol: &str) -> Result<MarkPrice, ExchangeError> {
+        Err(ExchangeError::ConfigError("Mark price not available for Spot".to_string()))
+    }
+
+    async fn get_funding_rate(&self, _symbol: &str, _limit: Option<u32>) -> Result<Vec<FundingRate>, ExchangeError> {
+        Err(ExchangeError::ConfigError("Funding rate not available for Spot".to_string()))
+    }
+
+    /// GET /api/v3/klines - K线数据
+    async fn get_klines(&self, symbol: &str, interval: &str, limit: Option<u32>) -> Result<Vec<Kline>, ExchangeError> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        params.insert("interval".to_string(), interval.to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+
+        let data = self.send_public_request("/api/v3/klines", &params).await?;
+
+        let klines = data
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|k| {
+                        let k_arr = k.as_array()?;
+                        if k_arr.len() < 12 { return None; }
+                        Some(Kline {
+                            open_time: DateTime::from_timestamp_millis(k_arr[0].as_i64()?)?,
+                            open: Decimal::from_str(k_arr[1].as_str()?).ok()?,
+                            high: Decimal::from_str(k_arr[2].as_str()?).ok()?,
+                            low: Decimal::from_str(k_arr[3].as_str()?).ok()?,
+                            close: Decimal::from_str(k_arr[4].as_str()?).ok()?,
+                            volume: Decimal::from_str(k_arr[5].as_str()?).ok()?,
+                            close_time: DateTime::from_timestamp_millis(k_arr[6].as_i64()?)?,
+                            quote_volume: Decimal::from_str(k_arr[7].as_str()?).ok()?,
+                            trades_count: k_arr[8].as_u64().unwrap_or(0),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(klines)
+    }
+
+    /// GET /api/v3/depth - 订单簿深度
+    async fn get_order_book(&self, symbol: &str, limit: Option<u32>) -> Result<OrderBook, ExchangeError> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+
+        let data = self.send_public_request("/api/v3/depth", &params).await?;
+
+        let parse_entries = |arr: &serde_json::Value| -> Vec<OrderBookEntry> {
+            arr.as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|entry| {
+                            let e = entry.as_array()?;
+                            Some(OrderBookEntry {
+                                price: Decimal::from_str(e[0].as_str()?).ok()?,
+                                quantity: Decimal::from_str(e[1].as_str()?).ok()?,
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+
+        Ok(OrderBook {
+            symbol: symbol.to_string(),
+            bids: parse_entries(&data["bids"]),
+            asks: parse_entries(&data["asks"]),
+            last_update_id: data["lastUpdateId"].as_u64().unwrap_or(0),
+        })
+    }
+
+    /// GET /api/v3/trades - 获取最近成交
+    async fn get_recent_trades(&self, symbol: &str, limit: Option<u32>) -> Result<Vec<PublicTrade>, ExchangeError> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+
+        let data = self.send_public_request("/api/v3/trades", &params).await?;
+
+        let trades: Vec<PublicTrade> = data
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|t| {
+                        Some(PublicTrade {
+                            id: t["id"].as_i64()?.to_string(),
+                            symbol: symbol.to_string(),
+                            price: Decimal::from_str(t["price"].as_str()?).ok()?,
+                            quantity: Decimal::from_str(t["qty"].as_str()?).ok()?,
+                            timestamp: DateTime::from_timestamp_millis(t["time"].as_i64()?)?,
+                            is_buyer_maker: t["isBuyerMaker"].as_bool()?,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(trades)
+    }
+
+    // ===== WebSocket 行情接口 =====
 
     /// WebSocket: {symbol}@trade
     async fn subscribe_trades(
@@ -410,7 +666,11 @@ impl Exchange for BinanceSpotAdapter {
 
         Ok(())
     }
+}
 
+/// TradingOperations 实现 - 交易操作接口
+#[async_trait]
+impl TradingOperations for BinanceSpotAdapter {
     // ===== 账户接口 =====
 
     /// GET /api/v3/account - 现货账户信息
@@ -418,6 +678,10 @@ impl Exchange for BinanceSpotAdapter {
         let params = HashMap::new();
         let data = self.send_signed_request("GET", "/api/v3/account", &params).await?;
         self.parse_spot_account(&data)
+    }
+
+    async fn get_futures_account(&self) -> Result<FuturesAccountInfo, ExchangeError> {
+        Err(ExchangeError::ConfigError("Not a futures account".to_string()))
     }
 
     /// 现货无持仓概念，从余额推算
@@ -576,6 +840,133 @@ impl Exchange for BinanceSpotAdapter {
             .ok_or_else(|| ExchangeError::OrderNotFound(order_id.to_string()))
     }
 
+    /// GET /api/v3/allOrders - 所有订单
+    async fn get_all_orders(&self, symbol: &str, limit: Option<u32>) -> Result<Vec<OrderInfo>, ExchangeError> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+
+        let data = self.send_signed_request("GET", "/api/v3/allOrders", &params).await?;
+
+        let orders = data
+            .as_array()
+            .map(|arr| arr.iter().filter_map(|o| self.parse_spot_order(o)).collect())
+            .unwrap_or_default();
+
+        Ok(orders)
+    }
+
+    /// GET /api/v3/myTrades - 成交历史
+    async fn get_trade_history(&self, symbol: &str, limit: Option<u32>) -> Result<Vec<TradeInfo>, ExchangeError> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+
+        let data = self.send_signed_request("GET", "/api/v3/myTrades", &params).await?;
+
+        let trades = data
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|t| {
+                        Some(TradeInfo {
+                            id: t["id"].as_i64()?.to_string(),
+                            symbol: t["symbol"].as_str()?.to_string(),
+                            price: Decimal::from_str(t["price"].as_str()?).ok()?,
+                            quantity: Decimal::from_str(t["qty"].as_str()?).ok()?,
+                            quote_quantity: Decimal::from_str(t["quoteQty"].as_str().unwrap_or("0")).unwrap_or_default(),
+                            commission: Decimal::from_str(t["commission"].as_str().unwrap_or("0")).unwrap_or_default(),
+                            commission_asset: t["commissionAsset"].as_str().unwrap_or("").to_string(),
+                            time: DateTime::from_timestamp_millis(t["time"].as_i64()?)?,
+                            is_buyer: t["isBuyer"].as_bool().unwrap_or(false),
+                            is_maker: t["isMaker"].as_bool().unwrap_or(false),
+                            realized_pnl: Decimal::ZERO, // 现货无 realizedPnl
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(trades)
+    }
+
+    /// 现货无批量下单端点，逐个调用
+    async fn batch_place_orders(&self, orders: Vec<BatchOrderRequest>) -> Result<Vec<BatchOrderResult>, ExchangeError> {
+        let mut results = Vec::new();
+        for order in orders {
+            let result = self.place_order(OrderRequest {
+                symbol: order.symbol.clone(),
+                side: order.side,
+                order_type: order.order_type,
+                quantity: order.quantity,
+                price: order.price,
+                stop_price: order.stop_price,
+                time_in_force: order.time_in_force,
+                client_order_id: order.client_order_id,
+            }).await;
+
+            match result {
+                Ok(r) => results.push(BatchOrderResult {
+                    order_id: r.order_id,
+                    client_order_id: r.client_order_id,
+                    symbol: r.symbol,
+                    status: r.status,
+                    error_code: None,
+                    error_message: None,
+                }),
+                Err(e) => results.push(BatchOrderResult {
+                    order_id: String::new(),
+                    client_order_id: None,
+                    symbol: order.symbol,
+                    status: OrderStatus::Rejected,
+                    error_code: Some(-1),
+                    error_message: Some(e.to_string()),
+                }),
+            }
+        }
+        Ok(results)
+    }
+
+    /// 现货无批量撤单端点，逐个调用
+    async fn batch_cancel_orders(&self, symbol: &str, order_ids: Vec<String>) -> Result<Vec<BatchOrderResult>, ExchangeError> {
+        let mut results = Vec::new();
+        for order_id in order_ids {
+            match self.cancel_order(symbol, &order_id).await {
+                Ok(_) => results.push(BatchOrderResult {
+                    order_id: order_id.clone(),
+                    client_order_id: None,
+                    symbol: symbol.to_string(),
+                    status: OrderStatus::Canceled,
+                    error_code: None,
+                    error_message: None,
+                }),
+                Err(e) => results.push(BatchOrderResult {
+                    order_id: order_id.clone(),
+                    client_order_id: None,
+                    symbol: symbol.to_string(),
+                    status: OrderStatus::Rejected,
+                    error_code: Some(-1),
+                    error_message: Some(e.to_string()),
+                }),
+            }
+        }
+        Ok(results)
+    }
+
+    // ===== 合约交易接口 (现货不支持) =====
+
+    async fn set_leverage(&self, _symbol: &str, _leverage: u32) -> Result<(), ExchangeError> {
+        Err(ExchangeError::ConfigError("Spot trading does not support leverage".to_string()))
+    }
+
+    async fn set_margin_type(&self, _symbol: &str, _margin_type: MarginType) -> Result<(), ExchangeError> {
+        Err(ExchangeError::ConfigError("Spot trading does not support margin type".to_string()))
+    }
+
     // ===== 用户数据流 =====
 
     /// POST /api/v3/listenKey → WebSocket executionReport
@@ -674,392 +1065,6 @@ impl Exchange for BinanceSpotAdapter {
         let _ = self.send_apikey_request("DELETE", "/api/v3/listenKey").await;
 
         Ok(())
-    }
-
-    // ===== 元信息 =====
-
-    fn exchange_id(&self) -> &str {
-        "binance-spot"
-    }
-
-    fn is_testnet(&self) -> bool {
-        self.config.testnet
-    }
-
-    /// GET /api/v3/time
-    async fn get_server_time(&self) -> Result<DateTime<Utc>, ExchangeError> {
-        let data = self.send_public_request("/api/v3/time", &HashMap::new()).await?;
-        let timestamp = data["serverTime"]
-            .as_i64()
-            .ok_or_else(|| ExchangeError::ParseError("Missing serverTime".to_string()))?;
-
-        DateTime::from_timestamp_millis(timestamp)
-            .ok_or_else(|| ExchangeError::ParseError("Invalid timestamp".to_string()))
-    }
-
-    /// GET /api/v3/exchangeInfo - 现货交易对精度
-    async fn get_symbol_precision(&self, symbol: &str) -> Result<SymbolPrecision, ExchangeError> {
-        let mut params = HashMap::new();
-        params.insert("symbol".to_string(), symbol.to_string());
-
-        let data = self.send_public_request("/api/v3/exchangeInfo", &params).await?;
-
-        let symbols = data["symbols"]
-            .as_array()
-            .ok_or_else(|| ExchangeError::ParseError("Missing symbols array".to_string()))?;
-
-        let symbol_info = symbols
-            .iter()
-            .find(|s| s["symbol"].as_str() == Some(symbol))
-            .ok_or_else(|| ExchangeError::InvalidSymbol(format!("Symbol not found: {}", symbol)))?;
-
-        Ok(SymbolPrecision {
-            symbol: symbol.to_string(),
-            base_asset_precision: symbol_info["baseAssetPrecision"].as_u64().unwrap_or(8) as u32,
-            quote_asset_precision: symbol_info["quoteAssetPrecision"].as_u64().unwrap_or(8) as u32,
-            min_quantity: symbol_info["filters"]
-                .as_array()
-                .and_then(|filters| {
-                    filters.iter()
-                        .find(|f| f["filterType"].as_str() == Some("LOT_SIZE"))
-                        .and_then(|f| f["minQty"].as_str()?.parse().ok())
-                })
-                .unwrap_or_else(|| Decimal::from(1)),
-            max_quantity: symbol_info["filters"]
-                .as_array()
-                .and_then(|filters| {
-                    filters.iter()
-                        .find(|f| f["filterType"].as_str() == Some("LOT_SIZE"))
-                        .and_then(|f| f["maxQty"].as_str()?.parse().ok())
-                })
-                .unwrap_or_else(|| Decimal::from(1000000)),
-            min_notional: symbol_info["filters"]
-                .as_array()
-                .and_then(|filters| {
-                    // Spot 用 MIN_NOTIONAL 或 NOTIONAL
-                    filters.iter()
-                        .find(|f| f["filterType"].as_str() == Some("NOTIONAL")
-                            || f["filterType"].as_str() == Some("MIN_NOTIONAL"))
-                        .and_then(|f| f["minNotional"].as_str()?.parse().ok())
-                })
-                .unwrap_or_else(|| Decimal::from(5)),
-            step_size: symbol_info["filters"]
-                .as_array()
-                .and_then(|filters| {
-                    filters.iter()
-                        .find(|f| f["filterType"].as_str() == Some("LOT_SIZE"))
-                        .and_then(|f| f["stepSize"].as_str()?.parse().ok())
-                })
-                .unwrap_or_else(|| Decimal::from(1)),
-            tick_size: symbol_info["filters"]
-                .as_array()
-                .and_then(|filters| {
-                    filters.iter()
-                        .find(|f| f["filterType"].as_str() == Some("PRICE_FILTER"))
-                        .and_then(|f| f["tickSize"].as_str()?.parse().ok())
-                })
-                .unwrap_or_else(|| Decimal::from(1)),
-        })
-    }
-
-    // ===== 合约交易接口 (现货不支持) =====
-
-    async fn set_leverage(&self, _symbol: &str, _leverage: u32) -> Result<(), ExchangeError> {
-        Err(ExchangeError::ConfigError("Spot trading does not support leverage".to_string()))
-    }
-
-    async fn set_margin_type(&self, _symbol: &str, _margin_type: MarginType) -> Result<(), ExchangeError> {
-        Err(ExchangeError::ConfigError("Spot trading does not support margin type".to_string()))
-    }
-
-    /// GET /api/v3/allOrders - 所有订单
-    async fn get_all_orders(&self, symbol: &str, limit: Option<u32>) -> Result<Vec<OrderInfo>, ExchangeError> {
-        let mut params = HashMap::new();
-        params.insert("symbol".to_string(), symbol.to_string());
-        if let Some(l) = limit {
-            params.insert("limit".to_string(), l.to_string());
-        }
-
-        let data = self.send_signed_request("GET", "/api/v3/allOrders", &params).await?;
-
-        let orders = data
-            .as_array()
-            .map(|arr| arr.iter().filter_map(|o| self.parse_spot_order(o)).collect())
-            .unwrap_or_default();
-
-        Ok(orders)
-    }
-
-    /// GET /api/v3/myTrades - 成交历史
-    async fn get_trade_history(&self, symbol: &str, limit: Option<u32>) -> Result<Vec<TradeInfo>, ExchangeError> {
-        let mut params = HashMap::new();
-        params.insert("symbol".to_string(), symbol.to_string());
-        if let Some(l) = limit {
-            params.insert("limit".to_string(), l.to_string());
-        }
-
-        let data = self.send_signed_request("GET", "/api/v3/myTrades", &params).await?;
-
-        let trades = data
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|t| {
-                        Some(TradeInfo {
-                            id: t["id"].as_i64()?.to_string(),
-                            symbol: t["symbol"].as_str()?.to_string(),
-                            price: Decimal::from_str(t["price"].as_str()?).ok()?,
-                            quantity: Decimal::from_str(t["qty"].as_str()?).ok()?,
-                            quote_quantity: Decimal::from_str(t["quoteQty"].as_str().unwrap_or("0")).unwrap_or_default(),
-                            commission: Decimal::from_str(t["commission"].as_str().unwrap_or("0")).unwrap_or_default(),
-                            commission_asset: t["commissionAsset"].as_str().unwrap_or("").to_string(),
-                            time: DateTime::from_timestamp_millis(t["time"].as_i64()?)?,
-                            is_buyer: t["isBuyer"].as_bool().unwrap_or(false),
-                            is_maker: t["isMaker"].as_bool().unwrap_or(false),
-                            realized_pnl: Decimal::ZERO, // 现货无 realizedPnl
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        Ok(trades)
-    }
-
-    // ===== 行情数据接口 =====
-
-    async fn get_mark_price(&self, _symbol: &str) -> Result<MarkPrice, ExchangeError> {
-        Err(ExchangeError::ConfigError("Mark price not available for Spot".to_string()))
-    }
-
-    async fn get_funding_rate(&self, _symbol: &str, _limit: Option<u32>) -> Result<Vec<FundingRate>, ExchangeError> {
-        Err(ExchangeError::ConfigError("Funding rate not available for Spot".to_string()))
-    }
-
-    /// GET /api/v3/klines - K线数据
-    async fn get_klines(&self, symbol: &str, interval: &str, limit: Option<u32>) -> Result<Vec<Kline>, ExchangeError> {
-        let mut params = HashMap::new();
-        params.insert("symbol".to_string(), symbol.to_string());
-        params.insert("interval".to_string(), interval.to_string());
-        if let Some(l) = limit {
-            params.insert("limit".to_string(), l.to_string());
-        }
-
-        let data = self.send_public_request("/api/v3/klines", &params).await?;
-
-        let klines = data
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|k| {
-                        let k_arr = k.as_array()?;
-                        if k_arr.len() < 12 { return None; }
-                        Some(Kline {
-                            open_time: DateTime::from_timestamp_millis(k_arr[0].as_i64()?)?,
-                            open: Decimal::from_str(k_arr[1].as_str()?).ok()?,
-                            high: Decimal::from_str(k_arr[2].as_str()?).ok()?,
-                            low: Decimal::from_str(k_arr[3].as_str()?).ok()?,
-                            close: Decimal::from_str(k_arr[4].as_str()?).ok()?,
-                            volume: Decimal::from_str(k_arr[5].as_str()?).ok()?,
-                            close_time: DateTime::from_timestamp_millis(k_arr[6].as_i64()?)?,
-                            quote_volume: Decimal::from_str(k_arr[7].as_str()?).ok()?,
-                            trades_count: k_arr[8].as_u64().unwrap_or(0),
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        Ok(klines)
-    }
-
-    /// GET /api/v3/depth - 订单簿深度
-    async fn get_order_book(&self, symbol: &str, limit: Option<u32>) -> Result<OrderBook, ExchangeError> {
-        let mut params = HashMap::new();
-        params.insert("symbol".to_string(), symbol.to_string());
-        if let Some(l) = limit {
-            params.insert("limit".to_string(), l.to_string());
-        }
-
-        let data = self.send_public_request("/api/v3/depth", &params).await?;
-
-        let parse_entries = |arr: &serde_json::Value| -> Vec<OrderBookEntry> {
-            arr.as_array()
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|entry| {
-                            let e = entry.as_array()?;
-                            Some(OrderBookEntry {
-                                price: Decimal::from_str(e[0].as_str()?).ok()?,
-                                quantity: Decimal::from_str(e[1].as_str()?).ok()?,
-                            })
-                        })
-                        .collect()
-                })
-                .unwrap_or_default()
-        };
-
-        Ok(OrderBook {
-            symbol: symbol.to_string(),
-            bids: parse_entries(&data["bids"]),
-            asks: parse_entries(&data["asks"]),
-            last_update_id: data["lastUpdateId"].as_u64().unwrap_or(0),
-        })
-    }
-
-    /// 现货无批量下单端点，逐个调用
-    async fn batch_place_orders(&self, orders: Vec<BatchOrderRequest>) -> Result<Vec<BatchOrderResult>, ExchangeError> {
-        let mut results = Vec::new();
-        for order in orders {
-            let result = self.place_order(OrderRequest {
-                symbol: order.symbol.clone(),
-                side: order.side,
-                order_type: order.order_type,
-                quantity: order.quantity,
-                price: order.price,
-                stop_price: order.stop_price,
-                time_in_force: order.time_in_force,
-                client_order_id: order.client_order_id,
-            }).await;
-
-            match result {
-                Ok(r) => results.push(BatchOrderResult {
-                    order_id: r.order_id,
-                    client_order_id: r.client_order_id,
-                    symbol: r.symbol,
-                    status: r.status,
-                    error_code: None,
-                    error_message: None,
-                }),
-                Err(e) => results.push(BatchOrderResult {
-                    order_id: String::new(),
-                    client_order_id: None,
-                    symbol: order.symbol,
-                    status: OrderStatus::Rejected,
-                    error_code: Some(-1),
-                    error_message: Some(e.to_string()),
-                }),
-            }
-        }
-        Ok(results)
-    }
-
-    /// 现货无批量撤单端点，逐个调用
-    async fn batch_cancel_orders(&self, symbol: &str, order_ids: Vec<String>) -> Result<Vec<BatchOrderResult>, ExchangeError> {
-        let mut results = Vec::new();
-        for order_id in order_ids {
-            match self.cancel_order(symbol, &order_id).await {
-                Ok(_) => results.push(BatchOrderResult {
-                    order_id: order_id.clone(),
-                    client_order_id: None,
-                    symbol: symbol.to_string(),
-                    status: OrderStatus::Canceled,
-                    error_code: None,
-                    error_message: None,
-                }),
-                Err(e) => results.push(BatchOrderResult {
-                    order_id: order_id.clone(),
-                    client_order_id: None,
-                    symbol: symbol.to_string(),
-                    status: OrderStatus::Rejected,
-                    error_code: Some(-1),
-                    error_message: Some(e.to_string()),
-                }),
-            }
-        }
-        Ok(results)
-    }
-
-    async fn get_futures_account(&self) -> Result<FuturesAccountInfo, ExchangeError> {
-        Err(ExchangeError::ConfigError("Not a futures account".to_string()))
-    }
-
-    /// GET /api/v3/ticker/24hr - 获取行情快照
-    async fn get_ticker(&self, symbol: &str) -> Result<Ticker, ExchangeError> {
-        let mut params = HashMap::new();
-        params.insert("symbol".to_string(), symbol.to_string());
-
-        let data = self.send_public_request("/api/v3/ticker/24hr", &params).await?;
-
-        Ok(Ticker {
-            symbol: data["symbol"].as_str().unwrap_or(symbol).to_string(),
-            last_price: Decimal::from_str(data["lastPrice"].as_str().unwrap_or("0")).unwrap_or_default(),
-            bid_price: Decimal::from_str(data["bidPrice"].as_str().unwrap_or("0")).unwrap_or_default(),
-            ask_price: Decimal::from_str(data["askPrice"].as_str().unwrap_or("0")).unwrap_or_default(),
-            high_price: Decimal::from_str(data["highPrice"].as_str().unwrap_or("0")).unwrap_or_default(),
-            low_price: Decimal::from_str(data["lowPrice"].as_str().unwrap_or("0")).unwrap_or_default(),
-            volume: Decimal::from_str(data["volume"].as_str().unwrap_or("0")).unwrap_or_default(),
-            quote_volume: Decimal::from_str(data["quoteVolume"].as_str().unwrap_or("0")).unwrap_or_default(),
-            price_change: Decimal::from_str(data["priceChange"].as_str().unwrap_or("0")).unwrap_or_default(),
-            price_change_percent: Decimal::from_str(data["priceChangePercent"].as_str().unwrap_or("0")).unwrap_or_default(),
-            timestamp: Utc::now(),
-        })
-    }
-
-    /// GET /api/v3/ticker/24hr - 批量获取行情快照
-    async fn get_tickers(&self, symbols: &[String]) -> Result<Vec<Ticker>, ExchangeError> {
-        let params = HashMap::new();
-        let data = self.send_public_request("/api/v3/ticker/24hr", &params).await?;
-
-        let all_tickers: Vec<Ticker> = data
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|item| {
-                        let sym = item["symbol"].as_str()?;
-                        if !symbols.iter().any(|s| s == sym) {
-                            return None;
-                        }
-                        Some(Ticker {
-                            symbol: sym.to_string(),
-                            last_price: Decimal::from_str(item["lastPrice"].as_str()?).ok()?,
-                            bid_price: Decimal::from_str(item["bidPrice"].as_str()?).ok()?,
-                            ask_price: Decimal::from_str(item["askPrice"].as_str()?).ok()?,
-                            high_price: Decimal::from_str(item["highPrice"].as_str()?).ok()?,
-                            low_price: Decimal::from_str(item["lowPrice"].as_str()?).ok()?,
-                            volume: Decimal::from_str(item["volume"].as_str()?).ok()?,
-                            quote_volume: Decimal::from_str(item["quoteVolume"].as_str()?).ok()?,
-                            price_change: Decimal::from_str(item["priceChange"].as_str()?).ok()?,
-                            price_change_percent: Decimal::from_str(item["priceChangePercent"].as_str()?).ok()?,
-                            timestamp: Utc::now(),
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        Ok(all_tickers)
-    }
-
-    /// GET /api/v3/trades - 获取最近成交
-    async fn get_recent_trades(&self, symbol: &str, limit: Option<u32>) -> Result<Vec<PublicTrade>, ExchangeError> {
-        let mut params = HashMap::new();
-        params.insert("symbol".to_string(), symbol.to_string());
-        if let Some(l) = limit {
-            params.insert("limit".to_string(), l.to_string());
-        }
-
-        let data = self.send_public_request("/api/v3/trades", &params).await?;
-
-        let trades: Vec<PublicTrade> = data
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|t| {
-                        Some(PublicTrade {
-                            id: t["id"].as_i64()?.to_string(),
-                            symbol: symbol.to_string(),
-                            price: Decimal::from_str(t["price"].as_str()?).ok()?,
-                            quantity: Decimal::from_str(t["qty"].as_str()?).ok()?,
-                            timestamp: DateTime::from_timestamp_millis(t["time"].as_i64()?)?,
-                            is_buyer_maker: t["isBuyerMaker"].as_bool()?,
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        Ok(trades)
     }
 }
 

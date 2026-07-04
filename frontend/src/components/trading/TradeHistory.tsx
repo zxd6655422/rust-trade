@@ -5,9 +5,11 @@ import { invoke } from '@tauri-apps/api/core';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Loader2, History, RefreshCw, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Loader2, History, RefreshCw, ChevronLeft, ChevronRight, Download } from 'lucide-react';
 import { TradeRecord } from '@/types/trading';
 import { useLanguage } from '@/lib/i18n/context';
+import { exportTradeHistory } from '@/lib/export';
+import { useToast } from '@/components/ui/toast';
 
 interface TradeHistoryProps {
   symbol?: string;
@@ -21,6 +23,7 @@ export default function TradeHistory({ symbol }: TradeHistoryProps) {
   const [page, setPage] = useState(0);
   const [hasMore, setHasMore] = useState(true);
   const { t } = useLanguage();
+  const { success, error: showError } = useToast();
 
   const fetchTrades = useCallback(async (pageNum: number) => {
     try {
@@ -52,6 +55,26 @@ export default function TradeHistory({ symbol }: TradeHistoryProps) {
     fetchTrades(newPage);
   };
 
+  const handleExport = () => {
+    try {
+      exportTradeHistory(
+        trades.map((t) => ({
+          timestamp: t.trade_time,
+          side: t.side,
+          symbol: t.symbol,
+          quantity: t.quantity,
+          price: t.price,
+          pnl: t.realized_pnl,
+          commission: t.commission,
+        })),
+        'csv'
+      );
+      success('导出成功', '交易历史已导出为 CSV 文件');
+    } catch (err) {
+      showError('导出失败', String(err));
+    }
+  };
+
   const formatPrice = (price: string) => {
     const num = parseFloat(price);
     return num.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -70,9 +93,17 @@ export default function TradeHistory({ symbol }: TradeHistoryProps) {
             <History className="w-5 h-5 text-muted-foreground" />
             <CardTitle className="text-lg">{t.tradeHistory.title}</CardTitle>
           </div>
-          <Button variant="ghost" size="sm" onClick={() => fetchTrades(page)} disabled={loading}>
-            <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} />
-          </Button>
+          <div className="flex gap-1">
+            {trades.length > 0 && (
+              <Button variant="outline" size="sm" onClick={handleExport}>
+                <Download className="w-3 h-3 mr-1" />
+                CSV
+              </Button>
+            )}
+            <Button variant="ghost" size="sm" onClick={() => fetchTrades(page)} disabled={loading}>
+              <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} />
+            </Button>
+          </div>
         </div>
       </CardHeader>
       <CardContent>

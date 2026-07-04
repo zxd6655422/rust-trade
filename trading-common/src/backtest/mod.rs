@@ -4,6 +4,7 @@ pub mod metrics;
 pub mod multi_symbol;
 pub mod multi_timeframe_engine;
 pub mod portfolio;
+pub mod portfolio_tests;
 pub mod strategy;
 pub mod walk_forward;
 

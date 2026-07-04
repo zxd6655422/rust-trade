@@ -17,7 +17,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{error, info, warn};
 
 use crate::exchange::errors::ExchangeError;
-use crate::exchange::traits::{Exchange, SymbolPrecision};
+use crate::exchange::traits::{MarketDataProvider, TradingOperations, SymbolPrecision};
 use crate::exchange::types::*;
 use trading_common::data::types::TickData;
 
@@ -397,9 +397,290 @@ impl BinanceAdapter {
     }
 }
 
+/// MarketDataProvider 实现 - 只读市场数据接口
 #[async_trait]
-impl Exchange for BinanceAdapter {
-    // ===== 行情接口 (WebSocket) =====
+impl MarketDataProvider for BinanceAdapter {
+    fn exchange_id(&self) -> &str {
+        "binance"
+    }
+
+    fn is_testnet(&self) -> bool {
+        self.config.testnet
+    }
+
+    async fn get_server_time(&self) -> Result<DateTime<Utc>, ExchangeError> {
+        let data = self.send_public_request("/fapi/v1/time", &HashMap::new()).await?;
+        let timestamp = data["serverTime"]
+            .as_i64()
+            .ok_or_else(|| ExchangeError::ParseError("Missing serverTime".to_string()))?;
+
+        DateTime::from_timestamp_millis(timestamp)
+            .ok_or_else(|| ExchangeError::ParseError("Invalid timestamp".to_string()))
+    }
+
+    async fn get_symbol_precision(&self, symbol: &str) -> Result<SymbolPrecision, ExchangeError> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+
+        let data = self.send_public_request("/fapi/v1/exchangeInfo", &params).await?;
+
+        let symbols = data["symbols"]
+            .as_array()
+            .ok_or_else(|| ExchangeError::ParseError("Missing symbols array".to_string()))?;
+
+        let symbol_info = symbols
+            .iter()
+            .find(|s| s["symbol"].as_str() == Some(symbol))
+            .ok_or_else(|| ExchangeError::InvalidSymbol(format!("Symbol not found: {}", symbol)))?;
+
+        Ok(SymbolPrecision {
+            symbol: symbol.to_string(),
+            base_asset_precision: symbol_info["baseAssetPrecision"].as_u64().unwrap_or(8) as u32,
+            quote_asset_precision: symbol_info["quotePrecision"].as_u64().unwrap_or(8) as u32,
+            min_quantity: symbol_info["filters"]
+                .as_array()
+                .and_then(|filters| {
+                    filters.iter()
+                        .find(|f| f["filterType"].as_str() == Some("LOT_SIZE"))
+                        .and_then(|f| f["minQty"].as_str()?.parse().ok())
+                })
+                .unwrap_or_else(|| Decimal::from(1)),
+            max_quantity: symbol_info["filters"]
+                .as_array()
+                .and_then(|filters| {
+                    filters.iter()
+                        .find(|f| f["filterType"].as_str() == Some("LOT_SIZE"))
+                        .and_then(|f| f["maxQty"].as_str()?.parse().ok())
+                })
+                .unwrap_or_else(|| Decimal::from(1000000)),
+            min_notional: symbol_info["filters"]
+                .as_array()
+                .and_then(|filters| {
+                    filters.iter()
+                        .find(|f| f["filterType"].as_str() == Some("MIN_NOTIONAL"))
+                        .and_then(|f| f["notional"].as_str()?.parse().ok())
+                })
+                .unwrap_or_else(|| Decimal::from(5)),
+            step_size: symbol_info["filters"]
+                .as_array()
+                .and_then(|filters| {
+                    filters.iter()
+                        .find(|f| f["filterType"].as_str() == Some("LOT_SIZE"))
+                        .and_then(|f| f["stepSize"].as_str()?.parse().ok())
+                })
+                .unwrap_or_else(|| Decimal::from(1)),
+            tick_size: symbol_info["filters"]
+                .as_array()
+                .and_then(|filters| {
+                    filters.iter()
+                        .find(|f| f["filterType"].as_str() == Some("PRICE_FILTER"))
+                        .and_then(|f| f["tickSize"].as_str()?.parse().ok())
+                })
+                .unwrap_or_else(|| Decimal::from(1)),
+        })
+    }
+
+    async fn get_ticker(&self, symbol: &str) -> Result<Ticker, ExchangeError> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+
+        let data = self.send_public_request("/fapi/v1/ticker/24hr", &params).await?;
+
+        Ok(Ticker {
+            symbol: data["symbol"].as_str().unwrap_or(symbol).to_string(),
+            last_price: Decimal::from_str(data["lastPrice"].as_str().unwrap_or("0")).unwrap_or_default(),
+            bid_price: Decimal::from_str(data["bidPrice"].as_str().unwrap_or("0")).unwrap_or_default(),
+            ask_price: Decimal::from_str(data["askPrice"].as_str().unwrap_or("0")).unwrap_or_default(),
+            high_price: Decimal::from_str(data["highPrice"].as_str().unwrap_or("0")).unwrap_or_default(),
+            low_price: Decimal::from_str(data["lowPrice"].as_str().unwrap_or("0")).unwrap_or_default(),
+            volume: Decimal::from_str(data["volume"].as_str().unwrap_or("0")).unwrap_or_default(),
+            quote_volume: Decimal::from_str(data["quoteVolume"].as_str().unwrap_or("0")).unwrap_or_default(),
+            price_change: Decimal::from_str(data["priceChange"].as_str().unwrap_or("0")).unwrap_or_default(),
+            price_change_percent: Decimal::from_str(data["priceChangePercent"].as_str().unwrap_or("0")).unwrap_or_default(),
+            timestamp: Utc::now(),
+        })
+    }
+
+    async fn get_tickers(&self, symbols: &[String]) -> Result<Vec<Ticker>, ExchangeError> {
+        let params = HashMap::new();
+        let data = self.send_public_request("/fapi/v1/ticker/24hr", &params).await?;
+
+        let all_tickers: Vec<Ticker> = data
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|item| {
+                        let sym = item["symbol"].as_str()?;
+                        if !symbols.iter().any(|s| s == sym) {
+                            return None;
+                        }
+                        Some(Ticker {
+                            symbol: sym.to_string(),
+                            last_price: Decimal::from_str(item["lastPrice"].as_str()?).ok()?,
+                            bid_price: Decimal::from_str(item["bidPrice"].as_str()?).ok()?,
+                            ask_price: Decimal::from_str(item["askPrice"].as_str()?).ok()?,
+                            high_price: Decimal::from_str(item["highPrice"].as_str()?).ok()?,
+                            low_price: Decimal::from_str(item["lowPrice"].as_str()?).ok()?,
+                            volume: Decimal::from_str(item["volume"].as_str()?).ok()?,
+                            quote_volume: Decimal::from_str(item["quoteVolume"].as_str()?).ok()?,
+                            price_change: Decimal::from_str(item["priceChange"].as_str()?).ok()?,
+                            price_change_percent: Decimal::from_str(item["priceChangePercent"].as_str()?).ok()?,
+                            timestamp: Utc::now(),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(all_tickers)
+    }
+
+    async fn get_mark_price(&self, symbol: &str) -> Result<MarkPrice, ExchangeError> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+
+        let data = self.send_public_request("/fapi/v1/premiumIndex", &params).await?;
+
+        Ok(MarkPrice {
+            symbol: data["symbol"].as_str().unwrap_or(symbol).to_string(),
+            mark_price: Decimal::from_str(data["markPrice"].as_str().unwrap_or("0")).unwrap_or_default(),
+            index_price: Decimal::from_str(data["indexPrice"].as_str().unwrap_or("0")).unwrap_or_default(),
+            estimated_settle_price: data["estimatedSettlePrice"].as_str().and_then(|s| Decimal::from_str(s).ok()),
+            last_funding_rate: Decimal::from_str(data["lastFundingRate"].as_str().unwrap_or("0")).unwrap_or_default(),
+            next_funding_time: DateTime::from_timestamp_millis(data["nextFundingTime"].as_i64().unwrap_or(0)).unwrap_or_default(),
+            interest_rate: Decimal::from_str(data["interestRate"].as_str().unwrap_or("0")).unwrap_or_default(),
+            time: DateTime::from_timestamp_millis(data["time"].as_i64().unwrap_or(0)).unwrap_or_default(),
+        })
+    }
+
+    async fn get_funding_rate(&self, symbol: &str, limit: Option<u32>) -> Result<Vec<FundingRate>, ExchangeError> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+
+        let data = self.send_public_request("/fapi/v1/fundingRate", &params).await?;
+
+        let rates = data
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|r| {
+                        Some(FundingRate {
+                            symbol: r["symbol"].as_str()?.to_string(),
+                            funding_rate: Decimal::from_str(r["fundingRate"].as_str()?).ok()?,
+                            funding_time: DateTime::from_timestamp_millis(r["fundingTime"].as_i64()?)?,
+                            next_funding_time: None,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(rates)
+    }
+
+    async fn get_klines(&self, symbol: &str, interval: &str, limit: Option<u32>) -> Result<Vec<Kline>, ExchangeError> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        params.insert("interval".to_string(), interval.to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+
+        let data = self.send_public_request("/fapi/v1/klines", &params).await?;
+
+        let klines = data
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|k| {
+                        let k_arr = k.as_array()?;
+                        if k_arr.len() < 12 {
+                            return None;
+                        }
+                        Some(Kline {
+                            open_time: DateTime::from_timestamp_millis(k_arr[0].as_i64()?)?,
+                            open: Decimal::from_str(k_arr[1].as_str()?).ok()?,
+                            high: Decimal::from_str(k_arr[2].as_str()?).ok()?,
+                            low: Decimal::from_str(k_arr[3].as_str()?).ok()?,
+                            close: Decimal::from_str(k_arr[4].as_str()?).ok()?,
+                            volume: Decimal::from_str(k_arr[5].as_str()?).ok()?,
+                            close_time: DateTime::from_timestamp_millis(k_arr[6].as_i64()?)?,
+                            quote_volume: Decimal::from_str(k_arr[7].as_str()?).ok()?,
+                            trades_count: k_arr[8].as_u64().unwrap_or(0),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(klines)
+    }
+
+    async fn get_order_book(&self, symbol: &str, limit: Option<u32>) -> Result<OrderBook, ExchangeError> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+
+        let data = self.send_public_request("/fapi/v1/depth", &params).await?;
+
+        let parse_entries = |arr: &serde_json::Value| -> Vec<OrderBookEntry> {
+            arr.as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|entry| {
+                            let e = entry.as_array()?;
+                            Some(OrderBookEntry {
+                                price: Decimal::from_str(e[0].as_str()?).ok()?,
+                                quantity: Decimal::from_str(e[1].as_str()?).ok()?,
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+
+        Ok(OrderBook {
+            symbol: symbol.to_string(),
+            bids: parse_entries(&data["bids"]),
+            asks: parse_entries(&data["asks"]),
+            last_update_id: data["lastUpdateId"].as_u64().unwrap_or(0),
+        })
+    }
+
+    async fn get_recent_trades(&self, symbol: &str, limit: Option<u32>) -> Result<Vec<PublicTrade>, ExchangeError> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+
+        let data = self.send_public_request("/fapi/v1/trades", &params).await?;
+
+        let trades: Vec<PublicTrade> = data
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|t| {
+                        Some(PublicTrade {
+                            id: t["id"].as_i64()?.to_string(),
+                            symbol: symbol.to_string(),
+                            price: Decimal::from_str(t["price"].as_str()?).ok()?,
+                            quantity: Decimal::from_str(t["qty"].as_str()?).ok()?,
+                            timestamp: DateTime::from_timestamp_millis(t["time"].as_i64()?)?,
+                            is_buyer_maker: t["maker"].as_bool()?,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(trades)
+    }
 
     async fn subscribe_trades(
         &self,
@@ -467,17 +748,37 @@ impl Exchange for BinanceAdapter {
 
         Ok(())
     }
+}
 
-    // ===== 账户接口 =====
-
-    /// GET /fapi/v2/account - 获取合约账户信息
+/// TradingOperations 实现 - 认证交易操作接口
+#[async_trait]
+impl TradingOperations for BinanceAdapter {
     async fn get_account(&self) -> Result<AccountInfo, ExchangeError> {
         let params = HashMap::new();
         let data = self.send_signed_request("GET", "/fapi/v2/account", &params).await?;
         self.parse_futures_account(&data)
     }
 
-    /// GET /fapi/v2/positionRisk - 获取单个持仓
+    async fn get_futures_account(&self) -> Result<FuturesAccountInfo, ExchangeError> {
+        let params = HashMap::new();
+        let data = self.send_signed_request("GET", "/fapi/v2/account", &params).await?;
+
+        let account_info = self.parse_futures_account(&data)?;
+
+        Ok(FuturesAccountInfo {
+            account_info,
+            can_trade: data["canTrade"].as_bool().unwrap_or(false),
+            can_withdraw: data["canWithdraw"].as_bool().unwrap_or(false),
+            fee_tier: data["feeTier"].as_u64().unwrap_or(0) as u32,
+            max_withdraw_amount: Decimal::from_str(data["maxWithdrawAmount"].as_str().unwrap_or("0")).unwrap_or_default(),
+            total_initial_margin: Decimal::from_str(data["totalInitialMargin"].as_str().unwrap_or("0")).unwrap_or_default(),
+            total_maint_margin: Decimal::from_str(data["totalMaintMargin"].as_str().unwrap_or("0")).unwrap_or_default(),
+            total_wallet_balance: Decimal::from_str(data["totalWalletBalance"].as_str().unwrap_or("0")).unwrap_or_default(),
+            total_unrealized_pnl: Decimal::from_str(data["totalUnrealizedProfit"].as_str().unwrap_or("0")).unwrap_or_default(),
+            total_margin_balance: Decimal::from_str(data["totalMarginBalance"].as_str().unwrap_or("0")).unwrap_or_default(),
+        })
+    }
+
     async fn get_position(&self, symbol: &str) -> Result<PositionInfo, ExchangeError> {
         let mut params = HashMap::new();
         params.insert("symbol".to_string(), symbol.to_string());
@@ -495,7 +796,6 @@ impl Exchange for BinanceAdapter {
             }
         }
 
-        // 空仓位
         Ok(PositionInfo {
             symbol: symbol.to_string(),
             side: PositionSide::None,
@@ -509,7 +809,6 @@ impl Exchange for BinanceAdapter {
         })
     }
 
-    /// GET /fapi/v2/positionRisk - 获取所有持仓
     async fn get_positions(&self) -> Result<Vec<PositionInfo>, ExchangeError> {
         let params = HashMap::new();
         let data = self.send_signed_request("GET", "/fapi/v2/positionRisk", &params).await?;
@@ -520,16 +819,11 @@ impl Exchange for BinanceAdapter {
         Ok(positions.iter().filter_map(|pos| self.parse_position(pos)).collect())
     }
 
-    // ===== 订单接口 =====
-
-    /// POST /fapi/v1/order - 下单
     async fn place_order(&self, order: OrderRequest) -> Result<OrderResult, ExchangeError> {
         let mut params = HashMap::new();
         params.insert("symbol".to_string(), order.symbol.clone());
         params.insert("side".to_string(), order.side.to_string());
         params.insert("type".to_string(), order.order_type.to_string());
-
-        // Futures 用 quantity 而不是 quoteOrderQty
         params.insert("quantity".to_string(), order.quantity.to_string());
 
         if let Some(price) = order.price {
@@ -548,7 +842,6 @@ impl Exchange for BinanceAdapter {
             params.insert("newClientOrderId".to_string(), client_order_id);
         }
 
-        // 返回完整结果
         params.insert("newOrderRespType".to_string(), "RESULT".to_string());
 
         let data = self.send_signed_form_request("POST", "/fapi/v1/order", &params).await?;
@@ -579,7 +872,6 @@ impl Exchange for BinanceAdapter {
         })
     }
 
-    /// DELETE /fapi/v1/order - 撤单
     async fn cancel_order(&self, symbol: &str, order_id: &str) -> Result<(), ExchangeError> {
         let mut params = HashMap::new();
         params.insert("symbol".to_string(), symbol.to_string());
@@ -589,20 +881,17 @@ impl Exchange for BinanceAdapter {
         Ok(())
     }
 
-    /// DELETE /fapi/v1/allOpenOrders - 撤销所有未成交订单
     async fn cancel_all_orders(&self, symbol: Option<&str>) -> Result<(), ExchangeError> {
         if let Some(s) = symbol {
             let mut params = HashMap::new();
             params.insert("symbol".to_string(), s.to_string());
             self.send_signed_request("DELETE", "/fapi/v1/allOpenOrders", &params).await?;
         } else {
-            // 需要指定 symbol，无法全部撤销
             return Err(ExchangeError::InvalidOrder("Symbol is required for cancel_all_orders".to_string()));
         }
         Ok(())
     }
 
-    /// GET /fapi/v1/openOrders - 获取当前未成交订单
     async fn get_open_orders(&self, symbol: Option<&str>) -> Result<Vec<OrderInfo>, ExchangeError> {
         let mut params = HashMap::new();
         if let Some(s) = symbol {
@@ -619,7 +908,6 @@ impl Exchange for BinanceAdapter {
         Ok(orders)
     }
 
-    /// GET /fapi/v1/order - 获取订单详情
     async fn get_order(&self, symbol: &str, order_id: &str) -> Result<OrderInfo, ExchangeError> {
         let mut params = HashMap::new();
         params.insert("symbol".to_string(), symbol.to_string());
@@ -631,15 +919,188 @@ impl Exchange for BinanceAdapter {
             .ok_or_else(|| ExchangeError::OrderNotFound(order_id.to_string()))
     }
 
-    // ===== 用户数据流 (WebSocket) =====
+    async fn get_all_orders(&self, symbol: &str, limit: Option<u32>) -> Result<Vec<OrderInfo>, ExchangeError> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
 
-    /// POST /fapi/v1/listenKey -> WebSocket 用户数据流
+        let data = self.send_signed_request("GET", "/fapi/v1/allOrders", &params).await?;
+
+        let orders = data
+            .as_array()
+            .map(|arr| arr.iter().filter_map(|o| self.parse_order_info(o)).collect())
+            .unwrap_or_default();
+
+        Ok(orders)
+    }
+
+    async fn get_trade_history(&self, symbol: &str, limit: Option<u32>) -> Result<Vec<TradeInfo>, ExchangeError> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+
+        let data = self.send_signed_request("GET", "/fapi/v1/userTrades", &params).await?;
+
+        let trades = data
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|t| {
+                        Some(TradeInfo {
+                            id: t["id"].as_i64()?.to_string(),
+                            symbol: t["symbol"].as_str()?.to_string(),
+                            price: Decimal::from_str(t["price"].as_str()?).ok()?,
+                            quantity: Decimal::from_str(t["qty"].as_str()?).ok()?,
+                            quote_quantity: Decimal::from_str(t["quoteQty"].as_str().unwrap_or("0")).unwrap_or_default(),
+                            commission: Decimal::from_str(t["commission"].as_str().unwrap_or("0")).unwrap_or_default(),
+                            commission_asset: t["commissionAsset"].as_str().unwrap_or("").to_string(),
+                            time: DateTime::from_timestamp_millis(t["time"].as_i64()?)?,
+                            is_buyer: t["buyer"].as_bool().unwrap_or(false),
+                            is_maker: t["maker"].as_bool().unwrap_or(false),
+                            realized_pnl: Decimal::from_str(t["realizedPnl"].as_str().unwrap_or("0")).unwrap_or_default(),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(trades)
+    }
+
+    async fn batch_place_orders(&self, orders: Vec<BatchOrderRequest>) -> Result<Vec<BatchOrderResult>, ExchangeError> {
+        if orders.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        if orders.len() > 5 {
+            return Err(ExchangeError::InvalidOrder("Batch order limit is 5".to_string()));
+        }
+
+        let symbol = orders[0].symbol.clone();
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.clone());
+
+        let batch: Vec<serde_json::Value> = orders.iter().enumerate().map(|(_i, o)| {
+            let mut order = serde_json::json!({
+                "symbol": o.symbol,
+                "side": o.side.to_string(),
+                "type": o.order_type.to_string(),
+                "quantity": o.quantity.to_string(),
+            });
+            if let Some(price) = o.price {
+                order["price"] = serde_json::json!(price.to_string());
+            }
+            if let Some(stop_price) = o.stop_price {
+                order["stopPrice"] = serde_json::json!(stop_price.to_string());
+            }
+            if let Some(tif) = &o.time_in_force {
+                order["timeInForce"] = serde_json::json!(tif.to_string());
+            }
+            if let Some(cid) = &o.client_order_id {
+                order["newClientOrderId"] = serde_json::json!(cid);
+            }
+            order
+        }).collect();
+
+        let mut query_params = HashMap::new();
+        query_params.insert("symbol".to_string(), symbol);
+        let batch_json = serde_json::to_string(&batch).map_err(|e| ExchangeError::ParseError(e.to_string()))?;
+        query_params.insert("batchOrders".to_string(), batch_json);
+
+        let data = self.send_signed_form_request("POST", "/fapi/v1/batchOrders", &query_params).await?;
+
+        let results = data.as_array()
+            .map(|arr| {
+                arr.iter().map(|r| {
+                    BatchOrderResult {
+                        order_id: r["orderId"].as_i64().unwrap_or(0).to_string(),
+                        client_order_id: r["clientOrderId"].as_str().map(|s| s.to_string()),
+                        symbol: r["symbol"].as_str().unwrap_or("").to_string(),
+                        status: match r["status"].as_str() {
+                            Some("NEW") => OrderStatus::New,
+                            Some("FILLED") => OrderStatus::Filled,
+                            _ => OrderStatus::New,
+                        },
+                        error_code: r["code"].as_i64(),
+                        error_message: r["msg"].as_str().map(|s| s.to_string()),
+                    }
+                }).collect()
+            })
+            .unwrap_or_default();
+
+        Ok(results)
+    }
+
+    async fn batch_cancel_orders(&self, symbol: &str, order_ids: Vec<String>) -> Result<Vec<BatchOrderResult>, ExchangeError> {
+        if order_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut query_params = HashMap::new();
+        query_params.insert("symbol".to_string(), symbol.to_string());
+        let ids_json = serde_json::to_string(&order_ids).map_err(|e| ExchangeError::ParseError(e.to_string()))?;
+        query_params.insert("orderIdList".to_string(), ids_json);
+
+        let data = self.send_signed_form_request("DELETE", "/fapi/v1/batchOrders", &query_params).await?;
+
+        let results = data.as_array()
+            .map(|arr| {
+                arr.iter().map(|r| {
+                    BatchOrderResult {
+                        order_id: r["orderId"].as_i64().unwrap_or(0).to_string(),
+                        client_order_id: r["clientOrderId"].as_str().map(|s| s.to_string()),
+                        symbol: r["symbol"].as_str().unwrap_or(symbol).to_string(),
+                        status: match r["status"].as_str() {
+                            Some("CANCELED") => OrderStatus::Canceled,
+                            _ => OrderStatus::Canceled,
+                        },
+                        error_code: r["code"].as_i64(),
+                        error_message: r["msg"].as_str().map(|s| s.to_string()),
+                    }
+                }).collect()
+            })
+            .unwrap_or_default();
+
+        Ok(results)
+    }
+
+    async fn set_leverage(&self, symbol: &str, leverage: u32) -> Result<(), ExchangeError> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        params.insert("leverage".to_string(), leverage.to_string());
+
+        self.send_signed_form_request("POST", "/fapi/v1/leverage", &params).await?;
+        info!("Set leverage for {} to {}x", symbol, leverage);
+        Ok(())
+    }
+
+    async fn set_margin_type(&self, symbol: &str, margin_type: MarginType) -> Result<(), ExchangeError> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        params.insert("marginType".to_string(), margin_type.to_string());
+
+        match self.send_signed_form_request("POST", "/fapi/v1/marginType", &params).await {
+            Ok(_) => {
+                info!("Set margin type for {} to {:?}", symbol, margin_type);
+                Ok(())
+            }
+            Err(ExchangeError::ApiError { code: -4046, .. }) => {
+                info!("Margin type for {} already set to {:?}", symbol, margin_type);
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     async fn subscribe_user_data(
         &self,
         order_callback: Box<dyn Fn(OrderUpdate) + Send + Sync>,
         mut shutdown_rx: broadcast::Receiver<()>,
     ) -> Result<(), ExchangeError> {
-        // 1. 创建 listenKey
         let data = self.send_apikey_request("POST", "/fapi/v1/listenKey").await?;
         let listen_key = data["listenKey"]
             .as_str()
@@ -648,7 +1109,6 @@ impl Exchange for BinanceAdapter {
 
         info!("Got listenKey: {}...", &listen_key[..8.min(listen_key.len())]);
 
-        // 2. 连接 WebSocket
         let ws_url = format!("{}/{}", self.ws_url, listen_key);
         let (mut ws_stream, _) = connect_async(&ws_url)
             .await
@@ -656,7 +1116,6 @@ impl Exchange for BinanceAdapter {
 
         info!("Connected to Binance user data stream");
 
-        // 3. 定期延长 listenKey (每 30 分钟)
         let client = self.client.clone();
         let base_url = self.base_url.clone();
         let api_key = self.config.api_key.clone();
@@ -680,7 +1139,6 @@ impl Exchange for BinanceAdapter {
             }
         });
 
-        // 4. 处理消息
         loop {
             tokio::select! {
                 msg = ws_stream.next() => {
@@ -696,7 +1154,6 @@ impl Exchange for BinanceAdapter {
                                             }
                                         }
                                         "ACCOUNT_UPDATE" => {
-                                            // 账户更新事件，可扩展处理
                                             info!("Account update received");
                                         }
                                         "MARGIN_CALL" => {
@@ -738,519 +1195,10 @@ impl Exchange for BinanceAdapter {
             }
         }
 
-        // 清理: 关闭 listenKey
         keepalive_handle.abort();
         let _ = self.send_apikey_request("DELETE", "/fapi/v1/listenKey").await;
 
         Ok(())
-    }
-
-    // ===== 元信息 =====
-
-    fn exchange_id(&self) -> &str {
-        "binance"
-    }
-
-    fn is_testnet(&self) -> bool {
-        self.config.testnet
-    }
-
-    /// GET /fapi/v1/time - 获取服务器时间
-    async fn get_server_time(&self) -> Result<DateTime<Utc>, ExchangeError> {
-        let data = self.send_public_request("/fapi/v1/time", &HashMap::new()).await?;
-        let timestamp = data["serverTime"]
-            .as_i64()
-            .ok_or_else(|| ExchangeError::ParseError("Missing serverTime".to_string()))?;
-
-        DateTime::from_timestamp_millis(timestamp)
-            .ok_or_else(|| ExchangeError::ParseError("Invalid timestamp".to_string()))
-    }
-
-    /// GET /fapi/v1/exchangeInfo - 获取交易对精度
-    async fn get_symbol_precision(&self, symbol: &str) -> Result<SymbolPrecision, ExchangeError> {
-        let mut params = HashMap::new();
-        params.insert("symbol".to_string(), symbol.to_string());
-
-        let data = self.send_public_request("/fapi/v1/exchangeInfo", &params).await?;
-
-        let symbols = data["symbols"]
-            .as_array()
-            .ok_or_else(|| ExchangeError::ParseError("Missing symbols array".to_string()))?;
-
-        let symbol_info = symbols
-            .iter()
-            .find(|s| s["symbol"].as_str() == Some(symbol))
-            .ok_or_else(|| ExchangeError::InvalidSymbol(format!("Symbol not found: {}", symbol)))?;
-
-        Ok(SymbolPrecision {
-            symbol: symbol.to_string(),
-            base_asset_precision: symbol_info["baseAssetPrecision"].as_u64().unwrap_or(8) as u32,
-            quote_asset_precision: symbol_info["quotePrecision"].as_u64().unwrap_or(8) as u32,
-            min_quantity: symbol_info["filters"]
-                .as_array()
-                .and_then(|filters| {
-                    filters.iter()
-                        .find(|f| f["filterType"].as_str() == Some("LOT_SIZE"))
-                        .and_then(|f| f["minQty"].as_str()?.parse().ok())
-                })
-                .unwrap_or_else(|| Decimal::from(1)),
-            max_quantity: symbol_info["filters"]
-                .as_array()
-                .and_then(|filters| {
-                    filters.iter()
-                        .find(|f| f["filterType"].as_str() == Some("LOT_SIZE"))
-                        .and_then(|f| f["maxQty"].as_str()?.parse().ok())
-                })
-                .unwrap_or_else(|| Decimal::from(1000000)),
-            min_notional: symbol_info["filters"]
-                .as_array()
-                .and_then(|filters| {
-                    filters.iter()
-                        .find(|f| f["filterType"].as_str() == Some("MIN_NOTIONAL"))
-                        .and_then(|f| f["notional"].as_str()?.parse().ok())
-                })
-                .unwrap_or_else(|| Decimal::from(5)),
-            step_size: symbol_info["filters"]
-                .as_array()
-                .and_then(|filters| {
-                    filters.iter()
-                        .find(|f| f["filterType"].as_str() == Some("LOT_SIZE"))
-                        .and_then(|f| f["stepSize"].as_str()?.parse().ok())
-                })
-                .unwrap_or_else(|| Decimal::from(1)),
-            tick_size: symbol_info["filters"]
-                .as_array()
-                .and_then(|filters| {
-                    filters.iter()
-                        .find(|f| f["filterType"].as_str() == Some("PRICE_FILTER"))
-                        .and_then(|f| f["tickSize"].as_str()?.parse().ok())
-                })
-                .unwrap_or_else(|| Decimal::from(1)),
-        })
-    }
-
-    // ===== 合约交易接口 =====
-
-    /// POST /fapi/v1/leverage - 设置杠杆倍数
-    async fn set_leverage(&self, symbol: &str, leverage: u32) -> Result<(), ExchangeError> {
-        let mut params = HashMap::new();
-        params.insert("symbol".to_string(), symbol.to_string());
-        params.insert("leverage".to_string(), leverage.to_string());
-
-        self.send_signed_form_request("POST", "/fapi/v1/leverage", &params).await?;
-        info!("Set leverage for {} to {}x", symbol, leverage);
-        Ok(())
-    }
-
-    /// POST /fapi/v1/marginType - 设置保证金模式
-    async fn set_margin_type(&self, symbol: &str, margin_type: MarginType) -> Result<(), ExchangeError> {
-        let mut params = HashMap::new();
-        params.insert("symbol".to_string(), symbol.to_string());
-        params.insert("marginType".to_string(), margin_type.to_string());
-
-        // Binance 返回 -4046 表示已经是该模式，忽略此错误
-        match self.send_signed_form_request("POST", "/fapi/v1/marginType", &params).await {
-            Ok(_) => {
-                info!("Set margin type for {} to {:?}", symbol, margin_type);
-                Ok(())
-            }
-            Err(ExchangeError::ApiError { code: -4046, .. }) => {
-                // No need to change margin type
-                info!("Margin type for {} already set to {:?}", symbol, margin_type);
-                Ok(())
-            }
-            Err(e) => Err(e),
-        }
-    }
-
-    /// GET /fapi/v1/allOrders - 获取所有订单 (包括历史)
-    async fn get_all_orders(&self, symbol: &str, limit: Option<u32>) -> Result<Vec<OrderInfo>, ExchangeError> {
-        let mut params = HashMap::new();
-        params.insert("symbol".to_string(), symbol.to_string());
-        if let Some(l) = limit {
-            params.insert("limit".to_string(), l.to_string());
-        }
-
-        let data = self.send_signed_request("GET", "/fapi/v1/allOrders", &params).await?;
-
-        let orders = data
-            .as_array()
-            .map(|arr| arr.iter().filter_map(|o| self.parse_order_info(o)).collect())
-            .unwrap_or_default();
-
-        Ok(orders)
-    }
-
-    /// GET /fapi/v1/userTrades - 获取成交历史
-    async fn get_trade_history(&self, symbol: &str, limit: Option<u32>) -> Result<Vec<TradeInfo>, ExchangeError> {
-        let mut params = HashMap::new();
-        params.insert("symbol".to_string(), symbol.to_string());
-        if let Some(l) = limit {
-            params.insert("limit".to_string(), l.to_string());
-        }
-
-        let data = self.send_signed_request("GET", "/fapi/v1/userTrades", &params).await?;
-
-        let trades = data
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|t| {
-                        Some(TradeInfo {
-                            id: t["id"].as_i64()?.to_string(),
-                            symbol: t["symbol"].as_str()?.to_string(),
-                            price: Decimal::from_str(t["price"].as_str()?).ok()?,
-                            quantity: Decimal::from_str(t["qty"].as_str()?).ok()?,
-                            quote_quantity: Decimal::from_str(t["quoteQty"].as_str().unwrap_or("0")).unwrap_or_default(),
-                            commission: Decimal::from_str(t["commission"].as_str().unwrap_or("0")).unwrap_or_default(),
-                            commission_asset: t["commissionAsset"].as_str().unwrap_or("").to_string(),
-                            time: DateTime::from_timestamp_millis(t["time"].as_i64()?)?,
-                            is_buyer: t["buyer"].as_bool().unwrap_or(false),
-                            is_maker: t["maker"].as_bool().unwrap_or(false),
-                            realized_pnl: Decimal::from_str(t["realizedPnl"].as_str().unwrap_or("0")).unwrap_or_default(),
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        Ok(trades)
-    }
-
-    // ===== 行情数据接口 =====
-
-    /// GET /fapi/v1/premiumIndex - 获取标记价格
-    async fn get_mark_price(&self, symbol: &str) -> Result<MarkPrice, ExchangeError> {
-        let mut params = HashMap::new();
-        params.insert("symbol".to_string(), symbol.to_string());
-
-        let data = self.send_public_request("/fapi/v1/premiumIndex", &params).await?;
-
-        Ok(MarkPrice {
-            symbol: data["symbol"].as_str().unwrap_or(symbol).to_string(),
-            mark_price: Decimal::from_str(data["markPrice"].as_str().unwrap_or("0")).unwrap_or_default(),
-            index_price: Decimal::from_str(data["indexPrice"].as_str().unwrap_or("0")).unwrap_or_default(),
-            estimated_settle_price: data["estimatedSettlePrice"].as_str().and_then(|s| Decimal::from_str(s).ok()),
-            last_funding_rate: Decimal::from_str(data["lastFundingRate"].as_str().unwrap_or("0")).unwrap_or_default(),
-            next_funding_time: DateTime::from_timestamp_millis(data["nextFundingTime"].as_i64().unwrap_or(0)).unwrap_or_default(),
-            interest_rate: Decimal::from_str(data["interestRate"].as_str().unwrap_or("0")).unwrap_or_default(),
-            time: DateTime::from_timestamp_millis(data["time"].as_i64().unwrap_or(0)).unwrap_or_default(),
-        })
-    }
-
-    /// GET /fapi/v1/fundingRate - 获取资金费率历史
-    async fn get_funding_rate(&self, symbol: &str, limit: Option<u32>) -> Result<Vec<FundingRate>, ExchangeError> {
-        let mut params = HashMap::new();
-        params.insert("symbol".to_string(), symbol.to_string());
-        if let Some(l) = limit {
-            params.insert("limit".to_string(), l.to_string());
-        }
-
-        let data = self.send_public_request("/fapi/v1/fundingRate", &params).await?;
-
-        let rates = data
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|r| {
-                        Some(FundingRate {
-                            symbol: r["symbol"].as_str()?.to_string(),
-                            funding_rate: Decimal::from_str(r["fundingRate"].as_str()?).ok()?,
-                            funding_time: DateTime::from_timestamp_millis(r["fundingTime"].as_i64()?)?,
-                            next_funding_time: None,
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        Ok(rates)
-    }
-
-    /// GET /fapi/v1/klines - 获取K线数据
-    async fn get_klines(&self, symbol: &str, interval: &str, limit: Option<u32>) -> Result<Vec<Kline>, ExchangeError> {
-        let mut params = HashMap::new();
-        params.insert("symbol".to_string(), symbol.to_string());
-        params.insert("interval".to_string(), interval.to_string());
-        if let Some(l) = limit {
-            params.insert("limit".to_string(), l.to_string());
-        }
-
-        let data = self.send_public_request("/fapi/v1/klines", &params).await?;
-
-        let klines = data
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|k| {
-                        let k_arr = k.as_array()?;
-                        if k_arr.len() < 12 {
-                            return None;
-                        }
-                        Some(Kline {
-                            open_time: DateTime::from_timestamp_millis(k_arr[0].as_i64()?)?,
-                            open: Decimal::from_str(k_arr[1].as_str()?).ok()?,
-                            high: Decimal::from_str(k_arr[2].as_str()?).ok()?,
-                            low: Decimal::from_str(k_arr[3].as_str()?).ok()?,
-                            close: Decimal::from_str(k_arr[4].as_str()?).ok()?,
-                            volume: Decimal::from_str(k_arr[5].as_str()?).ok()?,
-                            close_time: DateTime::from_timestamp_millis(k_arr[6].as_i64()?)?,
-                            quote_volume: Decimal::from_str(k_arr[7].as_str()?).ok()?,
-                            trades_count: k_arr[8].as_u64().unwrap_or(0),
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        Ok(klines)
-    }
-
-    /// GET /fapi/v1/depth - 获取订单簿深度
-    async fn get_order_book(&self, symbol: &str, limit: Option<u32>) -> Result<OrderBook, ExchangeError> {
-        let mut params = HashMap::new();
-        params.insert("symbol".to_string(), symbol.to_string());
-        if let Some(l) = limit {
-            params.insert("limit".to_string(), l.to_string());
-        }
-
-        let data = self.send_public_request("/fapi/v1/depth", &params).await?;
-
-        let parse_entries = |arr: &serde_json::Value| -> Vec<OrderBookEntry> {
-            arr.as_array()
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|entry| {
-                            let e = entry.as_array()?;
-                            Some(OrderBookEntry {
-                                price: Decimal::from_str(e[0].as_str()?).ok()?,
-                                quantity: Decimal::from_str(e[1].as_str()?).ok()?,
-                            })
-                        })
-                        .collect()
-                })
-                .unwrap_or_default()
-        };
-
-        Ok(OrderBook {
-            symbol: symbol.to_string(),
-            bids: parse_entries(&data["bids"]),
-            asks: parse_entries(&data["asks"]),
-            last_update_id: data["lastUpdateId"].as_u64().unwrap_or(0),
-        })
-    }
-
-    /// POST /fapi/v1/batchOrders - 批量下单
-    async fn batch_place_orders(&self, orders: Vec<BatchOrderRequest>) -> Result<Vec<BatchOrderResult>, ExchangeError> {
-        if orders.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        // Binance 批量下单最多 5 个
-        if orders.len() > 5 {
-            return Err(ExchangeError::InvalidOrder("Batch order limit is 5".to_string()));
-        }
-
-        let symbol = orders[0].symbol.clone();
-        let mut params = HashMap::new();
-        params.insert("symbol".to_string(), symbol.clone());
-
-        // 构建批量订单 JSON 数组
-        let batch: Vec<serde_json::Value> = orders.iter().enumerate().map(|(_i, o)| {
-            let mut order = serde_json::json!({
-                "symbol": o.symbol,
-                "side": o.side.to_string(),
-                "type": o.order_type.to_string(),
-                "quantity": o.quantity.to_string(),
-            });
-            if let Some(price) = o.price {
-                order["price"] = serde_json::json!(price.to_string());
-            }
-            if let Some(stop_price) = o.stop_price {
-                order["stopPrice"] = serde_json::json!(stop_price.to_string());
-            }
-            if let Some(tif) = &o.time_in_force {
-                order["timeInForce"] = serde_json::json!(tif.to_string());
-            }
-            if let Some(cid) = &o.client_order_id {
-                order["newClientOrderId"] = serde_json::json!(cid);
-            }
-            order
-        }).collect();
-
-        // 通过自定义序列化绕过 HashMap 限制
-        let mut query_params = HashMap::new();
-        query_params.insert("symbol".to_string(), symbol);
-        let batch_json = serde_json::to_string(&batch).map_err(|e| ExchangeError::ParseError(e.to_string()))?;
-        query_params.insert("batchOrders".to_string(), batch_json);
-
-        let data = self.send_signed_form_request("POST", "/fapi/v1/batchOrders", &query_params).await?;
-
-        let results = data.as_array()
-            .map(|arr| {
-                arr.iter().map(|r| {
-                    BatchOrderResult {
-                        order_id: r["orderId"].as_i64().unwrap_or(0).to_string(),
-                        client_order_id: r["clientOrderId"].as_str().map(|s| s.to_string()),
-                        symbol: r["symbol"].as_str().unwrap_or("").to_string(),
-                        status: match r["status"].as_str() {
-                            Some("NEW") => OrderStatus::New,
-                            Some("FILLED") => OrderStatus::Filled,
-                            _ => OrderStatus::New,
-                        },
-                        error_code: r["code"].as_i64(),
-                        error_message: r["msg"].as_str().map(|s| s.to_string()),
-                    }
-                }).collect()
-            })
-            .unwrap_or_default();
-
-        Ok(results)
-    }
-
-    /// DELETE /fapi/v1/batchOrders - 批量撤单
-    async fn batch_cancel_orders(&self, symbol: &str, order_ids: Vec<String>) -> Result<Vec<BatchOrderResult>, ExchangeError> {
-        if order_ids.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let mut query_params = HashMap::new();
-        query_params.insert("symbol".to_string(), symbol.to_string());
-        let ids_json = serde_json::to_string(&order_ids).map_err(|e| ExchangeError::ParseError(e.to_string()))?;
-        query_params.insert("orderIdList".to_string(), ids_json);
-
-        let data = self.send_signed_form_request("DELETE", "/fapi/v1/batchOrders", &query_params).await?;
-
-        let results = data.as_array()
-            .map(|arr| {
-                arr.iter().map(|r| {
-                    BatchOrderResult {
-                        order_id: r["orderId"].as_i64().unwrap_or(0).to_string(),
-                        client_order_id: r["clientOrderId"].as_str().map(|s| s.to_string()),
-                        symbol: r["symbol"].as_str().unwrap_or(symbol).to_string(),
-                        status: match r["status"].as_str() {
-                            Some("CANCELED") => OrderStatus::Canceled,
-                            _ => OrderStatus::Canceled,
-                        },
-                        error_code: r["code"].as_i64(),
-                        error_message: r["msg"].as_str().map(|s| s.to_string()),
-                    }
-                }).collect()
-            })
-            .unwrap_or_default();
-
-        Ok(results)
-    }
-
-    /// GET /fapi/v2/account - 获取合约账户信息 (扩展)
-    async fn get_futures_account(&self) -> Result<FuturesAccountInfo, ExchangeError> {
-        let params = HashMap::new();
-        let data = self.send_signed_request("GET", "/fapi/v2/account", &params).await?;
-
-        let account_info = self.parse_futures_account(&data)?;
-
-        Ok(FuturesAccountInfo {
-            account_info,
-            can_trade: data["canTrade"].as_bool().unwrap_or(false),
-            can_withdraw: data["canWithdraw"].as_bool().unwrap_or(false),
-            fee_tier: data["feeTier"].as_u64().unwrap_or(0) as u32,
-            max_withdraw_amount: Decimal::from_str(data["maxWithdrawAmount"].as_str().unwrap_or("0")).unwrap_or_default(),
-            total_initial_margin: Decimal::from_str(data["totalInitialMargin"].as_str().unwrap_or("0")).unwrap_or_default(),
-            total_maint_margin: Decimal::from_str(data["totalMaintMargin"].as_str().unwrap_or("0")).unwrap_or_default(),
-            total_wallet_balance: Decimal::from_str(data["totalWalletBalance"].as_str().unwrap_or("0")).unwrap_or_default(),
-            total_unrealized_pnl: Decimal::from_str(data["totalUnrealizedProfit"].as_str().unwrap_or("0")).unwrap_or_default(),
-            total_margin_balance: Decimal::from_str(data["totalMarginBalance"].as_str().unwrap_or("0")).unwrap_or_default(),
-        })
-    }
-
-    /// GET /fapi/v1/ticker/24hr - 获取行情快照
-    async fn get_ticker(&self, symbol: &str) -> Result<Ticker, ExchangeError> {
-        let mut params = HashMap::new();
-        params.insert("symbol".to_string(), symbol.to_string());
-
-        let data = self.send_public_request("/fapi/v1/ticker/24hr", &params).await?;
-
-        Ok(Ticker {
-            symbol: data["symbol"].as_str().unwrap_or(symbol).to_string(),
-            last_price: Decimal::from_str(data["lastPrice"].as_str().unwrap_or("0")).unwrap_or_default(),
-            bid_price: Decimal::from_str(data["bidPrice"].as_str().unwrap_or("0")).unwrap_or_default(),
-            ask_price: Decimal::from_str(data["askPrice"].as_str().unwrap_or("0")).unwrap_or_default(),
-            high_price: Decimal::from_str(data["highPrice"].as_str().unwrap_or("0")).unwrap_or_default(),
-            low_price: Decimal::from_str(data["lowPrice"].as_str().unwrap_or("0")).unwrap_or_default(),
-            volume: Decimal::from_str(data["volume"].as_str().unwrap_or("0")).unwrap_or_default(),
-            quote_volume: Decimal::from_str(data["quoteVolume"].as_str().unwrap_or("0")).unwrap_or_default(),
-            price_change: Decimal::from_str(data["priceChange"].as_str().unwrap_or("0")).unwrap_or_default(),
-            price_change_percent: Decimal::from_str(data["priceChangePercent"].as_str().unwrap_or("0")).unwrap_or_default(),
-            timestamp: Utc::now(),
-        })
-    }
-
-    /// GET /fapi/v1/ticker/24hr - 批量获取行情快照
-    async fn get_tickers(&self, symbols: &[String]) -> Result<Vec<Ticker>, ExchangeError> {
-        // 不传 symbol 参数，获取所有交易对
-        let params = HashMap::new();
-        let data = self.send_public_request("/fapi/v1/ticker/24hr", &params).await?;
-
-        let all_tickers: Vec<Ticker> = data
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|item| {
-                        let sym = item["symbol"].as_str()?;
-                        // 只返回请求的交易对
-                        if !symbols.iter().any(|s| s == sym) {
-                            return None;
-                        }
-                        Some(Ticker {
-                            symbol: sym.to_string(),
-                            last_price: Decimal::from_str(item["lastPrice"].as_str()?).ok()?,
-                            bid_price: Decimal::from_str(item["bidPrice"].as_str()?).ok()?,
-                            ask_price: Decimal::from_str(item["askPrice"].as_str()?).ok()?,
-                            high_price: Decimal::from_str(item["highPrice"].as_str()?).ok()?,
-                            low_price: Decimal::from_str(item["lowPrice"].as_str()?).ok()?,
-                            volume: Decimal::from_str(item["volume"].as_str()?).ok()?,
-                            quote_volume: Decimal::from_str(item["quoteVolume"].as_str()?).ok()?,
-                            price_change: Decimal::from_str(item["priceChange"].as_str()?).ok()?,
-                            price_change_percent: Decimal::from_str(item["priceChangePercent"].as_str()?).ok()?,
-                            timestamp: Utc::now(),
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        Ok(all_tickers)
-    }
-
-    /// GET /fapi/v1/trades - 获取最近成交
-    async fn get_recent_trades(&self, symbol: &str, limit: Option<u32>) -> Result<Vec<PublicTrade>, ExchangeError> {
-        let mut params = HashMap::new();
-        params.insert("symbol".to_string(), symbol.to_string());
-        if let Some(l) = limit {
-            params.insert("limit".to_string(), l.to_string());
-        }
-
-        let data = self.send_public_request("/fapi/v1/trades", &params).await?;
-
-        let trades: Vec<PublicTrade> = data
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|t| {
-                        Some(PublicTrade {
-                            id: t["id"].as_i64()?.to_string(),
-                            symbol: symbol.to_string(),
-                            price: Decimal::from_str(t["price"].as_str()?).ok()?,
-                            quantity: Decimal::from_str(t["qty"].as_str()?).ok()?,
-                            timestamp: DateTime::from_timestamp_millis(t["time"].as_i64()?)?,
-                            is_buyer_maker: t["maker"].as_bool()?,
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        Ok(trades)
     }
 }
 

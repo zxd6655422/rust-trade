@@ -3,13 +3,14 @@
 import React, { useEffect, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Moon, Sun, Wifi, WifiOff, Globe } from 'lucide-react';
+import { Moon, Sun, Wifi, WifiOff, Globe, RefreshCw } from 'lucide-react';
 import { useLanguage } from '@/lib/i18n/context';
+import { useConnection } from '@/lib/connection-context';
 
 const Header = () => {
   const [isDark, setIsDark] = useState(false);
-  const [isConnected] = useState(true);
   const { language, setLanguage, t } = useLanguage();
+  const { tradingCore, database, lastCheck, error, checkConnection } = useConnection();
 
   useEffect(() => {
     const saved = localStorage.getItem('theme');
@@ -30,6 +31,9 @@ const Header = () => {
     setLanguage(language === 'en' ? 'zh' : 'en');
   };
 
+  const isConnected = tradingCore === 'connected';
+  const isConnecting = tradingCore === 'connecting';
+
   return (
     <header className="h-14 bg-background border-b flex items-center justify-between px-6">
       <div className="flex items-center gap-4">
@@ -39,8 +43,13 @@ const Header = () => {
 
       <div className="flex items-center gap-3">
         {/* Connection Status */}
-        <div className="flex items-center gap-1.5">
-          {isConnected ? (
+        <div className="flex items-center gap-1.5" title={error || undefined}>
+          {isConnecting ? (
+            <>
+              <RefreshCw className="w-3.5 h-3.5 text-yellow-500 animate-spin" />
+              <span className="text-xs text-yellow-500">{t.common.connecting || 'Connecting'}</span>
+            </>
+          ) : isConnected ? (
             <>
               <Wifi className="w-3.5 h-3.5 text-emerald-500" />
               <span className="text-xs text-emerald-500">{t.common.connected}</span>
@@ -52,6 +61,17 @@ const Header = () => {
             </>
           )}
         </div>
+
+        {/* Refresh Button */}
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={checkConnection}
+          disabled={isConnecting}
+          className="gap-1"
+        >
+          <RefreshCw className={`w-3.5 h-3.5 ${isConnecting ? 'animate-spin' : ''}`} />
+        </Button>
 
         {/* Language Toggle */}
         <Button variant="ghost" size="sm" onClick={toggleLanguage} className="gap-1.5">
