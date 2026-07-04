@@ -101,8 +101,8 @@ else
 fi
 
 # 复制 start.sh
-cp "$REPO_DIR/dist/trading-core/start.sh" "$COLLECTOR_DIR/start.sh"
-cp "$REPO_DIR/dist/trading-engine/start.sh" "$ENGINE_DIR/start.sh"
+cp "$REPO_DIR/deploy/trading-core/start.sh" "$COLLECTOR_DIR/start.sh"
+cp "$REPO_DIR/deploy/trading-engine/start.sh" "$ENGINE_DIR/start.sh"
 chmod +x "$COLLECTOR_DIR/start.sh" "$ENGINE_DIR/start.sh"
 echo -e "  ${GREEN}start.sh ✓${NC}"
 
