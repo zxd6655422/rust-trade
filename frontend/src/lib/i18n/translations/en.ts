@@ -271,6 +271,13 @@ export const en = {
     loadingOhlc: 'Loading OHLC data...',
     noOhlcData: 'No OHLC data available for current selection',
     loadDashboard: 'Loading trading system dashboard...',
+    // Strategy names and descriptions
+    strategySmaName: 'Simple Moving Average',
+    strategySmaDesc: 'Trading strategy based on short and long-term moving average crossover',
+    strategyRsiName: 'RSI Strategy',
+    strategyRsiDesc: 'Trading strategy based on Relative Strength Index (RSI)',
+    strategyTrendName: 'Multi-Timeframe Trend',
+    strategyTrendDesc: 'Multi-timeframe trend strategy: 4h for trend, 1h for confirmation, 15m for entry',
   },
 
   // Advanced Backtest

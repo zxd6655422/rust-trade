@@ -104,23 +104,27 @@ impl KlineAggregator {
 
     /// 获取指定时间框架的最新 N 根 K线
     pub fn get_klines(&self, timeframe: Timeframe, count: usize) -> Vec<OHLCData> {
-        let mut result = Vec::new();
-
-        // 首先从已完成的 K线中获取
-        if let Some(klines) = self.aggregated.get(&timeframe) {
-            let start = if klines.len() > count {
-                klines.len() - count
-            } else {
-                0
-            };
-            result.extend_from_slice(&klines[start..]);
+        // 1m 数据直接从 klines_1m 返回
+        if timeframe == Timeframe::OneMinute {
+            return self.get_klines_1m(count);
         }
 
-        // 如果需要，添加当前正在形成的 K线
-        if result.len() < count {
-            if let Some(Some(ref candle)) = self.current_candles.get(&timeframe) {
-                result.push(candle.clone());
-            }
+        let mut result = Vec::new();
+
+        // 从已完成的 K线中获取
+        if let Some(klines) = self.aggregated.get(&timeframe) {
+            result.extend_from_slice(klines);
+        }
+
+        // 始终追加当前正在形成的 K线（包含最新数据）
+        if let Some(Some(ref candle)) = self.current_candles.get(&timeframe) {
+            result.push(candle.clone());
+        }
+
+        // 取最后 count 根（最新的）
+        if result.len() > count {
+            let start = result.len() - count;
+            result = result[start..].to_vec();
         }
 
         result
@@ -132,6 +136,7 @@ impl KlineAggregator {
 
         // 对于每个时间框架，获取最新的一些 K线
         let timeframes = vec![
+            Timeframe::OneMinute,
             Timeframe::FiveMinutes,
             Timeframe::FifteenMinutes,
             Timeframe::ThirtyMinutes,
@@ -142,6 +147,7 @@ impl KlineAggregator {
 
         for tf in timeframes {
             let count = match tf {
+                Timeframe::OneMinute => 100,
                 Timeframe::FiveMinutes => 50,
                 Timeframe::FifteenMinutes => 50,
                 Timeframe::ThirtyMinutes => 50,
@@ -152,14 +158,6 @@ impl KlineAggregator {
             };
             result.insert(tf, self.get_klines(tf, count));
         }
-
-        // 也添加 1m 数据
-        let klines_1m = if self.klines_1m.len() > 100 {
-            self.klines_1m[self.klines_1m.len() - 100..].to_vec()
-        } else {
-            self.klines_1m.clone()
-        };
-        result.insert(Timeframe::OneMinute, klines_1m);
 
         result
     }

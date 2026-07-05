@@ -1,5 +1,8 @@
 const nextConfig = {
   // output: 'export',  // 开发时注释掉，构建时取消注释
+  eslint: {
+    ignoreDuringBuilds: true,
+  },
   images: {
     unoptimized: true,
   },

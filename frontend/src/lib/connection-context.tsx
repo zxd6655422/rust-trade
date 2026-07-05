@@ -54,32 +54,35 @@ export function ConnectionProvider({
     setState((prev) => ({ ...prev, tradingCore: 'connecting' }));
 
     try {
-      // 检查 trading-core 服务状态
-      const result = await invoke<{ status: string; database: boolean }>(
-        'check_trading_core_status'
-      ).catch(() => null);
+      // 从 localStorage 读取服务器配置
+      let serverUrl = 'http://localhost:8080';
+      try {
+        const saved = localStorage.getItem('server_config');
+        if (saved) {
+          const config = JSON.parse(saved);
+          const protocol = config.protocol || 'http';
+          const host = config.host || 'localhost';
+          const port = config.port || 8080;
+          serverUrl = `${protocol}://${host}:${port}`;
+        }
+      } catch {}
 
-      if (result) {
-        setState({
-          tradingCore: 'connected',
-          database: result.database ? 'connected' : 'disconnected',
-          lastCheck: new Date(),
-          error: null,
-        });
-      } else {
-        // 尝试直接检查数据
-        await invoke('get_data_info');
-        setState({
-          tradingCore: 'connected',
-          database: 'connected',
-          lastCheck: new Date(),
-          error: null,
-        });
-      }
+      const result = await invoke<{ status: string; database: boolean }>(
+        'check_trading_core_status',
+        { serverUrl }
+      );
+
+      setState({
+        tradingCore: result.status === 'connected' ? 'connected' : 'disconnected',
+        database: result.database ? 'connected' : 'disconnected',
+        lastCheck: new Date(),
+        error: null,
+      });
     } catch (err) {
       setState((prev) => ({
         ...prev,
         tradingCore: 'disconnected',
+        database: 'disconnected',
         lastCheck: new Date(),
         error: err instanceof Error ? err.message : 'Connection failed',
       }));

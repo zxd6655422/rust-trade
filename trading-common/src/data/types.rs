@@ -168,6 +168,7 @@ pub struct SymbolDataInfo {
     pub latest_time: Option<DateTime<Utc>>,
     pub min_price: Option<Decimal>,
     pub max_price: Option<Decimal>,
+    pub total_volume_usd: Decimal,
 }
 
 impl BacktestDataInfo {

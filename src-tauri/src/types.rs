@@ -177,6 +177,7 @@ pub struct SymbolInfo {
     pub latest_time: Option<String>,
     pub min_price: Option<String>,
     pub max_price: Option<String>,
+    pub total_volume_usd: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

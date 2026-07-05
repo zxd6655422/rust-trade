@@ -45,6 +45,7 @@ pub async fn get_data_info(
             latest_time: info.latest_time.map(|t| t.to_rfc3339()),
             min_price: info.min_price.map(|p| p.to_string()),
             max_price: info.max_price.map(|p| p.to_string()),
+            total_volume_usd: info.total_volume_usd.to_string(),
         }).collect(),
     };
 
@@ -304,9 +305,20 @@ pub async fn get_ohlc_preview(
         _ => return Err(format!("Invalid timeframe: {}", request.timeframe)),
     };
 
-    // 从 kline_1m 表获取数据，然后聚合
+    // 根据时间框架计算需要多少 1m K 线
+    let needed_1m = match timeframe {
+        Timeframe::OneMinute => (request.count as u32).max(200),
+        Timeframe::FiveMinutes => (request.count as u32 * 5).max(500),
+        Timeframe::FifteenMinutes => (request.count as u32 * 15).max(1500),
+        Timeframe::ThirtyMinutes => (request.count as u32 * 30).max(2500),
+        Timeframe::OneHour => (request.count as u32 * 60).max(5000),
+        Timeframe::FourHours => (request.count as u32 * 240).max(5000),
+        Timeframe::OneDay => 5000,
+        Timeframe::OneWeek => 5000,
+    };
+
     let klines_1m = state.repository
-        .get_klines(&request.symbol, 2000)
+        .get_klines(&request.symbol, needed_1m)
         .await
         .map_err(|e| {
             error!("Failed to get klines: {}", e);
@@ -346,39 +358,42 @@ pub async fn get_ohlc_preview(
 
 // ============ P8: 实时行情 Commands ============
 
-/// 获取实时价格（从数据库最新数据）
+/// 获取实时价格（从 kline_1m 表最新数据）
 #[tauri::command]
 pub async fn get_realtime_prices(
     state: State<'_, AppState>,
     symbols: Option<Vec<String>>,
 ) -> Result<Vec<RealtimePrice>, String> {
-    let target_symbols = symbols.unwrap_or_else(|| {
-        DEFAULT_SYMBOLS.iter().map(|s| s.to_string()).collect()
-    });
+    // 如果没指定 symbol，从数据库获取所有有数据的 symbol
+    let target_symbols = match symbols {
+        Some(s) if !s.is_empty() => s,
+        _ => state.repository.get_available_symbols().await
+            .unwrap_or_else(|_| DEFAULT_SYMBOLS.iter().map(|s| s.to_string()).collect()),
+    };
 
     info!("Getting realtime prices for: {:?}", target_symbols);
 
     let mut prices = Vec::new();
 
     for symbol in &target_symbols {
-        // 从数据库获取最新 tick 数据
-        match state.repository.get_latest_tick(symbol).await {
-            Ok(Some(tick)) => {
+        // 从 kline_1m 获取最新价格和24h统计
+        match state.repository.get_kline_with_24h_stats(symbol).await {
+            Ok(Some((kline, stats))) => {
                 prices.push(RealtimePrice {
                     symbol: symbol.clone(),
-                    price: tick.price.to_string(),
-                    change_24h: None,
-                    volume_24h: None,
-                    high_24h: None,
-                    low_24h: None,
-                    updated_at: tick.timestamp.to_rfc3339(),
+                    price: kline.close.to_string(),
+                    change_24h: stats.change_pct.map(|v| v.to_string()),
+                    volume_24h: stats.volume_24h.map(|v| v.to_string()),
+                    high_24h: stats.high_24h.map(|v| v.to_string()),
+                    low_24h: stats.low_24h.map(|v| v.to_string()),
+                    updated_at: kline.timestamp.to_rfc3339(),
                 });
             }
             Ok(None) => {
-                info!("No price data for {}", symbol);
+                info!("No kline data for {}", symbol);
             }
             Err(e) => {
-                error!("Failed to get price for {}: {}", symbol, e);
+                error!("Failed to get kline for {}: {}", symbol, e);
             }
         }
     }
@@ -408,9 +423,20 @@ pub async fn get_kline_history(
 
     info!("Getting kline history: {} {} limit={}", request.symbol, request.timeframe, count);
 
-    // 从 kline_1m 表获取数据，然后聚合
+    // 根据时间框架计算需要多少 1m K 线
+    let needed_1m = match timeframe {
+        Timeframe::OneMinute => (count as u32).max(200),
+        Timeframe::FiveMinutes => (count as u32 * 5).max(500),
+        Timeframe::FifteenMinutes => (count as u32 * 15).max(1500),
+        Timeframe::ThirtyMinutes => (count as u32 * 30).max(2500),
+        Timeframe::OneHour => (count as u32 * 60).max(5000),
+        Timeframe::FourHours => (count as u32 * 240).max(5000),
+        Timeframe::OneDay => 5000,
+        Timeframe::OneWeek => 5000,
+    };
+
     let klines_1m = state.repository
-        .get_klines(&request.symbol, 2000)
+        .get_klines(&request.symbol, needed_1m)
         .await
         .map_err(|e| {
             error!("Failed to get klines: {}", e);
@@ -1365,6 +1391,7 @@ fn convert_paper_trade(order: trading_common::paper::PaperOrder) -> PaperTradeRe
 #[tauri::command]
 pub async fn check_trading_core_status(
     state: State<'_, AppState>,
+    server_url: Option<String>,
 ) -> Result<TradingCoreStatusResponse, String> {
     info!("Checking trading-core status");
 
@@ -1374,8 +1401,18 @@ pub async fn check_trading_core_status(
         .await
         .is_ok();
 
+    // 使用配置的地址，或默认 localhost:8080
+    let url = server_url.unwrap_or_else(|| "http://localhost:8080".to_string());
+    let health_url = format!("{}/health", url.trim_end_matches('/'));
+
+    // 真正检查 trading-core HTTP 服务是否在运行
+    let trading_core_ok = match reqwest::get(&health_url).await {
+        Ok(resp) => resp.status().is_success(),
+        Err(_) => false,
+    };
+
     Ok(TradingCoreStatusResponse {
-        status: "connected".to_string(),
+        status: if trading_core_ok { "connected" } else { "disconnected" }.to_string(),
         database: database_ok,
     })
 }

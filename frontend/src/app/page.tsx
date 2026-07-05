@@ -1,12 +1,12 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line } from 'recharts';
-import { Loader2, Database, TrendingUp, Activity, Zap, Clock, BarChart3, Play, Eye, Coins, Layers, Timer, Sparkles } from 'lucide-react';
+import { Loader2, Database, TrendingUp, Activity, Zap, Clock, BarChart3, Play, Eye, Coins, Layers, Timer, Sparkles, Pause } from 'lucide-react';
 import Link from 'next/link';
 import { useLanguage } from '@/lib/i18n/context';
 
@@ -22,6 +22,7 @@ interface DataInfoResponse {
     latest_time?: string;
     min_price?: string;
     max_price?: string;
+    total_volume_usd: string;
   }>;
 }
 
@@ -66,6 +67,9 @@ export default function Home() {
   const [loadingOhlcPreview, setLoadingOhlcPreview] = useState(false);
   const [selectedTimeframe, setSelectedTimeframe] = useState('1h');
   const [selectedSymbol, setSelectedSymbol] = useState('');
+  const [autoRefreshOhlc, setAutoRefreshOhlc] = useState(true);
+  const [lastFetchTime, setLastFetchTime] = useState<Date | null>(null);
+  const refreshTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     initializeDashboard();
@@ -90,10 +94,10 @@ export default function Home() {
       setDataInfo(dataInfoResult);
       setStrategyCapabilities(capabilitiesResult);
 
-      // Set default symbol for OHLC preview
+      // Set default symbol for OHLC preview (by volume)
       if (dataInfoResult.symbol_info.length > 0) {
         const topSymbol = dataInfoResult.symbol_info
-          .sort((a, b) => b.records_count - a.records_count)[0].symbol;
+          .sort((a, b) => parseFloat(b.total_volume_usd) - parseFloat(a.total_volume_usd))[0].symbol;
         setSelectedSymbol(topSymbol);
       }
 
@@ -114,15 +118,15 @@ export default function Home() {
       // Calculate count based on timeframe
       const getCountByTimeframe = (tf: string) => {
         switch (tf) {
-          case '1m': return 60; // Last hour in 1-minute candles
-          case '5m': return 48; // Last 4 hours in 5-minute candles
-          case '15m': return 32; // Last 8 hours in 15-minute candles
-          case '30m': return 24; // Last 12 hours in 30-minute candles
-          case '1h': return 24;  // Last day in 1-hour candles
-          case '4h': return 24;  // Last 4 days in 4-hour candles
-          case '1d': return 30;  // Last month in daily candles
-          case '1w': return 12;  // Last 3 months in weekly candles
-          default: return 24;
+          case '1m': return 120; // Last 2 hours in 1-minute candles
+          case '5m': return 100; // Last ~8 hours in 5-minute candles
+          case '15m': return 96; // Last 24 hours in 15-minute candles
+          case '30m': return 72; // Last 36 hours in 30-minute candles
+          case '1h': return 72;  // Last 3 days in 1-hour candles
+          case '4h': return 60;  // Last 10 days in 4-hour candles
+          case '1d': return 60;  // Last 2 months in daily candles
+          case '1w': return 26;  // Last 6 months in weekly candles
+          default: return 72;
         }
       };
       
@@ -135,6 +139,7 @@ export default function Home() {
       });
       
       setOhlcPreview(ohlcData);
+      setLastFetchTime(new Date());
     } catch (error) {
       console.error('Failed to load OHLC preview:', error);
       setOhlcPreview([]);
@@ -143,6 +148,26 @@ export default function Home() {
     }
   };
 
+  // Auto-refresh OHLC data every 30 seconds
+  useEffect(() => {
+    if (autoRefreshOhlc && selectedSymbol && selectedTimeframe) {
+      refreshTimerRef.current = setInterval(() => {
+        loadOhlcPreview();
+      }, 30000);
+      return () => {
+        if (refreshTimerRef.current) {
+          clearInterval(refreshTimerRef.current);
+          refreshTimerRef.current = null;
+        }
+      };
+    } else {
+      if (refreshTimerRef.current) {
+        clearInterval(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
+    }
+  }, [autoRefreshOhlc, selectedSymbol, selectedTimeframe]);
+
   const runQuickBacktests = async () => {
     if (!dataInfo || !strategyCapabilities.length) return;
     
@@ -150,7 +175,7 @@ export default function Home() {
     setQuickResults([]);
     
     const topSymbols = dataInfo.symbol_info
-      .sort((a, b) => b.records_count - a.records_count)
+      .sort((a, b) => parseFloat(b.total_volume_usd) - parseFloat(a.total_volume_usd))
       .slice(0, 3);
     
     const results: QuickBacktestResult[] = [];
@@ -218,17 +243,15 @@ export default function Home() {
   const getOhlcChartData = () => {
     if (ohlcPreview.length === 0) return [];
 
-    // 后端返回按时间倒序，图表需要正序（从左到右时间增大）
-    const sortedData = [...ohlcPreview].reverse();
+    // 后端已返回时间正序（最旧在前，最新在后）
+    // 取最后 maxCandles 根（最新的）
+    const maxCandles = 40;
+    const startIndex = Math.max(0, ohlcPreview.length - maxCandles);
 
-    // Calculate how many candles to show based on screen space
-    const maxCandles = 20;
-    const startIndex = Math.max(0, sortedData.length - maxCandles);
-
-    return sortedData.slice(startIndex).map(candle => {
+    return ohlcPreview.slice(startIndex).map(candle => {
       const timestamp = new Date(candle.timestamp);
-      
-      // Format time display based on timeframe
+
+      // Format time display for x-axis
       const formatTime = (timeframe: string, date: Date) => {
         switch (timeframe) {
           case '1m':
@@ -248,9 +271,16 @@ export default function Home() {
             return date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
         }
       };
-      
+
+      // Full datetime for tooltip display
+      const fullDateTime = timestamp.toLocaleString([], {
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit'
+      });
+
       return {
         time: formatTime(selectedTimeframe, timestamp),
+        fullTime: fullDateTime,
         price: parseFloat(candle.close),
         volume: parseFloat(candle.volume),
         trades: candle.trade_count,
@@ -259,11 +289,6 @@ export default function Home() {
         open: parseFloat(candle.open),
       };
     });
-  };
-
-  const getCurrentSymbolInfo = () => {
-    if (!dataInfo || !selectedSymbol) return null;
-    return dataInfo.symbol_info.find(s => s.symbol === selectedSymbol);
   };
 
   if (loading) {
@@ -277,7 +302,6 @@ export default function Home() {
 
   const ohlcChartData = getOhlcChartData();
   const ohlcSupportCount = getOhlcSupportCount();
-  const symbolInfo = getCurrentSymbolInfo();
 
   return (
     <div className="space-y-6">
@@ -417,10 +441,10 @@ export default function Home() {
                 className="text-sm px-2 py-1 border rounded dark:bg-gray-800 dark:border-gray-600"
               >
                 {dataInfo?.symbol_info
-                  .sort((a, b) => b.records_count - a.records_count)
+                  .sort((a, b) => parseFloat(b.total_volume_usd) - parseFloat(a.total_volume_usd))
                   .map((symbol) => (
                   <option key={symbol.symbol} value={symbol.symbol}>
-                    {symbol.symbol} ({symbol.records_count.toLocaleString()})
+                    {symbol.symbol}
                   </option>
                 ))}
               </select>
@@ -458,13 +482,39 @@ export default function Home() {
               )}
               {t.common.refresh}
             </Button>
+
+            <Button
+              size="sm"
+              variant={autoRefreshOhlc ? "default" : "outline"}
+              onClick={() => setAutoRefreshOhlc(!autoRefreshOhlc)}
+              className="flex items-center gap-1"
+            >
+              {autoRefreshOhlc ? (
+                <>
+                  <Pause className="w-3 h-3" />
+                  Auto
+                </>
+              ) : (
+                <>
+                  <Play className="w-3 h-3" />
+                  Manual
+                </>
+              )}
+            </Button>
           </div>
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2">
               {ohlcChartData.length > 0 ? (
-                <div className="h-64">
+                <div>
+                  {/* Data time range indicator */}
+                  <div className="flex items-center justify-between text-xs text-muted-foreground px-1 mb-1">
+                    <span>{ohlcChartData[0].fullTime}</span>
+                    <span>← {ohlcChartData.length} candles →</span>
+                    <span>{ohlcChartData[ohlcChartData.length - 1].fullTime}</span>
+                  </div>
+                  <div className="h-64">
                   <ResponsiveContainer width="100%" height="100%">
                     <LineChart data={ohlcChartData}>
                       <CartesianGrid strokeDasharray="3 3" />
@@ -474,8 +524,27 @@ export default function Home() {
                         tickFormatter={(value) => `$${value.toFixed(0)}`}
                       />
                       <Tooltip
-                        formatter={(value: number) => [`$${value.toFixed(2)}`, 'Close Price']}
-                        labelFormatter={(label) => `Time: ${label}`}
+                        content={({ active, payload }) => {
+                          if (!active || !payload?.length) return null;
+                          const d = payload[0].payload;
+                          return (
+                            <div className="bg-background border rounded-lg shadow-lg p-3 text-xs">
+                              <p className="font-medium mb-1">{d.fullTime || d.time}</p>
+                              <div className="grid grid-cols-2 gap-x-4 gap-y-0.5">
+                                <span className="text-muted-foreground">Open:</span>
+                                <span className="font-mono">${d.open.toFixed(2)}</span>
+                                <span className="text-muted-foreground">High:</span>
+                                <span className="font-mono text-emerald-500">${d.high.toFixed(2)}</span>
+                                <span className="text-muted-foreground">Low:</span>
+                                <span className="font-mono text-red-500">${d.low.toFixed(2)}</span>
+                                <span className="text-muted-foreground">Close:</span>
+                                <span className="font-mono font-bold">${d.price.toFixed(2)}</span>
+                                <span className="text-muted-foreground">Volume:</span>
+                                <span className="font-mono">{d.volume.toFixed(4)}</span>
+                              </div>
+                            </div>
+                          );
+                        }}
                       />
                       <Line
                         type="monotone"
@@ -486,6 +555,7 @@ export default function Home() {
                       />
                     </LineChart>
                   </ResponsiveContainer>
+                </div>
                 </div>
               ) : (
                 <div className="h-64 flex items-center justify-center text-gray-500">
@@ -509,34 +579,37 @@ export default function Home() {
                 {ohlcPreview.length > 0 ? (
                   <div className="space-y-2 text-sm">
                     <div className="flex justify-between">
-                      <span>Open:</span>
-                      <span className="font-mono">${parseFloat(ohlcPreview[0].open).toFixed(2)}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span>High:</span>
-                      <span className="font-mono text-green-600">${parseFloat(ohlcPreview[0].high).toFixed(2)}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span>Low:</span>
-                      <span className="font-mono text-red-600">${parseFloat(ohlcPreview[0].low).toFixed(2)}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span>Close:</span>
-                      <span className="font-mono font-bold">${parseFloat(ohlcPreview[0].close).toFixed(2)}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span>Volume:</span>
-                      <span className="font-mono">{parseFloat(ohlcPreview[0].volume).toFixed(4)}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span>Trades:</span>
-                      <span className="font-mono">{ohlcPreview[0].trade_count}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span>Time:</span>
-                      <span className="font-mono text-xs">
-                        {new Date(ohlcPreview[0].timestamp).toLocaleString()}
+                      <span className="text-muted-foreground">Time:</span>
+                      <span className="font-mono text-xs font-medium">
+                        {new Date(ohlcPreview[ohlcPreview.length - 1].timestamp).toLocaleString([], {
+                          year: 'numeric', month: '2-digit', day: '2-digit',
+                          hour: '2-digit', minute: '2-digit', second: '2-digit'
+                        })}
                       </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Open:</span>
+                      <span className="font-mono">${parseFloat(ohlcPreview[ohlcPreview.length - 1].open).toFixed(2)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">High:</span>
+                      <span className="font-mono text-green-600">${parseFloat(ohlcPreview[ohlcPreview.length - 1].high).toFixed(2)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Low:</span>
+                      <span className="font-mono text-red-600">${parseFloat(ohlcPreview[ohlcPreview.length - 1].low).toFixed(2)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Close:</span>
+                      <span className="font-mono font-bold">${parseFloat(ohlcPreview[ohlcPreview.length - 1].close).toFixed(2)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Volume:</span>
+                      <span className="font-mono">{parseFloat(ohlcPreview[ohlcPreview.length - 1].volume).toFixed(4)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Trades:</span>
+                      <span className="font-mono">{ohlcPreview[ohlcPreview.length - 1].trade_count}</span>
                     </div>
                   </div>
                 ) : (
@@ -562,9 +635,18 @@ export default function Home() {
                   {selectedTimeframe === '1d' && t.dashboard.lastMonth}
                   {selectedTimeframe === '1w' && t.dashboard.last3Months}
                 </p>
-                {symbolInfo && (
-                  <p className="text-xs text-gray-500 mt-1">
-                    {t.dashboard.totalRecords2}: {symbolInfo.records_count.toLocaleString()}
+                {ohlcPreview.length > 0 && (
+                  <p className="text-xs text-green-600 dark:text-green-400 mt-1">
+                    Latest data: {new Date(ohlcPreview[ohlcPreview.length - 1].timestamp).toLocaleString([], {
+                      year: 'numeric', month: '2-digit', day: '2-digit',
+                      hour: '2-digit', minute: '2-digit', second: '2-digit'
+                    })}
+                  </p>
+                )}
+                {lastFetchTime && (
+                  <p className="text-xs text-gray-400 mt-1">
+                    Last fetch: {lastFetchTime.toLocaleTimeString()} •
+                    {autoRefreshOhlc ? ' Auto-refresh: 30s' : ' Manual mode'}
                   </p>
                 )}
               </div>
@@ -583,11 +665,26 @@ export default function Home() {
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {strategyCapabilities.map((strategy) => (
+            {strategyCapabilities.map((strategy) => {
+              // 用翻译替代后端英文
+              const strategyNames: Record<string, string> = {
+                sma: t.dashboard.strategySmaName,
+                rsi: t.dashboard.strategyRsiName,
+                trend: t.dashboard.strategyTrendName,
+              };
+              const strategyDescs: Record<string, string> = {
+                sma: t.dashboard.strategySmaDesc,
+                rsi: t.dashboard.strategyRsiDesc,
+                trend: t.dashboard.strategyTrendDesc,
+              };
+              const displayName = strategyNames[strategy.id] || strategy.name;
+              const displayDesc = strategyDescs[strategy.id] || strategy.description;
+
+              return (
               <div
                 key={strategy.id}
                 className={`p-4 border rounded-lg ${
-                  strategy.supports_ohlc 
+                  strategy.supports_ohlc
                     ? 'border-blue-200 bg-blue-50 dark:border-blue-800 dark:bg-blue-900/20'
                     : 'border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-800/20'
                 }`}
@@ -595,7 +692,7 @@ export default function Home() {
                 <div className="flex items-start justify-between mb-2">
                   <div>
                     <h4 className="font-medium flex items-center gap-2">
-                      {strategy.name}
+                      {displayName}
                       {strategy.supports_ohlc && (
                         <Badge variant="secondary" className="text-xs">
                           <Layers className="w-3 h-3 mr-1" />
@@ -604,7 +701,7 @@ export default function Home() {
                       )}
                     </h4>
                     <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
-                      {strategy.description}
+                      {displayDesc}
                     </p>
                   </div>
                   <Badge variant="outline" className="text-xs">
@@ -629,7 +726,8 @@ export default function Home() {
                   </div>
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
           
           <div className="mt-6 pt-4 border-t">
@@ -753,7 +851,7 @@ export default function Home() {
               <h4 className="font-medium mb-3">{t.dashboard.topSymbolsByVolume}</h4>
               <div className="space-y-2">
                 {dataInfo?.symbol_info
-                  .sort((a, b) => b.records_count - a.records_count)
+                  .sort((a, b) => parseFloat(b.total_volume_usd) - parseFloat(a.total_volume_usd))
                   .slice(0, 5)
                   .map((symbol, index) => (
                   <div key={symbol.symbol} className="flex items-center justify-between">
@@ -764,8 +862,8 @@ export default function Home() {
                       {symbol.symbol}
                     </span>
                     <div className="flex items-center gap-2">
-                      <span className="text-sm text-gray-500">
-                        {symbol.records_count.toLocaleString()} records
+                      <span className="text-sm text-gray-500 font-mono">
+                        ${parseFloat(symbol.total_volume_usd).toLocaleString('en-US', { maximumFractionDigits: 0 })}
                       </span>
                       <Badge variant="outline" className="text-xs">
                         {t.dashboard.ohlcReady}

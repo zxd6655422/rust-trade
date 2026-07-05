@@ -82,11 +82,10 @@ export default function KlineChart({ symbol, marketType = 'futures', autoRefresh
     }
   }, [autoRefresh, autoRefreshInterval, fetchKlines]);
 
-  // 后端返回按时间倒序，图表需要正序（从左到右时间增大）
-  const sortedKlines = [...klines].reverse();
-
-  const chartData = sortedKlines.map((k, i) => ({
+  // 后端已返回时间正序（最旧在前，最新在后）
+  const chartData = klines.map((k, i) => ({
     time: formatTime(k.timestamp, timeframe),
+    fullTime: formatFullTime(k.timestamp),
     price: parseFloat(k.close),
     volume: parseFloat(k.volume),
     high: parseFloat(k.high),
@@ -160,6 +159,14 @@ export default function KlineChart({ symbol, marketType = 'futures', autoRefresh
           </div>
         ) : chartData.length > 0 ? (
           <div className="space-y-4">
+            {/* Data time range indicator */}
+            {chartData.length > 0 && (
+              <div className="flex items-center justify-between text-xs text-muted-foreground px-1">
+                <span>{chartData[0].fullTime}</span>
+                <span>← {chartData.length} candles →</span>
+                <span>{chartData[chartData.length - 1].fullTime}</span>
+              </div>
+            )}
             {/* Price Area Chart */}
             <div className="h-64">
               <ResponsiveContainer width="100%" height="100%">
@@ -188,7 +195,7 @@ export default function KlineChart({ symbol, marketType = 'futures', autoRefresh
                       const d = payload[0].payload;
                       return (
                         <div className="bg-background border rounded-lg shadow-lg p-3 text-xs">
-                          <p className="font-medium mb-1">{d.time}</p>
+                          <p className="font-medium mb-1">{d.fullTime || d.time}</p>
                           <div className="grid grid-cols-2 gap-x-4 gap-y-0.5">
                             <span className="text-muted-foreground">{t.klineChart.open}:</span>
                             <span className="font-mono">${d.open.toFixed(2)}</span>
@@ -269,4 +276,12 @@ function formatTime(timestamp: string, timeframe: string): string {
     default:
       return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   }
+}
+
+function formatFullTime(timestamp: string): string {
+  const date = new Date(timestamp);
+  return date.toLocaleString([], {
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit'
+  });
 }

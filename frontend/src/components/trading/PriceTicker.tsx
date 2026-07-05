@@ -147,8 +147,16 @@ export default function PriceTicker({ symbols, onSymbolSelect, selectedSymbol }:
                   {formatPrice(price.price)}
                 </div>
                 {formatChange(price.change_24h)}
+                <div className="flex items-center gap-2 mt-1 text-[10px] text-muted-foreground">
+                  {price.high_24h && (
+                    <span>H: {formatPrice(price.high_24h)}</span>
+                  )}
+                  {price.low_24h && (
+                    <span>L: {formatPrice(price.low_24h)}</span>
+                  )}
+                </div>
                 {price.volume_24h && (
-                  <p className="text-[10px] text-muted-foreground mt-1">
+                  <p className="text-[10px] text-muted-foreground mt-0.5">
                     {t.priceTicker.vol}: {parseFloat(price.volume_24h).toLocaleString('en-US', { maximumFractionDigits: 0 })}
                   </p>
                 )}

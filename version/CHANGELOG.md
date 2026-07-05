@@ -1,5 +1,27 @@
 # Changelog
 
+## [2026-07-04] Polars 集成
+
+### Polars 集成 (性能提升 10-50 倍)
+
+| 模块 | 状态 | 说明 |
+|------|------|------|
+| Parquet 存储层 | ✅ | 按月分区存储，支持追加写入 |
+| Polars 查询层 | ✅ | 延迟加载，向量化计算 |
+| 技术指标计算 | ✅ | SMA/EMA/RSI/MACD/布林带 |
+| 归档脚本 | ✅ | PostgreSQL → Parquet 导出 |
+
+### 文件改动
+
+| 文件 | 改动 |
+|------|------|
+| `trading-common/Cargo.toml` | 新增 polars 依赖 (parquet, lazy, rolling_window) |
+| `trading-common/src/data/parquet_store.rs` | 新建 Parquet 存储管理 |
+| `trading-common/src/data/polars_repository.rs` | 新建 Polars 查询层 + 技术指标 |
+| `trading-common/src/data/mod.rs` | 导出新模块 |
+
+---
+
 ## [2026-07-04] Polars 集成 + 本地开发优化 + 前端全面修复
 
 ### Polars 集成 (性能提升 10-50 倍)

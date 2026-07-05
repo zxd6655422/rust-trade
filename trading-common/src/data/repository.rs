@@ -31,6 +31,14 @@ pub struct TickDataRepository {
     cache: TieredCache,
 }
 
+/// 24h statistics for a symbol
+pub struct Kline24hStats {
+    pub change_pct: Option<Decimal>,
+    pub volume_24h: Option<Decimal>,
+    pub high_24h: Option<Decimal>,
+    pub low_24h: Option<Decimal>,
+}
+
 impl TickDataRepository {
     /// Create new repository instance
     pub fn new(pool: PgPool, cache: TieredCache) -> Self {
@@ -1050,33 +1058,34 @@ impl TickDataRepository {
     pub async fn get_backtest_data_info(&self) -> DataResult<BacktestDataInfo> {
         debug!("Fetching backtest data information");
 
-        // Get overall statistics
+        // Get overall statistics from kline_1m
         let overall_stats = sqlx::query!(
             r#"
-            SELECT 
+            SELECT
                 COUNT(*) as total_records,
                 COUNT(DISTINCT symbol) as symbols_count,
                 MIN(timestamp) as earliest_time,
                 MAX(timestamp) as latest_time
-            FROM tick_data
+            FROM kline_1m
             "#
         )
         .fetch_one(&self.pool)
         .await?;
 
-        // Get per-symbol statistics
+        // Get per-symbol statistics from kline_1m
         let symbol_stats = sqlx::query!(
             r#"
-            SELECT 
+            SELECT
                 symbol,
                 COUNT(*) as records_count,
                 MIN(timestamp) as earliest_time,
                 MAX(timestamp) as latest_time,
-                MIN(price) as min_price,
-                MAX(price) as max_price
-            FROM tick_data
+                MIN(low) as min_price,
+                MAX(high) as max_price,
+                SUM(volume * close) as total_volume_usd
+            FROM kline_1m
             GROUP BY symbol
-            ORDER BY records_count DESC
+            ORDER BY total_volume_usd DESC
             "#
         )
         .fetch_all(&self.pool)
@@ -1091,6 +1100,7 @@ impl TickDataRepository {
                 latest_time: row.latest_time,
                 min_price: row.min_price,
                 max_price: row.max_price,
+                total_volume_usd: row.total_volume_usd.unwrap_or(Decimal::ZERO),
             })
             .collect();
 
@@ -1337,6 +1347,7 @@ impl TickDataRepository {
     }
 
     /// Get klines from kline_1m table
+    /// Returns the latest `limit` records in ascending time order (oldest first, newest last)
     pub async fn get_klines(
         &self,
         symbol: &str,
@@ -1345,12 +1356,14 @@ impl TickDataRepository {
         let limit = limit.min(MAX_QUERY_LIMIT);
 
         let mut query_builder = QueryBuilder::new(
-            "SELECT timestamp, symbol, open, high, low, close, volume, trade_count \
+            "SELECT * FROM (\
+             SELECT timestamp, symbol, open, high, low, close, volume, trade_count \
              FROM kline_1m WHERE symbol = "
         );
         query_builder.push_bind(symbol);
         query_builder.push(" ORDER BY timestamp DESC LIMIT ");
         query_builder.push_bind(limit as i64);
+        query_builder.push(") sub ORDER BY timestamp ASC");
 
         let rows = query_builder.build().fetch_all(&self.pool).await?;
 
@@ -1371,6 +1384,84 @@ impl TickDataRepository {
 
         debug!("Retrieved {} klines for {}", klines.len(), symbol);
         Ok(klines)
+    }
+
+    /// Get all available symbols from kline_1m table
+    pub async fn get_available_symbols(&self) -> DataResult<Vec<String>> {
+        let rows = sqlx::query!(
+            "SELECT DISTINCT symbol FROM kline_1m ORDER BY symbol"
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|r| r.symbol).collect())
+    }
+
+    /// Get latest kline + 24h statistics for a symbol
+    pub async fn get_kline_with_24h_stats(
+        &self,
+        symbol: &str,
+    ) -> DataResult<Option<(OHLCData, Kline24hStats)>> {
+        // Get latest kline
+        let latest = sqlx::query(
+            "SELECT timestamp, symbol, open, high, low, close, volume, trade_count \
+             FROM kline_1m WHERE symbol = $1 ORDER BY timestamp DESC LIMIT 1"
+        )
+        .bind(symbol)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        let latest = match latest {
+            Some(row) => OHLCData {
+                timestamp: row.get("timestamp"),
+                symbol: row.get("symbol"),
+                timeframe: Timeframe::OneMinute,
+                open: row.get("open"),
+                high: row.get("high"),
+                low: row.get("low"),
+                close: row.get("close"),
+                volume: row.get("volume"),
+                trade_count: row.get::<i32, _>("trade_count") as u64,
+            },
+            None => return Ok(None),
+        };
+
+        // Get 24h ago kline for price change calculation
+        let day_ago = latest.timestamp - chrono::Duration::hours(24);
+        let old_kline = sqlx::query(
+            "SELECT close FROM kline_1m WHERE symbol = $1 AND timestamp <= $2 \
+             ORDER BY timestamp DESC LIMIT 1"
+        )
+        .bind(symbol)
+        .bind(day_ago)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        let change_pct = old_kline.and_then(|row| {
+            let old_close: Decimal = row.get("close");
+            if old_close != Decimal::ZERO {
+                Some((latest.close - old_close) / old_close * Decimal::from(100))
+            } else {
+                None
+            }
+        });
+
+        // Get 24h volume, high, low
+        let stats = sqlx::query(
+            "SELECT SUM(volume) as vol, MAX(high) as high, MIN(low) as low \
+             FROM kline_1m WHERE symbol = $1 AND timestamp >= $2"
+        )
+        .bind(symbol)
+        .bind(day_ago)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(Some((latest, Kline24hStats {
+            change_pct,
+            volume_24h: stats.get::<Option<Decimal>, _>("vol"),
+            high_24h: stats.get::<Option<Decimal>, _>("high"),
+            low_24h: stats.get::<Option<Decimal>, _>("low"),
+        })))
     }
 
     /// Get the earliest kline timestamp for a symbol

@@ -273,6 +273,13 @@ export const zh: Translations = {
     loadingOhlc: '加载 OHLC 数据...',
     noOhlcData: '当前选择没有 OHLC 数据',
     loadDashboard: '加载交易系统仪表盘...',
+    // 策略名称和描述
+    strategySmaName: '简单移动平均',
+    strategySmaDesc: '基于短期和长期移动平均线交叉的交易策略',
+    strategyRsiName: 'RSI 策略',
+    strategyRsiDesc: '基于相对强弱指数（RSI）的交易策略',
+    strategyTrendName: '多时间框架趋势',
+    strategyTrendDesc: '多时间框架趋势策略：4h 判断趋势，1h 确认方向，15m 精确入场',
   },
 
   // 高级回测

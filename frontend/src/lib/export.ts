@@ -151,7 +151,7 @@ export function exportBacktestResult(
       { filename, format }
     );
   } else {
-    exportToJson(result, { filename, format });
+    exportToJson([result], { filename, format });
   }
 }
 

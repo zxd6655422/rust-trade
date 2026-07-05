@@ -89,7 +89,7 @@
 | 模块 | 状态 | 说明 |
 |------|------|------|
 | Exchange trait 分层重构 | ✅ 已完成 | P11，MarketDataProvider / TradingOperations 分离 |
-| Polars 集成 | ⏸️ 暂缓 | 先优化数据库索引 |
+| Polars 集成 | ✅ 已完成 | Parquet 存储 + Polars 查询层 + 技术指标计算 |
 | Paper Trading | ✅ 已完成 | 模拟测试交易功能 |
 
 ---
@@ -1127,32 +1127,12 @@ impl MonteCarloSimulator {
 **原因**：单机应用，不需要消息队列
 **替代**：内存通道足够
 
-#### ⏸️ **Polars（暂缓，非永久砍掉）**
-**原因**：3GB 数据，先优化数据库索引
-**替代**：数据库索引 + 分页查询
-
-**部署说明**：
-- Polars 是库，不是服务，不能独立部署
-- 如果需要使用，在 rust-trade 中直接集成
-- 2核4G 服务器可以运行，但内存紧张
-- 需要使用懒加载、Parquet 格式优化
-
-**决策流程**：
-```
-当前问题：查询 3GB 数据慢
-    │
-    ├─→ 优化数据库索引（1-2 天）
-    │       │
-    │       ├─→ 解决问题 → 结束
-    │       │
-    │       └─→ 还是慢 → 考虑 Polars
-    │
-    └─→ Polars（3-5 天）
-            │
-            ├─→ 2核4G 能运行 → 集成 Polars
-            │
-            └─→ 2核4G 不能运行 → 考虑升级服务器
-```
+#### ✅ **Polars（已集成）**
+**实现**：Parquet 文件存储 + Polars 查询层 + 技术指标计算
+**文件**：
+- `trading-common/src/data/parquet_store.rs` — Parquet 存储管理（按月分区、导出/读取/统计）
+- `trading-common/src/data/polars_repository.rs` — Polars 查询层（SMA/EMA/RSI/MACD/布林带）
+**依赖**：`polars = { version = "0.35", features = ["parquet", "lazy", "rolling_window"] }`
 
 ---
 
@@ -1213,7 +1193,7 @@ impl MonteCarloSimulator {
 | 金融工具定价 | RustQuant | P1 | 低 | 2-3 天 | ✅ 已完成 |
 | 投资组合增强 | RustQuant | P1 | 低 | 1-2 天 | ✅ 已完成 |
 | 随机过程生成器 | RustQuant | P2 | 低 | 2-3 天 | ✅ 已完成 |
-| Polars 集成 | Polars | P3 | 中 | 3-5 天 | ⏸️ 暂缓 |
+| Polars 集成 | Polars | P3 | 中 | 3-5 天 | ✅ 已完成 |
 
 **总计**：7-11 天
 
@@ -1227,7 +1207,7 @@ impl MonteCarloSimulator {
 | ML 集成 | 2核4G 资源有限 | 简单规则策略 |
 | QUIC 协议 | 不需要高性能网络 | 现有 WebSocket |
 | RabbitMQ | 单机应用 | 内存通道 |
-| Polars | 先优化数据库 | 数据库索引 + 分页查询
+| ~~Polars~~ | ~~先优化数据库~~ | ✅ 已集成：Parquet 存储 + Polars 查询层
 
 ---
 
@@ -1330,7 +1310,7 @@ rust-trade/
 1. **P0**：统一交易所抽象增强、事件驱动架构增强 → ✅ 已完成
 2. **P1**：金融工具定价、投资组合增强 → ✅ 已完成
 3. **P2**：随机过程生成器 → ✅ 已完成
-4. **P3**：Polars（暂缓）
+4. **P3**：Polars（✅ 已完成）
 
 #### **最终效果**
 - rust-trade 成为功能完整、架构清晰的中型量化交易平台

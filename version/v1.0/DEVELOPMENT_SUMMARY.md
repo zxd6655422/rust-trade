@@ -458,7 +458,8 @@ trading-engine/src/
 ### 可选功能
 1. ✅ WebSocket 用户数据流 (订单状态实时更新)
 2. ✅ 更多交易所 (Bybit 适配器骨架)
-3. ⏳ 移动端监控
+3. ✅ Polars 集成 (Parquet 存储 + 高性能查询 + 技术指标)
+4. ⏳ 移动端监控
 
 ---
 
@@ -520,6 +521,7 @@ RUN_MODE=production cargo run -p trading-engine
 - ✅ 运维基础设施 (systemd + logrotate + 告警)
 - ✅ WebSocket 用户数据流
 - ✅ Bybit 交易所适配器 (骨架)
+- ✅ Polars 集成 (Parquet 存储 + 高性能查询 + 技术指标计算)
 
 ### 系统能力
 1. ✅ 连接真实交易所 (Binance + OKX)
