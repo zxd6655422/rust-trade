@@ -376,3 +376,344 @@ impl StopAction {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rust_decimal::Decimal;
+    use std::str::FromStr;
+
+    fn create_manager() -> StopLossManager {
+        StopLossManager::new(StopLossConfig::default())
+    }
+
+    fn create_manager_with_trailing() -> StopLossManager {
+        StopLossManager::new(StopLossConfig {
+            default_stop_loss_pct: Decimal::from_str("0.02").unwrap(),
+            default_take_profit_pct: Decimal::from_str("0.04").unwrap(),
+            enable_trailing_stop: true,
+            trailing_stop_pct: Decimal::from_str("0.01").unwrap(),
+        })
+    }
+
+    // ========== 创建止损止盈订单测试 ==========
+
+    #[tokio::test]
+    async fn test_create_stop_order_buy() {
+        let manager = create_manager();
+        let entry_price = Decimal::from(50000);
+
+        let order = manager
+            .create_stop_order("BTCUSDT", OrderSide::Buy, Decimal::from_str("0.1").unwrap(), entry_price, None, None)
+            .await;
+
+        assert_eq!(order.symbol, "BTCUSDT");
+        assert_eq!(order.side, OrderSide::Buy);
+        // 止损 = 50000 * (1 - 0.02) = 49000
+        assert_eq!(order.stop_loss_price, Decimal::from(49000));
+        // 止盈 = 50000 * (1 + 0.04) = 52000
+        assert_eq!(order.take_profit_price, Decimal::from(52000));
+        assert!(!order.triggered);
+    }
+
+    #[tokio::test]
+    async fn test_create_stop_order_sell() {
+        let manager = create_manager();
+        let entry_price = Decimal::from(3000);
+
+        let order = manager
+            .create_stop_order("ETHUSDT", OrderSide::Sell, Decimal::from(10), entry_price, None, None)
+            .await;
+
+        assert_eq!(order.symbol, "ETHUSDT");
+        assert_eq!(order.side, OrderSide::Sell);
+        // 止损 = 3000 * (1 + 0.02) = 3060
+        assert_eq!(order.stop_loss_price, Decimal::from(3060));
+        // 止盈 = 3000 * (1 - 0.04) = 2880
+        assert_eq!(order.take_profit_price, Decimal::from(2880));
+    }
+
+    #[tokio::test]
+    async fn test_create_stop_order_custom_prices() {
+        let manager = create_manager();
+
+        let order = manager
+            .create_stop_order(
+                "BTCUSDT",
+                OrderSide::Buy,
+                Decimal::from_str("0.1").unwrap(),
+                Decimal::from(50000),
+                Some(Decimal::from(48000)), // 自定义止损
+                Some(Decimal::from(55000)), // 自定义止盈
+            )
+            .await;
+
+        assert_eq!(order.stop_loss_price, Decimal::from(48000));
+        assert_eq!(order.take_profit_price, Decimal::from(55000));
+    }
+
+    // ========== 止损触发测试 ==========
+
+    #[tokio::test]
+    async fn test_stop_loss_triggered_buy() {
+        let manager = create_manager();
+        manager
+            .create_stop_order("BTCUSDT", OrderSide::Buy, Decimal::from_str("0.1").unwrap(), Decimal::from(50000), None, None)
+            .await;
+
+        // 价格跌到止损线以下
+        let action = manager.check_price("BTCUSDT", Decimal::from(48900)).await;
+        assert!(action.is_some());
+        match action.unwrap() {
+            StopAction::StopLoss { symbol, side, price, .. } => {
+                assert_eq!(symbol, "BTCUSDT");
+                assert_eq!(side, OrderSide::Buy);
+                assert_eq!(price, Decimal::from(48900));
+            }
+            _ => panic!("Expected StopLoss"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_stop_loss_not_triggered_buy() {
+        let manager = create_manager();
+        manager
+            .create_stop_order("BTCUSDT", OrderSide::Buy, Decimal::from_str("0.1").unwrap(), Decimal::from(50000), None, None)
+            .await;
+
+        // 价格在止损线以上
+        let action = manager.check_price("BTCUSDT", Decimal::from(49500)).await;
+        assert!(action.is_none());
+    }
+
+    // ========== 止盈触发测试 ==========
+
+    #[tokio::test]
+    async fn test_take_profit_triggered_buy() {
+        let manager = create_manager();
+        manager
+            .create_stop_order("BTCUSDT", OrderSide::Buy, Decimal::from_str("0.1").unwrap(), Decimal::from(50000), None, None)
+            .await;
+
+        // 价格涨到止盈线以上
+        let action = manager.check_price("BTCUSDT", Decimal::from(52500)).await;
+        assert!(action.is_some());
+        match action.unwrap() {
+            StopAction::TakeProfit { symbol, .. } => {
+                assert_eq!(symbol, "BTCUSDT");
+            }
+            _ => panic!("Expected TakeProfit"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_stop_loss_sell() {
+        let manager = create_manager();
+        manager
+            .create_stop_order("ETHUSDT", OrderSide::Sell, Decimal::from(10), Decimal::from(3000), None, None)
+            .await;
+
+        // 空头止损：价格涨到止损线以上
+        let action = manager.check_price("ETHUSDT", Decimal::from(3070)).await;
+        assert!(action.is_some());
+        match action.unwrap() {
+            StopAction::StopLoss { .. } => {}
+            _ => panic!("Expected StopLoss"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_take_profit_sell() {
+        let manager = create_manager();
+        manager
+            .create_stop_order("ETHUSDT", OrderSide::Sell, Decimal::from(10), Decimal::from(3000), None, None)
+            .await;
+
+        // 空头止盈：价格跌到止盈线以下
+        let action = manager.check_price("ETHUSDT", Decimal::from(2870)).await;
+        assert!(action.is_some());
+        match action.unwrap() {
+            StopAction::TakeProfit { .. } => {}
+            _ => panic!("Expected TakeProfit"),
+        }
+    }
+
+    // ========== 追踪止损测试 ==========
+
+    #[tokio::test]
+    async fn test_trailing_stop_buy() {
+        // 使用更高的止盈百分比，避免在测试追踪止损前就触发止盈
+        let manager = StopLossManager::new(StopLossConfig {
+            default_stop_loss_pct: Decimal::from_str("0.02").unwrap(),
+            default_take_profit_pct: Decimal::from_str("0.08").unwrap(), // 8% 止盈
+            enable_trailing_stop: true,
+            trailing_stop_pct: Decimal::from_str("0.01").unwrap(),
+        });
+        // entry=50000, SL=49000, TP=54000
+        manager
+            .create_stop_order("BTCUSDT", OrderSide::Buy, Decimal::from_str("0.1").unwrap(), Decimal::from(50000), None, None)
+            .await;
+
+        // 价格上涨到 53000（低于 TP=54000，不会触发止盈）
+        let action1 = manager.check_price("BTCUSDT", Decimal::from(53000)).await;
+        assert!(action1.is_none()); // 不触发
+
+        // 追踪止损线 = 53000 * (1 - 0.01) = 52470
+        // 价格回落到 52400 < 52470，应触发追踪止损
+        let action2 = manager.check_price("BTCUSDT", Decimal::from(52400)).await;
+        assert!(action2.is_some());
+        match action2.unwrap() {
+            StopAction::TrailingStop { .. } => {}
+            _ => panic!("Expected TrailingStop"),
+        }
+    }
+
+    // ========== 价格更新测试 ==========
+
+    #[tokio::test]
+    async fn test_highest_price_updated() {
+        let manager = create_manager();
+        manager
+            .create_stop_order("BTCUSDT", OrderSide::Buy, Decimal::from_str("0.1").unwrap(), Decimal::from(50000), None, None)
+            .await;
+
+        manager.check_price("BTCUSDT", Decimal::from(51000)).await;
+        manager.check_price("BTCUSDT", Decimal::from(50500)).await;
+
+        let order = manager.get_stop_order("BTCUSDT").await.unwrap();
+        assert_eq!(order.highest_price, Decimal::from(51000));
+    }
+
+    #[tokio::test]
+    async fn test_lowest_price_updated() {
+        let manager = create_manager();
+        manager
+            .create_stop_order("BTCUSDT", OrderSide::Buy, Decimal::from_str("0.1").unwrap(), Decimal::from(50000), None, None)
+            .await;
+
+        manager.check_price("BTCUSDT", Decimal::from(49500)).await;
+        manager.check_price("BTCUSDT", Decimal::from(50000)).await;
+
+        let order = manager.get_stop_order("BTCUSDT").await.unwrap();
+        assert_eq!(order.lowest_price, Decimal::from(49500));
+    }
+
+    // ========== 触发后不再重复触发 ==========
+
+    #[tokio::test]
+    async fn test_no_double_trigger() {
+        let manager = create_manager();
+        manager
+            .create_stop_order("BTCUSDT", OrderSide::Buy, Decimal::from_str("0.1").unwrap(), Decimal::from(50000), None, None)
+            .await;
+
+        // 第一次触发
+        let action1 = manager.check_price("BTCUSDT", Decimal::from(48000)).await;
+        assert!(action1.is_some());
+
+        // 第二次不应再触发
+        let action2 = manager.check_price("BTCUSDT", Decimal::from(47000)).await;
+        assert!(action2.is_none());
+    }
+
+    // ========== 移除止损止盈 ==========
+
+    #[tokio::test]
+    async fn test_remove_stop_order() {
+        let manager = create_manager();
+        manager
+            .create_stop_order("BTCUSDT", OrderSide::Buy, Decimal::from_str("0.1").unwrap(), Decimal::from(50000), None, None)
+            .await;
+
+        let removed = manager.remove_stop_order("BTCUSDT").await;
+        assert!(removed.is_some());
+
+        // 移除后不应有触发
+        let action = manager.check_price("BTCUSDT", Decimal::from(40000)).await;
+        assert!(action.is_none());
+    }
+
+    // ========== 更新止损止盈价格 ==========
+
+    #[tokio::test]
+    async fn test_update_stop_prices() {
+        let manager = create_manager();
+        manager
+            .create_stop_order("BTCUSDT", OrderSide::Buy, Decimal::from_str("0.1").unwrap(), Decimal::from(50000), None, None)
+            .await;
+
+        let updated = manager.update_stop_prices(
+            "BTCUSDT",
+            Some(Decimal::from(48000)),
+            Some(Decimal::from(55000)),
+        ).await;
+        assert!(updated);
+
+        let order = manager.get_stop_order("BTCUSDT").await.unwrap();
+        assert_eq!(order.stop_loss_price, Decimal::from(48000));
+        assert_eq!(order.take_profit_price, Decimal::from(55000));
+    }
+
+    // ========== StopAction 测试 ==========
+
+    #[test]
+    fn test_stop_action_to_order_request() {
+        let action = StopAction::StopLoss {
+            symbol: "BTCUSDT".to_string(),
+            side: OrderSide::Buy,
+            quantity: Decimal::from_str("0.1").unwrap(),
+            price: Decimal::from(48000),
+        };
+
+        let request = action.to_order_request();
+        assert_eq!(request.symbol, "BTCUSDT");
+        assert_eq!(request.side, OrderSide::Sell); // 止损买入 → 卖出平仓
+        assert_eq!(request.order_type, OrderType::Market);
+    }
+
+    #[test]
+    fn test_stop_action_close_side() {
+        let action_buy = StopAction::TakeProfit {
+            symbol: "BTCUSDT".to_string(),
+            side: OrderSide::Buy,
+            quantity: Decimal::ONE,
+            price: Decimal::from(55000),
+        };
+        assert_eq!(action_buy.close_side(), OrderSide::Sell);
+
+        let action_sell = StopAction::StopLoss {
+            symbol: "ETHUSDT".to_string(),
+            side: OrderSide::Sell,
+            quantity: Decimal::ONE,
+            price: Decimal::from(3200),
+        };
+        assert_eq!(action_sell.close_side(), OrderSide::Buy);
+    }
+
+    // ========== 活动订单查询 ==========
+
+    #[tokio::test]
+    async fn test_get_active_stop_orders() {
+        let manager = create_manager();
+        manager.create_stop_order("BTCUSDT", OrderSide::Buy, Decimal::from_str("0.1").unwrap(), Decimal::from(50000), None, None).await;
+        manager.create_stop_order("ETHUSDT", OrderSide::Buy, Decimal::from(10), Decimal::from(3000), None, None).await;
+
+        let active = manager.get_active_stop_orders().await;
+        assert_eq!(active.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_clear_triggered_orders() {
+        let manager = create_manager();
+        manager.create_stop_order("BTCUSDT", OrderSide::Buy, Decimal::from_str("0.1").unwrap(), Decimal::from(50000), None, None).await;
+        manager.create_stop_order("ETHUSDT", OrderSide::Buy, Decimal::from(10), Decimal::from(3000), None, None).await;
+
+        // 触发一个
+        manager.check_price("BTCUSDT", Decimal::from(40000)).await;
+
+        manager.clear_triggered_orders().await;
+        let active = manager.get_active_stop_orders().await;
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].symbol, "ETHUSDT");
+    }
+}

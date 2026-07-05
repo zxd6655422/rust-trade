@@ -515,3 +515,82 @@ pub struct TradingCoreStatusResponse {
     pub status: String,
     pub database: bool,
 }
+
+// ============ 策略实时分析类型 ============
+
+/// 策略分析请求
+#[derive(Debug, Serialize, Deserialize)]
+pub struct StrategyAnalysisRequest {
+    pub symbol: String,
+    pub strategy_id: Option<String>,  // 默认 "trend"
+}
+
+/// 单个时间框架的分析结果
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TimeframeAnalysis {
+    pub timeframe: String,       // "4h", "1h", "15m"
+    pub direction: String,       // "bullish", "bearish", "neutral"
+    pub confidence: String,      // "0.0" ~ "1.0"
+    pub description: String,     // 人类可读说明
+}
+
+/// 策略分析结果
+#[derive(Debug, Serialize, Deserialize)]
+pub struct StrategyAnalysisResult {
+    pub symbol: String,
+    pub strategy_id: String,
+    pub strategy_name: String,
+    pub timeframes: Vec<TimeframeAnalysis>,
+    pub overall_direction: String,   // "bullish", "bearish", "neutral"
+    pub overall_confidence: String,  // "0.0" ~ "1.0"
+    pub entry_allowed: bool,
+    pub entry_direction: Option<String>,  // "long", "short"
+    pub analysis_time: String,       // ISO timestamp
+}
+
+/// 信号历史请求
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SignalHistoryRequest {
+    pub symbol: Option<String>,
+    pub strategy_id: Option<String>,
+    pub limit: Option<i32>,
+}
+
+/// 单条信号记录
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SignalRecord {
+    pub id: String,
+    pub timestamp: String,
+    pub symbol: String,
+    pub direction: String,      // "buy", "sell"
+    pub price: String,
+    pub outcome: Option<String>, // "win", "loss", null(未平仓)
+    pub pnl: Option<String>,
+}
+
+/// 信号统计
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SignalStats {
+    pub total_signals: i64,
+    pub win_count: i64,
+    pub loss_count: i64,
+    pub win_rate: String,
+    pub avg_win_pnl: String,
+    pub avg_loss_pnl: String,
+    pub best_signal_pnl: String,
+    pub worst_signal_pnl: String,
+}
+
+/// 信号历史结果
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SignalHistoryResult {
+    pub signals: Vec<SignalRecord>,
+    pub stats: SignalStats,
+}
+
+/// 交易对配置
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SymbolConfig {
+    pub symbol: String,
+    pub enabled: bool,
+}

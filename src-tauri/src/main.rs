@@ -96,6 +96,14 @@ fn main() {
             get_paper_pending_orders,
             cancel_paper_order,
             reset_paper_trading,
+            // 策略实时分析
+            get_strategy_analysis,
+            get_signal_history,
+            // 交易对管理
+            get_symbols,
+            add_symbol,
+            remove_symbol,
+            toggle_symbol,
             // 系统状态
             check_trading_core_status
         ])

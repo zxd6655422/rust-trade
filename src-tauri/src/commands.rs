@@ -12,6 +12,7 @@ use trading_common::{
     },
 };
 use rust_decimal::Decimal;
+use sqlx::Row;
 
 use std::str::FromStr;
 use tracing::{info, error};
@@ -657,12 +658,12 @@ pub async fn get_performance_metrics(
         sharpe_ratio: metrics_data["sharpe_ratio"].as_str().unwrap_or("0").to_string(),
         sortino_ratio: metrics_data["sortino_ratio"].as_str().unwrap_or("0").to_string(),
         max_drawdown: metrics_data["max_drawdown"].as_str().unwrap_or("0").to_string(),
-        max_drawdown_duration_days: 0, // TODO: Calculate from data
+        max_drawdown_duration_days: metrics_data["max_drawdown_duration_days"].as_i64().unwrap_or(0),
         calmar_ratio: metrics_data["calmar_ratio"].as_str().unwrap_or("0").to_string(),
         volatility: metrics_data["volatility"].as_str().unwrap_or("0").to_string(),
         win_rate: metrics_data["win_rate"].as_str().unwrap_or("0").to_string(),
         profit_factor: metrics_data["profit_factor"].as_str().unwrap_or("0").to_string(),
-        avg_trade_duration_hours: 0.0, // TODO: Calculate from data
+        avg_trade_duration_hours: metrics_data["avg_trade_duration_hours"].as_f64().unwrap_or(0.0),
         total_trades: metrics_data["total_trades"].as_i64().unwrap_or(0),
         winning_trades: metrics_data["winning_trades"].as_i64().unwrap_or(0),
         losing_trades: metrics_data["losing_trades"].as_i64().unwrap_or(0),
@@ -1415,4 +1416,248 @@ pub async fn check_trading_core_status(
         status: if trading_core_ok { "connected" } else { "disconnected" }.to_string(),
         database: database_ok,
     })
+}
+
+// ============ 策略实时分析（带生命周期闭环） ============
+
+/// 获取策略实时分析结果，同时写入 strategy_analysis_log 并处理生命周期
+#[tauri::command]
+pub async fn get_strategy_analysis(
+    state: State<'_, AppState>,
+    request: StrategyAnalysisRequest,
+) -> Result<StrategyAnalysisResult, String> {
+    let strategy_id = request.strategy_id.unwrap_or_else(|| "trend".to_string());
+    info!("Strategy analysis: symbol={}, strategy={}", request.symbol, strategy_id);
+
+    if !trading_common::backtest::strategy::is_multi_timeframe_strategy(&strategy_id) {
+        return Err(format!("Strategy '{}' does not support real-time analysis.", strategy_id));
+    }
+
+    // 1. 拉取 K 线并执行分析
+    let klines_1m = state.repository.get_klines(&request.symbol, 2000).await
+        .map_err(|e| { error!("get_klines failed: {}", e); e.to_string() })?;
+    if klines_1m.is_empty() {
+        return Err("No kline data available.".to_string());
+    }
+
+    let current_price = klines_1m.last().unwrap().close;
+
+    let mut aggregator = KlineAggregator::new();
+    for kline in &klines_1m { aggregator.update(kline.clone()); }
+
+    let mut strategy = trading_common::backtest::strategy::create_multi_timeframe_strategy(&strategy_id)?;
+    let mut tf_klines = std::collections::HashMap::new();
+    for tf in strategy.required_timeframes() {
+        tf_klines.insert(tf, aggregator.get_klines(tf, 200));
+    }
+    let analysis = strategy.analyze(&tf_klines);
+
+    // 2. 构建 timeframe_details JSON
+    let mut tf_details = serde_json::Map::new();
+    let tf_map = [
+        (Timeframe::FourHours, "4h"),
+        (Timeframe::OneHour, "1h"),
+        (Timeframe::FifteenMinutes, "15m"),
+    ];
+    for (tf, label) in &tf_map {
+        if let Some(ta) = analysis.timeframe_analyses.get(tf) {
+            tf_details.insert(label.to_string(), serde_json::json!({
+                "direction": format!("{:?}", ta.direction).to_lowercase(),
+                "confidence": ta.confidence.to_string(),
+                "description": ta.description
+            }));
+        }
+    }
+    let tf_json = serde_json::Value::Object(tf_details);
+
+    let dir_str = match analysis.overall_direction {
+        trading_common::backtest::strategy::TrendDirection::Bullish => "bullish",
+        trading_common::backtest::strategy::TrendDirection::Bearish => "bearish",
+        _ => "neutral",
+    };
+    let entry_dir = analysis.entry_direction.map(|d| match d {
+        trading_common::backtest::strategy::EntryDirection::Long => "long",
+        trading_common::backtest::strategy::EntryDirection::Short => "short",
+    });
+
+    // 3. 生命周期闭环：检查上一条 pending 分析
+    let mut need_save_new = true;
+    if let Some(prev) = state.repository.get_pending_analysis(&request.symbol, &strategy_id).await
+        .map_err(|e| e.to_string())?
+    {
+        let is_same_dir = prev.direction == dir_str;
+        let age_hours = (chrono::Utc::now() - prev.created_at).num_hours();
+
+        if is_same_dir && age_hours <= 24 {
+            // ★ 同方向且未过期 → 不保存新记录，只更新验证状态
+            let _ = state.repository.update_analysis_eval(prev.id, current_price).await;
+            let return_pct = calc_return_pct(&prev.direction, prev.entry_price, current_price);
+            let threshold = Decimal::from_str("0.5").unwrap();
+            let confirmed = match prev.direction.as_str() {
+                "bullish" => return_pct > threshold,
+                "bearish" => return_pct < -threshold,
+                _ => false,
+            };
+            if confirmed {
+                let _ = state.repository.close_analysis(
+                    prev.id, "confirmed", "price_confirmed", current_price, return_pct
+                ).await;
+                info!("Confirmed analysis {} (return={}%)", prev.id, return_pct);
+                need_save_new = true; // 确认后可以产生新信号
+            } else {
+                need_save_new = false; // 还在 pending，不重复保存
+            }
+        } else if !is_same_dir {
+            // 方向反转 → 关闭旧信号为 superseded
+            let return_pct = calc_return_pct(&prev.direction, prev.entry_price, current_price);
+            let _ = state.repository.close_analysis(
+                prev.id, "superseded", "direction_changed", current_price, return_pct
+            ).await;
+            info!("Superseded analysis {} ({} -> {})", prev.id, prev.direction, dir_str);
+        } else {
+            // 超时 → 关闭为 expired
+            let return_pct = calc_return_pct(&prev.direction, prev.entry_price, current_price);
+            let _ = state.repository.close_analysis(
+                prev.id, "expired", "timeout", current_price, return_pct
+            ).await;
+            info!("Expired analysis {} ({}h)", prev.id, age_hours);
+        }
+    }
+
+    // 4. 仅在需要时保存新分析记录
+    if need_save_new {
+        let _ = state.repository.save_analysis_log(
+            &request.symbol, &strategy_id, dir_str, current_price,
+            analysis.overall_confidence, analysis.entry_allowed,
+            entry_dir, tf_json,
+        ).await.map_err(|e| e.to_string())?;
+    }
+
+    // 5. 构建返回结果
+    let mut timeframes = Vec::new();
+    for (tf, label) in &tf_map {
+        if let Some(ta) = analysis.timeframe_analyses.get(tf) {
+            timeframes.push(TimeframeAnalysis {
+                timeframe: label.to_string(),
+                direction: format!("{:?}", ta.direction).to_lowercase(),
+                confidence: ta.confidence.to_string(),
+                description: ta.description.clone(),
+            });
+        }
+    }
+
+    let strategy_info = trading_common::backtest::strategy::get_strategy_info(&strategy_id);
+
+    Ok(StrategyAnalysisResult {
+        symbol: request.symbol,
+        strategy_id: strategy_id.clone(),
+        strategy_name: strategy_info.map(|s| s.name).unwrap_or_else(|| strategy_id),
+        timeframes,
+        overall_direction: dir_str.to_string(),
+        overall_confidence: analysis.overall_confidence.to_string(),
+        entry_allowed: analysis.entry_allowed,
+        entry_direction: entry_dir.map(|s| s.to_string()),
+        analysis_time: chrono::Utc::now().to_rfc3339(),
+    })
+}
+
+/// 计算信号收益率%
+fn calc_return_pct(direction: &str, entry_price: Decimal, current_price: Decimal) -> Decimal {
+    if entry_price == Decimal::ZERO { return Decimal::ZERO; }
+    let pct = (current_price - entry_price) / entry_price * Decimal::from(100);
+    match direction {
+        "bullish" => pct,         // 多头：涨=正
+        "bearish" => -pct,        // 空头：跌=正
+        _ => Decimal::ZERO,
+    }
+}
+
+/// 获取策略历史信号记录和胜率统计（从 strategy_analysis_log 表）
+#[tauri::command]
+pub async fn get_signal_history(
+    state: State<'_, AppState>,
+    request: SignalHistoryRequest,
+) -> Result<SignalHistoryResult, String> {
+    let limit = request.limit.unwrap_or(50).min(200);
+    info!("Signal history: symbol={:?}, limit={}", request.symbol, limit);
+
+    // 从 strategy_analysis_log 表查询
+    let records = state.repository.get_analysis_history(
+        request.symbol.as_deref(), None, limit,
+    ).await.map_err(|e| { error!("get_analysis_history failed: {}", e); e.to_string() })?;
+
+    // 获取统计
+    let stats_data = state.repository.get_signal_stats(
+        "strategy_analysis_log", request.symbol.as_deref(), None,
+    ).await.map_err(|e| e.to_string())?;
+
+    // 转换为前端类型
+    let signals: Vec<SignalRecord> = records.iter().map(|r| {
+        let (outcome, pnl_str) = match r.actual_return_pct {
+            Some(p) if p > Decimal::ZERO => (Some("confirmed".to_string()), Some(format!("+{:.2}%", p))),
+            Some(p) if p < Decimal::ZERO => (Some("invalidated".to_string()), Some(format!("{:.2}%", p))),
+            Some(_) => (Some("break_even".to_string()), Some("0.00%".to_string())),
+            None => match r.status.as_str() {
+                "pending" => (Some("pending".to_string()), None),
+                "expired" => (Some("expired".to_string()), None),
+                "superseded" => (Some("superseded".to_string()), None),
+                _ => (Some(r.status.clone()), None),
+            },
+        };
+        SignalRecord {
+            id: r.id.to_string(),
+            timestamp: r.created_at.to_rfc3339(),
+            symbol: r.symbol.clone(),
+            direction: r.direction.clone(),
+            price: r.entry_price.to_string(),
+            outcome,
+            pnl: pnl_str,
+        }
+    }).collect();
+
+    Ok(SignalHistoryResult {
+        signals,
+        stats: SignalStats {
+            total_signals: stats_data.total_signals,
+            win_count: stats_data.confirmed,
+            loss_count: stats_data.invalidated,
+            win_rate: stats_data.confirmation_rate_pct.map(|v| v.to_string()).unwrap_or_else(|| "0".to_string()),
+            avg_win_pnl: stats_data.avg_return_pct.filter(|v| *v > Decimal::ZERO).map(|v| format!("+{:.2}%", v)).unwrap_or_else(|| "0".to_string()),
+            avg_loss_pnl: stats_data.avg_return_pct.filter(|v| *v < Decimal::ZERO).map(|v| format!("{:.2}%", v)).unwrap_or_else(|| "0".to_string()),
+            best_signal_pnl: stats_data.avg_return_pct.filter(|v| *v > Decimal::ZERO).map(|v| format!("+{:.2}%", v)).unwrap_or_else(|| "0".to_string()),
+            worst_signal_pnl: stats_data.avg_return_pct.filter(|v| *v < Decimal::ZERO).map(|v| format!("{:.2}%", v)).unwrap_or_else(|| "0".to_string()),
+        },
+    })
+}
+
+// ============ 交易对管理 ============
+
+/// 获取所有交易对（含启用状态）
+#[tauri::command]
+pub async fn get_symbols(state: State<'_, AppState>) -> Result<Vec<SymbolConfig>, String> {
+    let symbols = state.repository.get_all_symbols().await
+        .map_err(|e| e.to_string())?;
+    Ok(symbols.into_iter().map(|(s, enabled)| SymbolConfig { symbol: s, enabled }).collect())
+}
+
+/// 添加交易对
+#[tauri::command]
+pub async fn add_symbol(state: State<'_, AppState>, symbol: String) -> Result<(), String> {
+    let symbol = symbol.to_uppercase();
+    if symbol.is_empty() || symbol.len() > 20 {
+        return Err("Invalid symbol".to_string());
+    }
+    state.repository.add_symbol(&symbol).await.map_err(|e| e.to_string())
+}
+
+/// 删除交易对
+#[tauri::command]
+pub async fn remove_symbol(state: State<'_, AppState>, symbol: String) -> Result<(), String> {
+    state.repository.remove_symbol(&symbol).await.map_err(|e| e.to_string())
+}
+
+/// 启用/禁用交易对
+#[tauri::command]
+pub async fn toggle_symbol(state: State<'_, AppState>, symbol: String, enabled: bool) -> Result<(), String> {
+    state.repository.set_symbol_enabled(&symbol, enabled).await.map_err(|e| e.to_string())
 }

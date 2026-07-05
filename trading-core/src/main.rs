@@ -1,6 +1,7 @@
 use chrono::NaiveDate;
 use rust_decimal::Decimal;
 use sqlx::PgPool;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::signal;
@@ -471,6 +472,23 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
+    // Start strategy analysis scheduler
+    let scheduler_repo = repository.clone();
+    let (scheduler_shutdown_tx, scheduler_shutdown_rx) = tokio::sync::broadcast::channel(1);
+    let scheduler_config = service::StrategySchedulerConfig {
+        interval_secs: 300, // 5 分钟
+        strategy_id: "trend".to_string(),
+        signal_max_age_hours: 24,
+        confirm_threshold_pct: rust_decimal::Decimal::from_str("0.5").unwrap_or(rust_decimal::Decimal::ZERO),
+    };
+    let scheduler_handle = tokio::spawn(async move {
+        let scheduler = service::StrategyAnalysisScheduler::new(
+            scheduler_repo, scheduler_config, scheduler_shutdown_rx,
+        );
+        scheduler.start().await;
+    });
+    info!("📊 Strategy analysis scheduler started (every 5min)");
+
     // Start API server
     let api_config = api::server::ApiServerConfig {
         host: "0.0.0.0".to_string(),
@@ -504,6 +522,8 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // 清理
+    let _ = scheduler_shutdown_tx.send(());
+    scheduler_handle.abort();
     if let Some(handle) = collection_handle {
         handle.abort();
     }

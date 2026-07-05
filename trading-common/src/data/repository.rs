@@ -794,14 +794,116 @@ impl TickDataRepository {
             &pnls, risk_free_rate, Decimal::ZERO
         );
 
-        // Calculate max drawdown from cumulative PnL
+        // Calculate max drawdown from cumulative PnL (with dates for duration)
         let mut equity_curve: Vec<Decimal> = Vec::new();
+        let mut equity_with_dates: Vec<(chrono::NaiveDateTime, Decimal)> = Vec::new();
         let mut cum_pnl = Decimal::ZERO;
-        for pnl in &pnls {
+        for row in &rows {
+            let pnl: Decimal = row.get("realized_pnl");
+            let trade_time: chrono::NaiveDateTime = row.get("trade_time");
             cum_pnl += pnl;
             equity_curve.push(cum_pnl);
+            equity_with_dates.push((trade_time, cum_pnl));
         }
         let max_drawdown = crate::backtest::metrics::BacktestMetrics::calculate_max_drawdown(&equity_curve);
+
+        // Calculate max drawdown duration (longest peak-to-recovery period)
+        let max_drawdown_duration_days = if equity_with_dates.len() >= 2 {
+            let mut max_duration = chrono::Duration::zero();
+            let mut peak_equity = Decimal::MIN;
+            let mut peak_time = equity_with_dates[0].0;
+            let mut in_drawdown = false;
+            let mut drawdown_start = equity_with_dates[0].0;
+
+            for (time, equity) in &equity_with_dates {
+                if *equity >= peak_equity {
+                    // New peak or recovery
+                    if in_drawdown {
+                        let duration = *time - drawdown_start;
+                        if duration > max_duration {
+                            max_duration = duration;
+                        }
+                        in_drawdown = false;
+                    }
+                    peak_equity = *equity;
+                    peak_time = *time;
+                } else {
+                    // In drawdown
+                    if !in_drawdown {
+                        drawdown_start = peak_time;
+                        in_drawdown = true;
+                    }
+                }
+            }
+
+            // Check if currently in drawdown (extends to now)
+            if in_drawdown {
+                let now = chrono::Utc::now().naive_utc();
+                let duration = now - drawdown_start;
+                if duration > max_duration {
+                    max_duration = duration;
+                }
+            }
+
+            max_duration.num_days()
+        } else {
+            0
+        };
+
+        // Estimate average trade duration by pairing buy/sell trades for same symbol
+        let avg_trade_duration_hours = {
+            // Query to get consecutive trade pairs (buy then sell) for duration estimation
+            let duration_sql = match symbol {
+                Some(_) => {
+                    r#"
+                    WITH ordered_trades AS (
+                        SELECT symbol, side, trade_time,
+                               LEAD(trade_time) OVER (PARTITION BY symbol ORDER BY trade_time) as next_trade_time,
+                               LEAD(side) OVER (PARTITION BY symbol ORDER BY trade_time) as next_side
+                        FROM trades
+                        WHERE symbol = $1
+                          AND trade_time > NOW() - INTERVAL '1 day' * $2
+                        ORDER BY symbol, trade_time
+                    )
+                    SELECT AVG(EXTRACT(EPOCH FROM (next_trade_time - trade_time)) / 3600.0) as avg_hours
+                    FROM ordered_trades
+                    WHERE next_side IS NOT NULL
+                      AND side != next_side
+                      AND next_trade_time > trade_time
+                    "#
+                }
+                None => {
+                    r#"
+                    WITH ordered_trades AS (
+                        SELECT symbol, side, trade_time,
+                               LEAD(trade_time) OVER (PARTITION BY symbol ORDER BY trade_time) as next_trade_time,
+                               LEAD(side) OVER (PARTITION BY symbol ORDER BY trade_time) as next_side
+                        FROM trades
+                        WHERE trade_time > NOW() - INTERVAL '1 day' * $1
+                        ORDER BY symbol, trade_time
+                    )
+                    SELECT AVG(EXTRACT(EPOCH FROM (next_trade_time - trade_time)) / 3600.0) as avg_hours
+                    FROM ordered_trades
+                    WHERE next_side IS NOT NULL
+                      AND side != next_side
+                      AND next_trade_time > trade_time
+                    "#
+                }
+            };
+
+            let mut duration_query = sqlx::query(duration_sql);
+            if let Some(sym) = symbol {
+                duration_query = duration_query.bind(sym);
+            }
+            duration_query = duration_query.bind(days_f64);
+
+            match duration_query.fetch_optional(&self.pool).await {
+                Ok(Some(row)) => {
+                    row.get::<Option<f64>, _>("avg_hours").unwrap_or(0.0)
+                }
+                _ => 0.0,
+            }
+        };
 
         // Calculate volatility
         let volatility = crate::backtest::metrics::BacktestMetrics::calculate_volatility(&pnls);
@@ -818,10 +920,12 @@ impl TickDataRepository {
             "sharpe_ratio": sharpe.to_string(),
             "sortino_ratio": sortino.to_string(),
             "max_drawdown": max_drawdown.to_string(),
+            "max_drawdown_duration_days": max_drawdown_duration_days,
             "calmar_ratio": calmar.to_string(),
             "volatility": volatility.to_string(),
             "win_rate": win_rate.to_string(),
             "profit_factor": profit_factor.to_string(),
+            "avg_trade_duration_hours": avg_trade_duration_hours,
             "total_trades": total_trades,
             "winning_trades": winning_trades,
             "losing_trades": losing_trades,
@@ -1784,6 +1888,416 @@ impl TickDataRepository {
         } else {
             Ok((0, None, None))
         }
+    }
+}
+
+// =================================================================
+// 策略信号生命周期管理
+// =================================================================
+
+/// 通用信号数据结构（两表共用）
+#[derive(Debug, Clone)]
+pub struct SignalRecord {
+    pub id: uuid::Uuid,
+    pub symbol: String,
+    pub strategy_id: String,
+    pub direction: String,
+    pub entry_price: Decimal,
+    pub overall_confidence: Decimal,
+    pub entry_allowed: bool,
+    pub entry_direction: Option<String>,
+    pub timeframe_details: serde_json::Value,
+    pub status: String,
+    pub closed_reason: Option<String>,
+    pub evaluated_at: Option<DateTime<Utc>>,
+    pub best_price: Option<Decimal>,
+    pub worst_price: Option<Decimal>,
+    pub eval_count: i32,
+    pub closed_at: Option<DateTime<Utc>>,
+    pub close_price: Option<Decimal>,
+    pub actual_return_pct: Option<Decimal>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// 信号统计数据
+#[derive(Debug, Clone)]
+pub struct SignalStatsData {
+    pub total_signals: i64,
+    pub confirmed: i64,
+    pub invalidated: i64,
+    pub expired: i64,
+    pub superseded: i64,
+    pub pending: i64,
+    pub confirmation_rate_pct: Option<Decimal>,
+    pub avg_return_pct: Option<Decimal>,
+    pub avg_duration_hours: Option<f64>,
+}
+
+// -----------------------------------------------------------------
+// strategy_signals（引擎表）公共方法
+// -----------------------------------------------------------------
+
+impl TickDataRepository {
+    /// 保存引擎信号
+    pub async fn save_engine_signal(
+        &self,
+        symbol: &str,
+        strategy_id: &str,
+        direction: &str,
+        entry_price: Decimal,
+        overall_confidence: Decimal,
+        entry_allowed: bool,
+        entry_direction: Option<&str>,
+        timeframe_details: serde_json::Value,
+    ) -> DataResult<uuid::Uuid> {
+        let id = uuid::Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO strategy_signals \
+             (id, symbol, strategy_id, direction, entry_price, \
+              overall_confidence, entry_allowed, entry_direction, \
+              timeframe_details, status, evaluated_at, eval_count, best_price, worst_price) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending',NOW(),1,$10,$10)"
+        )
+        .bind(id).bind(symbol).bind(strategy_id).bind(direction)
+        .bind(entry_price).bind(overall_confidence).bind(entry_allowed)
+        .bind(entry_direction).bind(timeframe_details).bind(entry_price)
+        .execute(&self.pool).await?;
+        debug!("Saved engine signal: id={}, {} {}", id, symbol, direction);
+        Ok(id)
+    }
+
+    /// 获取引擎待验证信号
+    pub async fn get_pending_engine_signal(
+        &self, symbol: &str, strategy_id: &str,
+    ) -> DataResult<Option<SignalRecord>> {
+        let row = sqlx::query(
+            "SELECT id,symbol,strategy_id,direction,entry_price,overall_confidence, \
+                    entry_allowed,entry_direction,timeframe_details,status,closed_reason, \
+                    evaluated_at,best_price,worst_price,eval_count, \
+                    closed_at,close_price,actual_return_pct,created_at \
+             FROM strategy_signals \
+             WHERE symbol=$1 AND strategy_id=$2 AND status='pending' \
+             ORDER BY created_at DESC LIMIT 1"
+        ).bind(symbol).bind(strategy_id)
+         .fetch_optional(&self.pool).await?;
+        Ok(row.map(|r| parse_signal_row(&r)))
+    }
+
+    /// 更新引擎信号验证
+    pub async fn update_engine_signal_eval(
+        &self, signal_id: uuid::Uuid, current_price: Decimal,
+    ) -> DataResult<()> {
+        sqlx::query(
+            "UPDATE strategy_signals SET \
+             evaluated_at=NOW(), eval_count=eval_count+1, \
+             best_price=CASE WHEN direction='bullish' THEN GREATEST(COALESCE(best_price,$2),$2) \
+                              WHEN direction='bearish' THEN LEAST(COALESCE(best_price,$2),$2) \
+                              ELSE best_price END, \
+             worst_price=CASE WHEN direction='bullish' THEN LEAST(COALESCE(worst_price,$2),$2) \
+                               WHEN direction='bearish' THEN GREATEST(COALESCE(worst_price,$2),$2) \
+                               ELSE worst_price END \
+             WHERE id=$1"
+        ).bind(signal_id).bind(current_price)
+         .execute(&self.pool).await?;
+        Ok(())
+    }
+
+    /// 关闭引擎信号
+    pub async fn close_engine_signal(
+        &self, signal_id: uuid::Uuid, new_status: &str, reason: &str,
+        close_price: Decimal, return_pct: Decimal,
+    ) -> DataResult<()> {
+        sqlx::query(
+            "UPDATE strategy_signals SET status=$2,closed_reason=$3, \
+             closed_at=NOW(),close_price=$4,actual_return_pct=$5 \
+             WHERE id=$1 AND status='pending'"
+        ).bind(signal_id).bind(new_status).bind(reason)
+         .bind(close_price).bind(return_pct)
+         .execute(&self.pool).await?;
+        debug!("Closed engine signal: {} -> {} ({}%)", signal_id, new_status, return_pct);
+        Ok(())
+    }
+
+    /// 关闭引擎过期信号
+    pub async fn close_expired_engine_signals(&self, max_age_hours: i64) -> DataResult<u64> {
+        let r = sqlx::query(
+            "UPDATE strategy_signals SET status='expired',closed_reason='expired', \
+             closed_at=NOW(),close_price=entry_price,actual_return_pct=0 \
+             WHERE status='pending' AND created_at < NOW()-make_interval(hours=>$1)"
+        ).bind(max_age_hours).execute(&self.pool).await?;
+        let n = r.rows_affected();
+        if n > 0 { info!("Closed {} expired engine signals ({}h)", n, max_age_hours); }
+        Ok(n)
+    }
+
+    /// 查询引擎信号历史
+    pub async fn get_engine_signal_history(
+        &self, symbol: Option<&str>, strategy_id: Option<&str>, limit: i32,
+    ) -> DataResult<Vec<SignalRecord>> {
+        let rows = match (symbol, strategy_id) {
+            (Some(sym), Some(sid)) => sqlx::query(
+                SIGNAL_SELECT_QUERY
+            ).bind(sym).bind(sid).bind(limit).fetch_all(&self.pool).await?,
+            (Some(sym), None) => sqlx::query(
+                "SELECT ... FROM strategy_signals WHERE symbol=$1 ORDER BY created_at DESC LIMIT $2"
+            ).bind(sym).bind(limit).fetch_all(&self.pool).await?,
+            _ => sqlx::query(
+                "SELECT ... FROM strategy_signals ORDER BY created_at DESC LIMIT $1"
+            ).bind(limit).fetch_all(&self.pool).await?,
+        };
+        Ok(rows.iter().map(|r| parse_signal_row(r)).collect())
+    }
+}
+
+const SIGNAL_SELECT_QUERY: &str = "SELECT id,symbol,strategy_id,direction,entry_price,overall_confidence,entry_allowed,entry_direction,timeframe_details,status,closed_reason,evaluated_at,best_price,worst_price,eval_count,closed_at,close_price,actual_return_pct,created_at FROM strategy_signals WHERE symbol=$1 AND strategy_id=$2 ORDER BY created_at DESC LIMIT $3";
+
+// -----------------------------------------------------------------
+// strategy_analysis_log（前端表）方法
+// -----------------------------------------------------------------
+
+impl TickDataRepository {
+    /// 保存前端分析记录
+    pub async fn save_analysis_log(
+        &self,
+        symbol: &str,
+        strategy_id: &str,
+        direction: &str,
+        entry_price: Decimal,
+        overall_confidence: Decimal,
+        entry_allowed: bool,
+        entry_direction: Option<&str>,
+        timeframe_details: serde_json::Value,
+    ) -> DataResult<uuid::Uuid> {
+        let id = uuid::Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO strategy_analysis_log \
+             (id,symbol,strategy_id,direction,entry_price, \
+              overall_confidence,entry_allowed,entry_direction, \
+              timeframe_details,status,evaluated_at,eval_count,best_price,worst_price) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending',NOW(),1,$10,$10)"
+        )
+        .bind(id).bind(symbol).bind(strategy_id).bind(direction)
+        .bind(entry_price).bind(overall_confidence).bind(entry_allowed)
+        .bind(entry_direction).bind(timeframe_details).bind(entry_price)
+        .execute(&self.pool).await?;
+        debug!("Saved analysis log: id={}, {} {}", id, symbol, direction);
+        Ok(id)
+    }
+
+    /// 获取前端待验证分析
+    pub async fn get_pending_analysis(
+        &self, symbol: &str, strategy_id: &str,
+    ) -> DataResult<Option<SignalRecord>> {
+        let row = sqlx::query(
+            "SELECT id,symbol,strategy_id,direction,entry_price,overall_confidence, \
+                    entry_allowed,entry_direction,timeframe_details,status,closed_reason, \
+                    evaluated_at,best_price,worst_price,eval_count, \
+                    closed_at,close_price,actual_return_pct,created_at \
+             FROM strategy_analysis_log \
+             WHERE symbol=$1 AND strategy_id=$2 AND status='pending' \
+             ORDER BY created_at DESC LIMIT 1"
+        ).bind(symbol).bind(strategy_id)
+         .fetch_optional(&self.pool).await?;
+        Ok(row.map(|r| parse_signal_row(&r)))
+    }
+
+    /// 更新前端分析验证
+    pub async fn update_analysis_eval(
+        &self, log_id: uuid::Uuid, current_price: Decimal,
+    ) -> DataResult<()> {
+        sqlx::query(
+            "UPDATE strategy_analysis_log SET \
+             evaluated_at=NOW(), eval_count=eval_count+1, \
+             best_price=CASE WHEN direction='bullish' THEN GREATEST(COALESCE(best_price,$2),$2) \
+                              WHEN direction='bearish' THEN LEAST(COALESCE(best_price,$2),$2) \
+                              ELSE best_price END, \
+             worst_price=CASE WHEN direction='bullish' THEN LEAST(COALESCE(worst_price,$2),$2) \
+                               WHEN direction='bearish' THEN GREATEST(COALESCE(worst_price,$2),$2) \
+                               ELSE worst_price END \
+             WHERE id=$1"
+        ).bind(log_id).bind(current_price)
+         .execute(&self.pool).await?;
+        Ok(())
+    }
+
+    /// 关闭前端分析
+    pub async fn close_analysis(
+        &self, log_id: uuid::Uuid, new_status: &str, reason: &str,
+        close_price: Decimal, return_pct: Decimal,
+    ) -> DataResult<()> {
+        sqlx::query(
+            "UPDATE strategy_analysis_log SET status=$2,closed_reason=$3, \
+             closed_at=NOW(),close_price=$4,actual_return_pct=$5 \
+             WHERE id=$1 AND status='pending'"
+        ).bind(log_id).bind(new_status).bind(reason)
+         .bind(close_price).bind(return_pct)
+         .execute(&self.pool).await?;
+        debug!("Closed analysis log: {} -> {} ({}%)", log_id, new_status, return_pct);
+        Ok(())
+    }
+
+    /// 关闭前端过期分析
+    pub async fn close_expired_analysis(&self, max_age_hours: i64) -> DataResult<u64> {
+        let r = sqlx::query(
+            "UPDATE strategy_analysis_log SET status='expired',closed_reason='expired', \
+             closed_at=NOW(),close_price=entry_price,actual_return_pct=0 \
+             WHERE status='pending' AND created_at < NOW()-make_interval(hours=>$1)"
+        ).bind(max_age_hours).execute(&self.pool).await?;
+        let n = r.rows_affected();
+        if n > 0 { info!("Closed {} expired analysis logs ({}h)", n, max_age_hours); }
+        Ok(n)
+    }
+
+    /// 查询前端分析历史
+    pub async fn get_analysis_history(
+        &self, symbol: Option<&str>, strategy_id: Option<&str>, limit: i32,
+    ) -> DataResult<Vec<SignalRecord>> {
+        let rows = match (symbol, strategy_id) {
+            (Some(sym), Some(sid)) => sqlx::query(
+                "SELECT id,symbol,strategy_id,direction,entry_price,overall_confidence, \
+                        entry_allowed,entry_direction,timeframe_details,status,closed_reason, \
+                        evaluated_at,best_price,worst_price,eval_count, \
+                        closed_at,close_price,actual_return_pct,created_at \
+                 FROM strategy_analysis_log WHERE symbol=$1 AND strategy_id=$2 \
+                 ORDER BY created_at DESC LIMIT $3"
+            ).bind(sym).bind(sid).bind(limit).fetch_all(&self.pool).await?,
+            (Some(sym), None) => sqlx::query(
+                "SELECT id,symbol,strategy_id,direction,entry_price,overall_confidence, \
+                        entry_allowed,entry_direction,timeframe_details,status,closed_reason, \
+                        evaluated_at,best_price,worst_price,eval_count, \
+                        closed_at,close_price,actual_return_pct,created_at \
+                 FROM strategy_analysis_log WHERE symbol=$1 \
+                 ORDER BY created_at DESC LIMIT $2"
+            ).bind(sym).bind(limit).fetch_all(&self.pool).await?,
+            _ => sqlx::query(
+                "SELECT id,symbol,strategy_id,direction,entry_price,overall_confidence, \
+                        entry_allowed,entry_direction,timeframe_details,status,closed_reason, \
+                        evaluated_at,best_price,worst_price,eval_count, \
+                        closed_at,close_price,actual_return_pct,created_at \
+                 FROM strategy_analysis_log ORDER BY created_at DESC LIMIT $1"
+            ).bind(limit).fetch_all(&self.pool).await?,
+        };
+        Ok(rows.iter().map(|r| parse_signal_row(r)).collect())
+    }
+
+    /// 获取分析统计（通用，可用于引擎或前端表）
+    pub async fn get_signal_stats(
+        &self, table: &str, symbol: Option<&str>, strategy_id: Option<&str>,
+    ) -> DataResult<SignalStatsData> {
+        // table 白名单防注入
+        let table = match table {
+            "strategy_signals" | "strategy_analysis_log" => table,
+            _ => return Err(DataError::InvalidFormat(format!("Invalid table: {}", table))),
+        };
+
+        let (where_clause, binds): (String, Vec<&str>) = match (symbol, strategy_id) {
+            (Some(sym), Some(sid)) => (format!("WHERE symbol=$1 AND strategy_id=$2"), vec![sym, sid]),
+            (Some(sym), None) => ("WHERE symbol=$1".into(), vec![sym]),
+            _ => (String::new(), vec![]),
+        };
+
+        let sql = format!(
+            "SELECT COUNT(*) as total, \
+                    COUNT(*) FILTER (WHERE status='confirmed') as confirmed, \
+                    COUNT(*) FILTER (WHERE status='invalidated') as invalidated, \
+                    COUNT(*) FILTER (WHERE status='expired') as expired, \
+                    COUNT(*) FILTER (WHERE status='superseded') as superseded, \
+                    COUNT(*) FILTER (WHERE status='pending') as pending, \
+                    ROUND(COUNT(*) FILTER (WHERE status='confirmed')::numeric / \
+                          NULLIF(COUNT(*) FILTER (WHERE status IN ('confirmed','invalidated')),0)*100,2) as confirm_rate, \
+                    AVG(actual_return_pct) FILTER (WHERE status IN ('confirmed','invalidated')) as avg_return, \
+                    AVG(EXTRACT(EPOCH FROM (closed_at-created_at))/3600) FILTER (WHERE closed_at IS NOT NULL) as avg_hours \
+             FROM {} {}", table, where_clause
+        );
+
+        let row = if binds.len() == 2 {
+            sqlx::query(&sql).bind(binds[0]).bind(binds[1]).fetch_one(&self.pool).await?
+        } else if binds.len() == 1 {
+            sqlx::query(&sql).bind(binds[0]).fetch_one(&self.pool).await?
+        } else {
+            sqlx::query(&sql).fetch_one(&self.pool).await?
+        };
+
+        Ok(SignalStatsData {
+            total_signals: row.get::<Option<i64>, _>("total").unwrap_or(0),
+            confirmed: row.get::<Option<i64>, _>("confirmed").unwrap_or(0),
+            invalidated: row.get::<Option<i64>, _>("invalidated").unwrap_or(0),
+            expired: row.get::<Option<i64>, _>("expired").unwrap_or(0),
+            superseded: row.get::<Option<i64>, _>("superseded").unwrap_or(0),
+            pending: row.get::<Option<i64>, _>("pending").unwrap_or(0),
+            confirmation_rate_pct: row.get::<Option<Decimal>, _>("confirm_rate"),
+            avg_return_pct: row.get::<Option<Decimal>, _>("avg_return"),
+            avg_duration_hours: row.get::<Option<f64>, _>("avg_hours"),
+        })
+    }
+}
+
+/// 解析信号行（两表结构相同，共用解析函数）
+fn parse_signal_row(row: &sqlx::postgres::PgRow) -> SignalRecord {
+    SignalRecord {
+        id: row.get("id"),
+        symbol: row.get("symbol"),
+        strategy_id: row.get("strategy_id"),
+        direction: row.get("direction"),
+        entry_price: row.get("entry_price"),
+        overall_confidence: row.get("overall_confidence"),
+        entry_allowed: row.get("entry_allowed"),
+        entry_direction: row.get("entry_direction"),
+        timeframe_details: row.get("timeframe_details"),
+        status: row.get("status"),
+        closed_reason: row.get("closed_reason"),
+        evaluated_at: row.get("evaluated_at"),
+        best_price: row.get("best_price"),
+        worst_price: row.get("worst_price"),
+        eval_count: row.get("eval_count"),
+        closed_at: row.get("closed_at"),
+        close_price: row.get("close_price"),
+        actual_return_pct: row.get("actual_return_pct"),
+        created_at: row.get("created_at"),
+    }
+}
+
+// =================================================================
+// symbol_config 交易对管理
+// =================================================================
+
+impl TickDataRepository {
+    /// 获取所有启用的交易对
+    pub async fn get_enabled_symbols(&self) -> DataResult<Vec<String>> {
+        let rows = sqlx::query("SELECT symbol FROM symbol_config WHERE enabled = true ORDER BY symbol")
+            .fetch_all(&self.pool).await?;
+        Ok(rows.iter().map(|r| r.get::<String, _>("symbol")).collect())
+    }
+
+    /// 获取所有交易对（含启用状态）
+    pub async fn get_all_symbols(&self) -> DataResult<Vec<(String, bool)>> {
+        let rows = sqlx::query("SELECT symbol, enabled FROM symbol_config ORDER BY symbol")
+            .fetch_all(&self.pool).await?;
+        Ok(rows.iter().map(|r| (r.get::<String, _>("symbol"), r.get::<bool, _>("enabled"))).collect())
+    }
+
+    /// 添加交易对
+    pub async fn add_symbol(&self, symbol: &str) -> DataResult<()> {
+        sqlx::query("INSERT INTO symbol_config (symbol) VALUES ($1) ON CONFLICT (symbol) DO UPDATE SET enabled = true")
+            .bind(symbol).execute(&self.pool).await?;
+        info!("Added symbol: {}", symbol);
+        Ok(())
+    }
+
+    /// 删除交易对
+    pub async fn remove_symbol(&self, symbol: &str) -> DataResult<()> {
+        sqlx::query("DELETE FROM symbol_config WHERE symbol = $1")
+            .bind(symbol).execute(&self.pool).await?;
+        info!("Removed symbol: {}", symbol);
+        Ok(())
+    }
+
+    /// 启用/禁用交易对
+    pub async fn set_symbol_enabled(&self, symbol: &str, enabled: bool) -> DataResult<()> {
+        sqlx::query("UPDATE symbol_config SET enabled = $2 WHERE symbol = $1")
+            .bind(symbol).bind(enabled).execute(&self.pool).await?;
+        info!("Symbol {} enabled={}", symbol, enabled);
+        Ok(())
     }
 }
 

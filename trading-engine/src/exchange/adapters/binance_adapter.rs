@@ -1154,7 +1154,33 @@ impl TradingOperations for BinanceAdapter {
                                             }
                                         }
                                         "ACCOUNT_UPDATE" => {
-                                            info!("Account update received");
+                                            // 解析账户更新：余额和持仓变化
+                                            if let Some(account_data) = data.get("a") {
+                                                let balances = account_data["B"].as_array();
+                                                let positions = account_data["P"].as_array();
+                                                let balance_changes: Vec<String> = balances
+                                                    .map(|b| b.iter().filter_map(|item| {
+                                                        let asset = item["a"].as_str()?;
+                                                        let change = item["bc"].as_str()?;
+                                                        if change != "0" {
+                                                            Some(format!("{}: {}", asset, change))
+                                                        } else { None }
+                                                    }).collect())
+                                                    .unwrap_or_default();
+                                                let pos_changes: Vec<String> = positions
+                                                    .map(|p| p.iter().filter_map(|item| {
+                                                        let sym = item["s"].as_str()?;
+                                                        let amount = item["pa"].as_str()?;
+                                                        let pnl = item["up"].as_str()?;
+                                                        Some(format!("{} amt={} pnl={}", sym, amount, pnl))
+                                                    }).collect())
+                                                    .unwrap_or_default();
+                                                info!(
+                                                    "Account update: balances=[{}], positions=[{}]",
+                                                    balance_changes.join(", "),
+                                                    pos_changes.join(", ")
+                                                );
+                                            }
                                         }
                                         "MARGIN_CALL" => {
                                             warn!("Margin call received: {:?}", data);

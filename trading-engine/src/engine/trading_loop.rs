@@ -6,9 +6,11 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::{interval, Duration};
 use tracing::{error, info, warn};
+use chrono;
 
 use crate::config::{DataSourceType, Settings};
 use crate::exchange::traits::Exchange;
+use crate::exchange::types::{OrderStatus, OrderUpdate};
 use crate::exchange::RedisDataSource;
 use crate::order::OrderManager;
 use crate::portfolio::{PortfolioManager, PositionReconciler};
@@ -123,7 +125,10 @@ impl TradingLoop {
         self.start_user_data_stream().await;
 
         // 主处理循环
-        let mut poll_interval = interval(Duration::from_millis(self.poll_interval_ms));
+        // tick 处理间隔（高频）
+        let mut tick_poll_interval = interval(Duration::from_millis(self.poll_interval_ms));
+        // 安全兜底轮询（低频）— WebSocket 负责实时推送，这里仅做兜底
+        let mut safety_poll_interval = interval(Duration::from_secs(30));
         let mut reconciliation_interval = interval(Duration::from_secs(3600)); // 每小时对账一次
         let mut shutdown_rx = self.shutdown_tx.subscribe();
 
@@ -134,17 +139,19 @@ impl TradingLoop {
                         error!("Failed to process tick {}: {}", tick.symbol, e);
                     }
                 }
-                _ = poll_interval.tick() => {
-                    // 定期检查活动订单状态
-                    if let Err(e) = self.check_active_orders().await {
-                        error!("Failed to check active orders: {}", e);
-                    }
-
-                    // 定期同步持仓
+                _ = tick_poll_interval.tick() => {
+                    // 定期同步持仓（轻量级检查）
                     if self.portfolio_manager.needs_sync().await {
                         if let Err(e) = self.portfolio_manager.sync_positions().await {
                             warn!("Failed to sync positions: {}", e);
                         }
+                    }
+                }
+                _ = safety_poll_interval.tick() => {
+                    // 安全兜底：定期检查活动订单状态（WebSocket 应该已经处理了大部分更新）
+                    // 只检查超过 60 秒未更新的订单
+                    if let Err(e) = self.check_stale_orders().await {
+                        warn!("Safety poll: failed to check stale orders: {}", e);
                     }
                 }
                 _ = reconciliation_interval.tick() => {
@@ -284,32 +291,75 @@ impl TradingLoop {
         });
     }
 
-    /// 启动用户数据流 WebSocket (订单状态实时推送)
+    /// 启动用户数据流 WebSocket (订单状态实时推送，带自动重连)
     async fn start_user_data_stream(&self) {
         let exchange = self.exchange.clone();
         let order_manager = self.order_manager.clone();
-        let shutdown_rx = self.shutdown_tx.subscribe();
+        let portfolio_manager = self.portfolio_manager.clone();
+        let mut shutdown_rx = self.shutdown_tx.subscribe();
 
         tokio::spawn(async move {
-            info!("Starting user data stream WebSocket");
-            if let Err(e) = exchange
-                .subscribe_user_data(
-                    Box::new(move |update| {
+            let mut retry_count: u32 = 0;
+            let max_retries: u32 = 20; // 最多重试 20 次后重置计数
+            let base_delay_ms: u64 = 1000; // 基础延迟 1 秒
+            let max_delay_ms: u64 = 60000; // 最大延迟 60 秒
+
+            loop {
+                info!("Starting user data stream WebSocket (attempt {})", retry_count + 1);
+
+                let order_cb = {
+                    let order_manager = order_manager.clone();
+                    let portfolio_manager = portfolio_manager.clone();
+                    Box::new(move |update: OrderUpdate| {
                         let order_manager = order_manager.clone();
+                        let portfolio_manager = portfolio_manager.clone();
                         tokio::spawn(async move {
                             info!(
                                 "Order update received: {} {} {:?} {:?}",
                                 update.symbol, update.order_id, update.status, update.side
                             );
                             // 更新订单管理器中的订单状态
-                            order_manager.handle_order_update(update).await;
+                            order_manager.handle_order_update(update.clone()).await;
+
+                            // 订单成交后同步持仓
+                            if update.status == OrderStatus::Filled {
+                                if let Err(e) = portfolio_manager.sync_positions().await {
+                                    warn!("Failed to sync positions after order fill: {}", e);
+                                }
+                            }
                         });
-                    }),
-                    shutdown_rx,
-                )
-                .await
-            {
-                error!("User data stream subscription failed: {}", e);
+                    }) as Box<dyn Fn(OrderUpdate) + Send + Sync>
+                };
+
+                let sub_shutdown_rx = shutdown_rx.resubscribe();
+                match exchange.subscribe_user_data(order_cb, sub_shutdown_rx).await {
+                    Ok(_) => {
+                        // 正常退出（收到 shutdown 信号），不再重连
+                        info!("User data stream stopped gracefully");
+                        return;
+                    }
+                    Err(e) => {
+                        retry_count += 1;
+                        if retry_count >= max_retries {
+                            retry_count = 0; // 重置计数，继续重试
+                        }
+
+                        // 指数退避: 1s, 2s, 4s, 8s, ... 最大 60s
+                        let delay_ms = (base_delay_ms * 2u64.pow(retry_count.min(6))).min(max_delay_ms);
+                        warn!(
+                            "User data stream failed: {}. Retrying in {}ms...",
+                            e, delay_ms
+                        );
+
+                        tokio::select! {
+                            _ = tokio::time::sleep(Duration::from_millis(delay_ms)) => {}
+                            _ = shutdown_rx.recv() => {
+                                info!("Shutdown signal received during reconnect backoff");
+                                return;
+                            }
+                        }
+                    }
+                }
             }
         });
     }
@@ -382,11 +432,26 @@ impl TradingLoop {
         Ok(())
     }
 
-    /// 检查活动订单状态
-    async fn check_active_orders(&self) -> Result<(), Box<dyn std::error::Error>> {
+    /// 安全兜底：检查长时间未更新的活动订单
+    ///
+    /// WebSocket 用户数据流负责实时推送订单更新。
+    /// 此方法仅作为兜底机制，检查可能因 WebSocket 断连而遗漏的订单。
+    async fn check_stale_orders(&self) -> Result<(), Box<dyn std::error::Error>> {
         let active_orders = self.order_manager.get_active_orders().await;
+        if active_orders.is_empty() {
+            return Ok(());
+        }
+
+        // 只检查超过 60 秒未更新的订单（WebSocket 正常情况下秒级推送）
+        let stale_threshold = chrono::Duration::seconds(60);
+        let now = chrono::Utc::now();
 
         for order in &active_orders {
+            let age = now - order.updated_at;
+            if age < stale_threshold {
+                continue; // 还没过期，跳过
+            }
+
             // 查询订单最新状态
             match self
                 .exchange
@@ -395,14 +460,31 @@ impl TradingLoop {
             {
                 Ok(updated_order) => {
                     if updated_order.status != order.status {
-                        info!(
-                            "Order {} status changed: {} -> {}",
+                        warn!(
+                            "Stale order {} status mismatch (WS may have missed update): {} -> {}",
                             order.order_id, order.status, updated_order.status
                         );
+                        // 通过 order_manager 处理更新，保持一致性
+                        let update = OrderUpdate {
+                            order_id: updated_order.order_id.clone(),
+                            client_order_id: updated_order.client_order_id.clone(),
+                            symbol: updated_order.symbol.clone(),
+                            side: updated_order.side.clone(),
+                            order_type: updated_order.order_type.clone(),
+                            status: updated_order.status.clone(),
+                            quantity: updated_order.quantity,
+                            filled_quantity: updated_order.filled_quantity,
+                            price: updated_order.price,
+                            avg_price: None,
+                            commission: None,
+                            commission_asset: None,
+                            timestamp: chrono::Utc::now(),
+                        };
+                        self.order_manager.handle_order_update(update).await;
                     }
                 }
                 Err(e) => {
-                    warn!("Failed to get order status: {}", e);
+                    warn!("Failed to get order status for {}: {}", order.order_id, e);
                 }
             }
         }

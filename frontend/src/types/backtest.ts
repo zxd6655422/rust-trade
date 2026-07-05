@@ -210,3 +210,63 @@ export interface MarketStateResult {
   data_quality_score: string;
   summary: string;
 }
+
+// ============ 策略实时分析类型 ============
+
+export interface StrategyAnalysisRequest {
+  symbol: string;
+  strategy_id?: string;
+}
+
+export interface TimeframeAnalysis {
+  timeframe: string;      // "4h", "1h", "15m"
+  direction: string;      // "bullish", "bearish", "neutral"
+  confidence: string;     // "0.0" ~ "1.0"
+  description: string;
+}
+
+export interface StrategyAnalysisResult {
+  symbol: string;
+  strategy_id: string;
+  strategy_name: string;
+  timeframes: TimeframeAnalysis[];
+  overall_direction: string;   // "bullish", "bearish", "neutral"
+  overall_confidence: string;
+  entry_allowed: boolean;
+  entry_direction: string | null;  // "long", "short"
+  analysis_time: string;
+}
+
+// ============ 信号历史类型 ============
+
+export interface SignalHistoryRequest {
+  symbol?: string;
+  strategy_id?: string;
+  limit?: number;
+}
+
+export interface SignalRecord {
+  id: string;
+  timestamp: string;
+  symbol: string;
+  direction: string;      // "bullish", "bearish", "neutral"
+  price: string;
+  outcome: string | null; // "confirmed", "invalidated", "expired", "superseded", "pending", null
+  pnl: string | null;     // "+1.6%" or "-0.8%"
+}
+
+export interface SignalStats {
+  total_signals: number;
+  win_count: number;
+  loss_count: number;
+  win_rate: string;
+  avg_win_pnl: string;
+  avg_loss_pnl: string;
+  best_signal_pnl: string;
+  worst_signal_pnl: string;
+}
+
+export interface SignalHistoryResult {
+  signals: SignalRecord[];
+  stats: SignalStats;
+}

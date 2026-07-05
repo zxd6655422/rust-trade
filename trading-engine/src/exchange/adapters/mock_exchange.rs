@@ -294,20 +294,31 @@ impl TradingOperations for MockExchange {
 
         // 计算未实现盈亏
         let mut unrealized_pnl = Decimal::ZERO;
+        let mut balances = vec![Balance {
+            asset: "USDT".to_string(),
+            free: account.balance,
+            locked: Decimal::ZERO,
+        }];
+
+        // 将持仓也加入余额列表，方便 OrderManager 检查卖出余额
         for (symbol, quantity) in &account.positions {
             if let Some(price) = prices.get(symbol) {
                 if let Some(avg_price) = account.avg_prices.get(symbol) {
                     unrealized_pnl += (*price - *avg_price) * *quantity;
                 }
             }
+            if *quantity > Decimal::ZERO {
+                let base_asset = symbol.replace("USDT", "").replace("BUSD", "");
+                balances.push(Balance {
+                    asset: base_asset,
+                    free: *quantity,
+                    locked: Decimal::ZERO,
+                });
+            }
         }
 
         Ok(AccountInfo {
-            balances: vec![Balance {
-                asset: "USDT".to_string(),
-                free: account.balance,
-                locked: Decimal::ZERO,
-            }],
+            balances,
             total_equity: account.balance + unrealized_pnl,
             available_balance: account.balance,
             unrealized_pnl,

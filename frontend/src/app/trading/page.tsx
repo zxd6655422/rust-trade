@@ -1,11 +1,11 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import {
   Activity, LineChart, FlaskConical, Zap,
-  CircleDot, Layers, TrendingUp
+  CircleDot, Layers, TrendingUp, Settings2
 } from 'lucide-react';
 import { useLanguage } from '@/lib/i18n/context';
 
@@ -22,6 +22,9 @@ import CommissionStats from '@/components/trading/CommissionStats';
 import StrategyWinRate from '@/components/trading/StrategyWinRate';
 import OrderPanel from '@/components/trading/OrderPanel';
 import PriceAlerts from '@/components/trading/PriceAlerts';
+import StrategyAnalysisPanel from '@/components/trading/StrategyAnalysisPanel';
+import SignalHistory from '@/components/trading/SignalHistory';
+import SymbolManager, { loadSymbols } from '@/components/trading/SymbolManager';
 
 // 子页面内容 (内联导入)
 import BacktestContent from './BacktestContent';
@@ -31,9 +34,21 @@ import PaperTradingContent from './PaperTradingContent';
 type MarketType = 'spot' | 'futures';
 
 export default function TradingPage() {
+  const [symbols, setSymbols] = useState<string[]>(['BTCUSDT', 'ETHUSDT', 'SOLUSDT']);
   const [selectedSymbol, setSelectedSymbol] = useState('BTCUSDT');
   const [marketType, setMarketType] = useState<MarketType>('futures');
+  const [showSymbolManager, setShowSymbolManager] = useState(false);
   const { t } = useLanguage();
+
+  // 加载交易对列表
+  useEffect(() => {
+    loadSymbols().then(s => {
+      setSymbols(s);
+      if (s.length > 0 && !s.includes(selectedSymbol)) {
+        setSelectedSymbol(s[0]);
+      }
+    });
+  }, []);
 
   return (
     <div className="space-y-6">
@@ -105,8 +120,30 @@ export default function TradingPage() {
             </Badge>
           </div>
 
-          {/* Price Ticker */}
+          {/* Symbol Manager Toggle + Price Ticker */}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShowSymbolManager(!showSymbolManager)}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all border ${
+                showSymbolManager ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              <Settings2 className="w-3.5 h-3.5" />
+              管理交易对
+            </button>
+          </div>
+
+          {showSymbolManager && (
+            <SymbolManager onSymbolsChange={(s) => {
+              setSymbols(s);
+              if (s.length > 0 && !s.includes(selectedSymbol)) {
+                setSelectedSymbol(s[0]);
+              }
+            }} />
+          )}
+
           <PriceTicker
+            symbols={symbols}
             onSymbolSelect={setSelectedSymbol}
             selectedSymbol={selectedSymbol}
           />
@@ -114,12 +151,13 @@ export default function TradingPage() {
           {/* Account Profit Dashboard - 醒目位置 */}
           <AccountProfitDashboard symbol={selectedSymbol} />
 
-          {/* K Line Chart + Order Panel */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div className="lg:col-span-2">
+          {/* K Line Chart + Strategy Analysis + Order Panel */}
+          <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
+            <div className="lg:col-span-3">
               <KlineChart symbol={selectedSymbol} marketType={marketType} autoRefreshInterval={30000} />
             </div>
-            <div>
+            <div className="lg:col-span-2 space-y-6">
+              <StrategyAnalysisPanel symbol={selectedSymbol} autoRefreshInterval={60000} />
               <OrderPanel symbol={selectedSymbol} marketType={marketType} />
             </div>
           </div>
@@ -134,8 +172,11 @@ export default function TradingPage() {
             </div>
           </div>
 
-          {/* Strategy Win Rate */}
-          <StrategyWinRate symbol={selectedSymbol} />
+          {/* Strategy Win Rate + Signal History */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <StrategyWinRate symbol={selectedSymbol} />
+            <SignalHistory symbol={selectedSymbol} limit={30} />
+          </div>
 
           {/* Equity Curve + Performance Row */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

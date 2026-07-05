@@ -347,3 +347,218 @@ pub enum OrderError {
     #[error("Unknown error: {0}")]
     Unknown(String),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::exchange::adapters::mock_exchange::{MockExchange, MockExchangeConfig};
+    use crate::risk::{RiskConfig, StopLossConfig};
+    use rust_decimal::Decimal;
+    use std::str::FromStr;
+
+    fn create_risk_config() -> RiskConfig {
+        RiskConfig {
+            max_position_size: Decimal::from(50000),
+            max_order_size: Decimal::from(1),
+            stop_loss_pct: Decimal::from_str("0.02").unwrap(),
+            take_profit_pct: Decimal::from_str("0.04").unwrap(),
+            max_daily_loss: Decimal::from(5000),
+            max_drawdown_pct: Decimal::from_str("0.15").unwrap(),
+            max_exposure_pct: Decimal::from_str("0.8").unwrap(),
+            kelly_fraction: Decimal::from_str("0.25").unwrap(),
+            volatility_lookback: 20,
+            volatility_target: Decimal::from_str("0.15").unwrap(),
+            circuit_breaker_cooldown: 3600,
+            black_swan_threshold: Decimal::from_str("0.05").unwrap(),
+        }
+    }
+
+    async fn setup_exchange_and_manager() -> (Arc<MockExchange>, OrderManager) {
+        let config = MockExchangeConfig {
+            initial_balance: Decimal::from(100000),
+            ..Default::default()
+        };
+        let exchange = Arc::new(MockExchange::new(config).unwrap());
+        exchange.set_price("BTCUSDT", Decimal::from(50000)).await;
+        exchange.set_price("ETHUSDT", Decimal::from(3000)).await;
+
+        let risk_engine = Arc::new(RiskEngine::new(create_risk_config()));
+        let stop_config = StopLossConfig::default();
+        let manager = OrderManager::new(exchange.clone(), risk_engine, stop_config);
+        (exchange, manager)
+    }
+
+    // ========== 基础功能测试 ==========
+
+    #[tokio::test]
+    async fn test_order_manager_initialization() {
+        let (_exchange, manager) = setup_exchange_and_manager().await;
+
+        let orders = manager.get_active_orders().await;
+        assert_eq!(orders.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_execute_buy_signal() {
+        let (_exchange, manager) = setup_exchange_and_manager().await;
+
+        let signal = Signal::Buy {
+            symbol: "BTCUSDT".to_string(),
+            quantity: Decimal::from_str("0.1").unwrap(),
+        };
+
+        let result = manager.execute_signal(signal).await;
+        assert!(result.is_ok());
+
+        let order = result.unwrap();
+        assert_eq!(order.symbol, "BTCUSDT");
+        assert_eq!(order.side, OrderSide::Buy);
+        assert_eq!(order.status, OrderStatus::Filled);
+    }
+
+    #[tokio::test]
+    async fn test_execute_sell_signal() {
+        let (_exchange, manager) = setup_exchange_and_manager().await;
+
+        // 先买入 0.1 BTC
+        let buy_signal = Signal::Buy {
+            symbol: "BTCUSDT".to_string(),
+            quantity: Decimal::from_str("0.1").unwrap(),
+        };
+        manager.execute_signal(buy_signal).await.unwrap();
+
+        // 尝试卖出较少的数量（避免精度问题）
+        let sell_signal = Signal::Sell {
+            symbol: "BTCUSDT".to_string(),
+            quantity: Decimal::from_str("0.02").unwrap(),
+        };
+        let result = manager.execute_signal(sell_signal).await;
+        assert!(result.is_ok(), "Sell signal failed: {:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn test_execute_hold_signal_fails() {
+        let (_exchange, manager) = setup_exchange_and_manager().await;
+
+        let signal = Signal::Hold;
+        let result = manager.execute_signal(signal).await;
+        assert!(result.is_err());
+    }
+
+    // ========== 订单更新处理测试 ==========
+
+    #[tokio::test]
+    async fn test_handle_order_update_filled() {
+        let (_exchange, manager) = setup_exchange_and_manager().await;
+
+        // 执行买入
+        let signal = Signal::Buy {
+            symbol: "BTCUSDT".to_string(),
+            quantity: Decimal::from_str("0.1").unwrap(),
+        };
+        let result = manager.execute_signal(signal).await.unwrap();
+
+        // 模拟订单更新
+        let update = OrderUpdate {
+            order_id: result.order_id.clone(),
+            client_order_id: None,
+            symbol: "BTCUSDT".to_string(),
+            side: OrderSide::Buy,
+            order_type: OrderType::Market,
+            status: OrderStatus::Filled,
+            quantity: Decimal::from_str("0.1").unwrap(),
+            filled_quantity: Decimal::from_str("0.1").unwrap(),
+            price: Some(Decimal::from(50000)),
+            avg_price: Some(Decimal::from(50000)),
+            commission: Some(Decimal::from(5)),
+            commission_asset: Some("USDT".to_string()),
+            timestamp: chrono::Utc::now(),
+        };
+
+        manager.handle_order_update(update).await;
+
+        // 订单应该从活动列表中移除
+        let active = manager.get_active_orders().await;
+        assert_eq!(active.len(), 0);
+    }
+
+    // ========== 止损止盈测试 ==========
+
+    #[tokio::test]
+    async fn test_stop_loss_integration() {
+        let (_exchange, manager) = setup_exchange_and_manager().await;
+
+        // 执行买入
+        let signal = Signal::Buy {
+            symbol: "BTCUSDT".to_string(),
+            quantity: Decimal::from_str("0.1").unwrap(),
+        };
+        let result = manager.execute_signal(signal).await.unwrap();
+
+        // 模拟订单成交，触发止损创建
+        let update = OrderUpdate {
+            order_id: result.order_id.clone(),
+            client_order_id: None,
+            symbol: "BTCUSDT".to_string(),
+            side: OrderSide::Buy,
+            order_type: OrderType::Market,
+            status: OrderStatus::Filled,
+            quantity: Decimal::from_str("0.1").unwrap(),
+            filled_quantity: Decimal::from_str("0.1").unwrap(),
+            price: Some(Decimal::from(50000)),
+            avg_price: Some(Decimal::from(50000)),
+            commission: Some(Decimal::from(5)),
+            commission_asset: Some("USDT".to_string()),
+            timestamp: chrono::Utc::now(),
+        };
+        manager.handle_order_update(update).await;
+
+        // 检查止损是否创建
+        let stop_order = manager.stop_loss_manager().get_stop_order("BTCUSDT").await;
+        assert!(stop_order.is_some());
+    }
+
+    // ========== 取消所有订单测试 ==========
+
+    #[tokio::test]
+    async fn test_cancel_all_orders() {
+        let (_exchange, manager) = setup_exchange_and_manager().await;
+
+        let result = manager.cancel_all_orders().await;
+        assert!(result.is_ok());
+    }
+
+    // ========== 紧急停止测试 ==========
+
+    #[tokio::test]
+    async fn test_emergency_stop() {
+        let (_exchange, manager) = setup_exchange_and_manager().await;
+
+        let result = manager.emergency_stop().await;
+        assert!(result.is_ok());
+    }
+
+    // ========== 余额不足测试 ==========
+
+    #[tokio::test]
+    async fn test_insufficient_balance() {
+        let config = MockExchangeConfig {
+            initial_balance: Decimal::from(100), // 很少的余额
+            ..Default::default()
+        };
+        let exchange = Arc::new(MockExchange::new(config).unwrap());
+        exchange.set_price("BTCUSDT", Decimal::from(50000)).await;
+
+        let risk_engine = Arc::new(RiskEngine::new(create_risk_config()));
+        let stop_config = StopLossConfig::default();
+        let manager = OrderManager::new(exchange, risk_engine, stop_config);
+
+        // 尝试买入超过余额的订单
+        let signal = Signal::Buy {
+            symbol: "BTCUSDT".to_string(),
+            quantity: Decimal::from(1), // 价值 50000，超过余额 100
+        };
+        let result = manager.execute_signal(signal).await;
+        assert!(result.is_err());
+    }
+}
