@@ -26,6 +26,12 @@ echo -e "${GREEN}  代码更新完成${NC}"
 
 # 2. 编译 release
 echo -e "\n${YELLOW}[2/4] 编译 release (可能需要几分钟)...${NC}"
+# 加载 .env 中的 DATABASE_URL（sqlx::query! 宏需要编译时数据库连接）
+if [ -f "$REPO_DIR/.env.production" ]; then
+    export $(grep -v '^#' "$REPO_DIR/.env.production" | grep DATABASE_URL | xargs)
+elif [ -f "$REPO_DIR/.env" ]; then
+    export $(grep -v '^#' "$REPO_DIR/.env" | grep DATABASE_URL | xargs)
+fi
 cargo build --release -p trading-core -p trading-engine -p archive-klines
 echo -e "${GREEN}  编译完成${NC}"
 

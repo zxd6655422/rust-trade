@@ -1163,34 +1163,19 @@ impl TickDataRepository {
         debug!("Fetching backtest data information");
 
         // Get overall statistics from kline_1m
-        let overall_stats = sqlx::query!(
-            r#"
-            SELECT
-                COUNT(*) as total_records,
-                COUNT(DISTINCT symbol) as symbols_count,
-                MIN(timestamp) as earliest_time,
-                MAX(timestamp) as latest_time
-            FROM kline_1m
-            "#
+        let overall_stats = sqlx::query(
+            "SELECT COUNT(*) as total_records, COUNT(DISTINCT symbol) as symbols_count, \
+             MIN(timestamp) as earliest_time, MAX(timestamp) as latest_time FROM kline_1m"
         )
         .fetch_one(&self.pool)
         .await?;
 
         // Get per-symbol statistics from kline_1m
-        let symbol_stats = sqlx::query!(
-            r#"
-            SELECT
-                symbol,
-                COUNT(*) as records_count,
-                MIN(timestamp) as earliest_time,
-                MAX(timestamp) as latest_time,
-                MIN(low) as min_price,
-                MAX(high) as max_price,
-                SUM(volume * close) as total_volume_usd
-            FROM kline_1m
-            GROUP BY symbol
-            ORDER BY total_volume_usd DESC
-            "#
+        let symbol_stats = sqlx::query(
+            "SELECT symbol, COUNT(*) as records_count, MIN(timestamp) as earliest_time, \
+             MAX(timestamp) as latest_time, MIN(low) as min_price, MAX(high) as max_price, \
+             SUM(volume * close) as total_volume_usd \
+             FROM kline_1m GROUP BY symbol ORDER BY total_volume_usd DESC"
         )
         .fetch_all(&self.pool)
         .await?;
@@ -1198,21 +1183,21 @@ impl TickDataRepository {
         let symbol_info: Vec<SymbolDataInfo> = symbol_stats
             .into_iter()
             .map(|row| SymbolDataInfo {
-                symbol: row.symbol,
-                records_count: row.records_count.unwrap_or(0) as u64,
-                earliest_time: row.earliest_time,
-                latest_time: row.latest_time,
-                min_price: row.min_price,
-                max_price: row.max_price,
-                total_volume_usd: row.total_volume_usd.unwrap_or(Decimal::ZERO),
+                symbol: row.get("symbol"),
+                records_count: row.get::<Option<i64>, _>("records_count").unwrap_or(0) as u64,
+                earliest_time: row.get("earliest_time"),
+                latest_time: row.get("latest_time"),
+                min_price: row.get("min_price"),
+                max_price: row.get("max_price"),
+                total_volume_usd: row.get::<Option<Decimal>, _>("total_volume_usd").unwrap_or(Decimal::ZERO),
             })
             .collect();
 
         let info = BacktestDataInfo {
-            total_records: overall_stats.total_records.unwrap_or(0) as u64,
-            symbols_count: overall_stats.symbols_count.unwrap_or(0) as u64,
-            earliest_time: overall_stats.earliest_time,
-            latest_time: overall_stats.latest_time,
+            total_records: overall_stats.get::<Option<i64>, _>("total_records").unwrap_or(0) as u64,
+            symbols_count: overall_stats.get::<Option<i64>, _>("symbols_count").unwrap_or(0) as u64,
+            earliest_time: overall_stats.get("earliest_time"),
+            latest_time: overall_stats.get("latest_time"),
             symbol_info,
         };
 
