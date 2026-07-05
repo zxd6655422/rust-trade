@@ -69,21 +69,17 @@ impl TickDataRepository {
         );
 
         // Insert to database first
-        sqlx::query!(
-            r#"
-            INSERT INTO tick_data 
-            (timestamp, symbol, price, quantity, side, trade_id, is_buyer_maker)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
-            ON CONFLICT (symbol, trade_id, timestamp) DO NOTHING
-            "#,
-            tick.timestamp,
-            tick.symbol,
-            tick.price,
-            tick.quantity,
-            tick.side.as_db_str(),
-            tick.trade_id,
-            tick.is_buyer_maker
+        sqlx::query(
+            "INSERT INTO tick_data (timestamp, symbol, price, quantity, side, trade_id, is_buyer_maker) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (symbol, trade_id, timestamp) DO NOTHING"
         )
+        .bind(tick.timestamp)
+        .bind(&tick.symbol)
+        .bind(tick.price)
+        .bind(tick.quantity)
+        .bind(tick.side.as_db_str())
+        .bind(&tick.trade_id)
+        .bind(tick.is_buyer_maker)
         .execute(&self.pool)
         .await
         .map_err(|e| {
@@ -264,20 +260,12 @@ impl TickDataRepository {
         }
 
         // Cache miss, query database
-        let row = sqlx::query!(
-            r#"
-            SELECT price
-            FROM tick_data
-            WHERE symbol = $1
-            ORDER BY timestamp DESC
-            LIMIT 1
-            "#,
-            symbol
-        )
-        .fetch_optional(&self.pool)
-        .await?;
+        let row = sqlx::query("SELECT price FROM tick_data WHERE symbol = $1 ORDER BY timestamp DESC LIMIT 1")
+            .bind(symbol)
+            .fetch_optional(&self.pool)
+            .await?;
 
-        let price = row.map(|r| r.price);
+        let price = row.map(|r| r.get::<Decimal, _>("price"));
         debug!("Latest price from database: {:?}", price);
         Ok(price)
     }
@@ -294,29 +282,25 @@ impl TickDataRepository {
         }
 
         // Cache miss, query database
-        let row = sqlx::query!(
-            r#"
-            SELECT timestamp, symbol, price, quantity, side, trade_id, is_buyer_maker
-            FROM tick_data
-            WHERE symbol = $1
-            ORDER BY timestamp DESC
-            LIMIT 1
-            "#,
-            symbol
+        let row = sqlx::query(
+            "SELECT timestamp, symbol, price, quantity, side, trade_id, is_buyer_maker \
+             FROM tick_data WHERE symbol = $1 ORDER BY timestamp DESC LIMIT 1"
         )
+        .bind(symbol)
         .fetch_optional(&self.pool)
         .await?;
 
         match row {
             Some(r) => {
+                let side_str: String = r.get("side");
                 let tick = TickData {
-                    timestamp: r.timestamp,
-                    symbol: r.symbol,
-                    price: Decimal::from_str_exact(&r.price.to_string()).unwrap_or_default(),
-                    quantity: Decimal::from_str_exact(&r.quantity.to_string()).unwrap_or_default(),
-                    side: if r.side == "buy" || r.side == "BUY" { TradeSide::Buy } else { TradeSide::Sell },
-                    trade_id: r.trade_id,
-                    is_buyer_maker: r.is_buyer_maker,
+                    timestamp: r.get("timestamp"),
+                    symbol: r.get("symbol"),
+                    price: r.get("price"),
+                    quantity: r.get("quantity"),
+                    side: if side_str == "buy" || side_str == "BUY" { TradeSide::Buy } else { TradeSide::Sell },
+                    trade_id: r.get("trade_id"),
+                    is_buyer_maker: r.get("is_buyer_maker"),
                 };
                 Ok(Some(tick))
             }
@@ -329,30 +313,23 @@ impl TickDataRepository {
         debug!("Getting {}h stats for: {}", hours, symbol);
 
         let hours_f64 = hours as f64;
-        let row = sqlx::query!(
-            r#"
-            SELECT
-                COUNT(*) as total_ticks,
-                MIN(price) as min_price,
-                MAX(price) as max_price,
-                SUM(quantity) as total_volume
-            FROM tick_data
-            WHERE symbol = $1
-              AND timestamp > NOW() - INTERVAL '1 hour' * $2
-            "#,
-            symbol,
-            hours_f64
+        let row = sqlx::query(
+            "SELECT COUNT(*) as total_ticks, MIN(price) as min_price, MAX(price) as max_price, \
+             SUM(quantity) as total_volume FROM tick_data \
+             WHERE symbol = $1 AND timestamp > NOW() - INTERVAL '1 hour' * $2"
         )
+        .bind(symbol)
+        .bind(hours_f64)
         .fetch_one(&self.pool)
         .await?;
 
         let stats = serde_json::json!({
             "symbol": symbol,
             "hours": hours,
-            "total_ticks": row.total_ticks.unwrap_or(0),
-            "min_price": row.min_price.map(|p| p.to_string()),
-            "max_price": row.max_price.map(|p| p.to_string()),
-            "total_volume": row.total_volume.map(|v| v.to_string()),
+            "total_ticks": row.get::<Option<i64>, _>("total_ticks").unwrap_or(0),
+            "min_price": row.get::<Option<Decimal>, _>("min_price").map(|p| p.to_string()),
+            "max_price": row.get::<Option<Decimal>, _>("max_price").map(|p| p.to_string()),
+            "total_volume": row.get::<Option<Decimal>, _>("total_volume").map(|v| v.to_string()),
         });
 
         Ok(stats)
@@ -364,38 +341,28 @@ impl TickDataRepository {
     pub async fn get_positions(&self) -> DataResult<Vec<serde_json::Value>> {
         debug!("Fetching all positions");
 
-        let rows = sqlx::query!(
-            r#"
-            SELECT
-                id,
-                symbol,
-                side,
-                quantity,
-                avg_entry_price,
-                current_price,
-                unrealized_pnl,
-                realized_pnl,
-                opened_at,
-                updated_at
-            FROM positions
-            ORDER BY updated_at DESC
-            "#
+        let rows = sqlx::query(
+            "SELECT id, symbol, side, quantity, avg_entry_price, current_price, \
+             unrealized_pnl, realized_pnl, opened_at, updated_at FROM positions ORDER BY updated_at DESC"
         )
         .fetch_all(&self.pool)
         .await?;
 
         let positions: Vec<serde_json::Value> = rows.iter().map(|r| {
+            let id: uuid::Uuid = r.get("id");
+            let opened_at: DateTime<Utc> = r.get("opened_at");
+            let updated_at: DateTime<Utc> = r.get("updated_at");
             serde_json::json!({
-                "id": r.id.to_string(),
-                "symbol": r.symbol,
-                "side": r.side,
-                "quantity": r.quantity.to_string(),
-                "avg_entry_price": r.avg_entry_price.to_string(),
-                "current_price": r.current_price.map(|p| p.to_string()),
-                "unrealized_pnl": r.unrealized_pnl.map(|p| p.to_string()),
-                "realized_pnl": r.realized_pnl.to_string(),
-                "opened_at": r.opened_at.to_rfc3339(),
-                "updated_at": r.updated_at.to_rfc3339(),
+                "id": id.to_string(),
+                "symbol": r.get::<String, _>("symbol"),
+                "side": r.get::<String, _>("side"),
+                "quantity": r.get::<Decimal, _>("quantity").to_string(),
+                "avg_entry_price": r.get::<Decimal, _>("avg_entry_price").to_string(),
+                "current_price": r.get::<Option<Decimal>, _>("current_price").map(|p| p.to_string()),
+                "unrealized_pnl": r.get::<Option<Decimal>, _>("unrealized_pnl").map(|p| p.to_string()),
+                "realized_pnl": r.get::<Decimal, _>("realized_pnl").to_string(),
+                "opened_at": opened_at.to_rfc3339(),
+                "updated_at": updated_at.to_rfc3339(),
             })
         }).collect();
 
@@ -572,20 +539,16 @@ impl TickDataRepository {
             .collect();
 
         if !missing_symbols.is_empty() {
-            let rows = sqlx::query!(
-                r#"
-                SELECT DISTINCT ON (symbol) symbol, price
-                FROM tick_data
-                WHERE symbol = ANY($1)
-                ORDER BY symbol, timestamp DESC
-                "#,
-                &missing_symbols[..]
+            let rows = sqlx::query(
+                "SELECT DISTINCT ON (symbol) symbol, price FROM tick_data \
+                 WHERE symbol = ANY($1) ORDER BY symbol, timestamp DESC"
             )
+            .bind(&missing_symbols[..])
             .fetch_all(&self.pool)
             .await?;
 
             for row in rows {
-                prices.insert(row.symbol, row.price);
+                prices.insert(row.get("symbol"), row.get("price"));
             }
         }
 
@@ -1066,17 +1029,12 @@ impl TickDataRepository {
 
         let limit = count.min(MAX_QUERY_LIMIT as i64);
 
-        let rows = sqlx::query!(
-            r#"
-            SELECT timestamp, symbol, price, quantity, side, trade_id, is_buyer_maker
-            FROM tick_data 
-            WHERE symbol = $1
-            ORDER BY timestamp DESC
-            LIMIT $2
-            "#,
-            symbol,
-            limit
+        let rows = sqlx::query(
+            "SELECT timestamp, symbol, price, quantity, side, trade_id, is_buyer_maker \
+             FROM tick_data WHERE symbol = $1 ORDER BY timestamp DESC LIMIT $2"
         )
+        .bind(symbol)
+        .bind(limit)
         .fetch_all(&self.pool)
         .await?;
 
@@ -1084,14 +1042,15 @@ impl TickDataRepository {
         let ticks: DataResult<Vec<TickData>> = rows
             .iter()
             .map(|row| {
+                let side_str: String = row.get("side");
                 Ok(TickData {
-                    timestamp: row.timestamp,
-                    symbol: row.symbol.clone(),
-                    price: row.price,
-                    quantity: row.quantity,
-                    side: self.parse_trade_side(&row.side)?,
-                    trade_id: row.trade_id.clone(),
-                    is_buyer_maker: row.is_buyer_maker,
+                    timestamp: row.get("timestamp"),
+                    symbol: row.get("symbol"),
+                    price: row.get("price"),
+                    quantity: row.get("quantity"),
+                    side: self.parse_trade_side(&side_str)?,
+                    trade_id: row.get("trade_id"),
+                    is_buyer_maker: row.get("is_buyer_maker"),
                 })
             })
             .collect();
@@ -1120,35 +1079,30 @@ impl TickDataRepository {
             .unwrap_or(MAX_QUERY_LIMIT as i64)
             .min(MAX_QUERY_LIMIT as i64);
 
-        let rows = sqlx::query!(
-            r#"
-            SELECT timestamp, symbol, price, quantity, side, trade_id, is_buyer_maker
-            FROM tick_data 
-            WHERE symbol = $1 
-            AND timestamp >= $2 
-            AND timestamp <= $3
-            ORDER BY timestamp ASC
-            LIMIT $4
-            "#,
-            symbol,
-            start_time,
-            end_time,
-            query_limit
+        let rows = sqlx::query(
+            "SELECT timestamp, symbol, price, quantity, side, trade_id, is_buyer_maker \
+             FROM tick_data WHERE symbol = $1 AND timestamp >= $2 AND timestamp <= $3 \
+             ORDER BY timestamp ASC LIMIT $4"
         )
+        .bind(symbol)
+        .bind(start_time)
+        .bind(end_time)
+        .bind(query_limit)
         .fetch_all(&self.pool)
         .await?;
 
         let ticks: DataResult<Vec<TickData>> = rows
             .iter()
             .map(|row| {
+                let side_str: String = row.get("side");
                 Ok(TickData {
-                    timestamp: row.timestamp,
-                    symbol: row.symbol.clone(),
-                    price: row.price,
-                    quantity: row.quantity,
-                    side: self.parse_trade_side(&row.side)?,
-                    trade_id: row.trade_id.clone(),
-                    is_buyer_maker: row.is_buyer_maker,
+                    timestamp: row.get("timestamp"),
+                    symbol: row.get("symbol"),
+                    price: row.get("price"),
+                    quantity: row.get("quantity"),
+                    side: self.parse_trade_side(&side_str)?,
+                    trade_id: row.get("trade_id"),
+                    is_buyer_maker: row.get("is_buyer_maker"),
                 })
             })
             .collect();
@@ -1216,22 +1170,15 @@ impl TickDataRepository {
     pub async fn cleanup_old_data(&self, days_to_keep: f64) -> DataResult<u64> {
         info!("Cleaning up tick data older than {} days", days_to_keep);
 
-        let result = sqlx::query!(
-            r#"
-            WITH deleted AS (
-                DELETE FROM tick_data
-                WHERE timestamp < NOW() - INTERVAL '1 day' * $1
-                RETURNING *
-            )
-            SELECT COUNT(*) as count
-            FROM deleted
-            "#,
-            days_to_keep
+        let result = sqlx::query(
+            "WITH deleted AS (DELETE FROM tick_data WHERE timestamp < NOW() - INTERVAL '1 day' * $1 RETURNING *) \
+             SELECT COUNT(*) as count FROM deleted"
         )
+        .bind(days_to_keep)
         .fetch_one(&self.pool)
         .await?;
 
-        let deleted_count = result.count.unwrap_or(0) as u64;
+        let deleted_count = result.get::<Option<i64>, _>("count").unwrap_or(0) as u64;
         info!("Cleaned up {} old tick data records", deleted_count);
         Ok(deleted_count)
     }
@@ -1239,42 +1186,31 @@ impl TickDataRepository {
     /// Get database statistics
     pub async fn get_db_stats(&self, symbol: Option<&str>) -> DataResult<DbStats> {
         let (total_records, earliest_timestamp, latest_timestamp) = if let Some(sym) = symbol {
-            let row = sqlx::query!(
-                r#"
-                SELECT 
-                    COUNT(*) as total_records,
-                    MIN(timestamp) as earliest_timestamp,
-                    MAX(timestamp) as latest_timestamp
-                FROM tick_data
-                WHERE symbol = $1
-                "#,
-                sym
+            let row = sqlx::query(
+                "SELECT COUNT(*) as total_records, MIN(timestamp) as earliest_timestamp, \
+                 MAX(timestamp) as latest_timestamp FROM tick_data WHERE symbol = $1"
             )
+            .bind(sym)
             .fetch_one(&self.pool)
             .await?;
 
             (
-                row.total_records,
-                row.earliest_timestamp,
-                row.latest_timestamp,
+                row.get::<Option<i64>, _>("total_records"),
+                row.get("earliest_timestamp"),
+                row.get("latest_timestamp"),
             )
         } else {
-            let row = sqlx::query!(
-                r#"
-                SELECT 
-                    COUNT(*) as total_records,
-                    MIN(timestamp) as earliest_timestamp,
-                    MAX(timestamp) as latest_timestamp
-                FROM tick_data
-                "#
+            let row = sqlx::query(
+                "SELECT COUNT(*) as total_records, MIN(timestamp) as earliest_timestamp, \
+                 MAX(timestamp) as latest_timestamp FROM tick_data"
             )
             .fetch_one(&self.pool)
             .await?;
 
             (
-                row.total_records,
-                row.earliest_timestamp,
-                row.latest_timestamp,
+                row.get::<Option<i64>, _>("total_records"),
+                row.get("earliest_timestamp"),
+                row.get("latest_timestamp"),
             )
         };
 
@@ -1337,23 +1273,21 @@ impl TickDataRepository {
     }
 
     pub async fn insert_live_strategy_log(&self, log: &LiveStrategyLog) -> DataResult<()> {
-        sqlx::query!(
-            r#"
-            INSERT INTO live_strategy_log
-            (timestamp, strategy_id, symbol, current_price, signal_type,
-             portfolio_value, total_pnl, cache_hit, processing_time_us)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-            "#,
-            log.timestamp,
-            log.strategy_id,
-            log.symbol,
-            log.current_price,
-            log.signal_type,
-            log.portfolio_value,
-            log.total_pnl,
-            log.cache_hit,
-            log.processing_time_us as i32
+        sqlx::query(
+            "INSERT INTO live_strategy_log \
+             (timestamp, strategy_id, symbol, current_price, signal_type, \
+              portfolio_value, total_pnl, cache_hit, processing_time_us) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
         )
+        .bind(log.timestamp)
+        .bind(&log.strategy_id)
+        .bind(&log.symbol)
+        .bind(log.current_price)
+        .bind(&log.signal_type)
+        .bind(log.portfolio_value)
+        .bind(log.total_pnl)
+        .bind(log.cache_hit)
+        .bind(log.processing_time_us as i32)
         .execute(&self.pool)
         .await?;
 
@@ -1477,13 +1411,11 @@ impl TickDataRepository {
 
     /// Get all available symbols from kline_1m table
     pub async fn get_available_symbols(&self) -> DataResult<Vec<String>> {
-        let rows = sqlx::query!(
-            "SELECT DISTINCT symbol FROM kline_1m ORDER BY symbol"
-        )
-        .fetch_all(&self.pool)
-        .await?;
+        let rows = sqlx::query("SELECT DISTINCT symbol FROM kline_1m ORDER BY symbol")
+            .fetch_all(&self.pool)
+            .await?;
 
-        Ok(rows.into_iter().map(|r| r.symbol).collect())
+        Ok(rows.into_iter().map(|r| r.get::<String, _>("symbol")).collect())
     }
 
     /// Get latest kline + 24h statistics for a symbol
@@ -1714,33 +1646,29 @@ impl TickDataRepository {
         let end_time = Utc::now();
         let start_time = end_time - Duration::hours(duration_hours);
 
-        let rows = sqlx::query!(
-            r#"
-        SELECT timestamp, symbol, price, quantity, side, trade_id, is_buyer_maker
-        FROM tick_data 
-        WHERE symbol = $1
-        AND timestamp >= $2 
-        AND timestamp <= $3
-        ORDER BY timestamp ASC
-        "#,
-            symbol,
-            start_time,
-            end_time
+        let rows = sqlx::query(
+            "SELECT timestamp, symbol, price, quantity, side, trade_id, is_buyer_maker \
+             FROM tick_data WHERE symbol = $1 AND timestamp >= $2 AND timestamp <= $3 \
+             ORDER BY timestamp ASC"
         )
+        .bind(symbol)
+        .bind(start_time)
+        .bind(end_time)
         .fetch_all(&self.pool)
         .await?;
 
         let ticks: DataResult<Vec<TickData>> = rows
             .iter()
             .map(|row| {
+                let side_str: String = row.get("side");
                 Ok(TickData {
-                    timestamp: row.timestamp,
-                    symbol: row.symbol.clone(),
-                    price: row.price,
-                    quantity: row.quantity,
-                    side: self.parse_trade_side(&row.side)?,
-                    trade_id: row.trade_id.clone(),
-                    is_buyer_maker: row.is_buyer_maker,
+                    timestamp: row.get("timestamp"),
+                    symbol: row.get("symbol"),
+                    price: row.get("price"),
+                    quantity: row.get("quantity"),
+                    side: self.parse_trade_side(&side_str)?,
+                    trade_id: row.get("trade_id"),
+                    is_buyer_maker: row.get("is_buyer_maker"),
                 })
             })
             .collect();
@@ -1759,35 +1687,30 @@ impl TickDataRepository {
         let start_time = end_time - Duration::hours(duration_hours);
         let limit = max_records.min(MAX_QUERY_LIMIT as i64);
 
-        let rows = sqlx::query!(
-            r#"
-        SELECT timestamp, symbol, price, quantity, side, trade_id, is_buyer_maker
-        FROM tick_data 
-        WHERE symbol = $1
-        AND timestamp >= $2 
-        AND timestamp <= $3
-        ORDER BY timestamp ASC
-        LIMIT $4
-        "#,
-            symbol,
-            start_time,
-            end_time,
-            limit
+        let rows = sqlx::query(
+            "SELECT timestamp, symbol, price, quantity, side, trade_id, is_buyer_maker \
+             FROM tick_data WHERE symbol = $1 AND timestamp >= $2 AND timestamp <= $3 \
+             ORDER BY timestamp ASC LIMIT $4"
         )
+        .bind(symbol)
+        .bind(start_time)
+        .bind(end_time)
+        .bind(limit)
         .fetch_all(&self.pool)
         .await?;
 
         let ticks: DataResult<Vec<TickData>> = rows
             .iter()
             .map(|row| {
+                let side_str: String = row.get("side");
                 Ok(TickData {
-                    timestamp: row.timestamp,
-                    symbol: row.symbol.clone(),
-                    price: row.price,
-                    quantity: row.quantity,
-                    side: self.parse_trade_side(&row.side)?,
-                    trade_id: row.trade_id.clone(),
-                    is_buyer_maker: row.is_buyer_maker,
+                    timestamp: row.get("timestamp"),
+                    symbol: row.get("symbol"),
+                    price: row.get("price"),
+                    quantity: row.get("quantity"),
+                    side: self.parse_trade_side(&side_str)?,
+                    trade_id: row.get("trade_id"),
+                    is_buyer_maker: row.get("is_buyer_maker"),
                 })
             })
             .collect();
@@ -2344,7 +2267,8 @@ mod tests {
     }
 
     async fn cleanup_database(pool: &PgPool, symbol: &str) {
-        sqlx::query!("DELETE FROM tick_data WHERE symbol = $1", symbol)
+        sqlx::query("DELETE FROM tick_data WHERE symbol = $1")
+            .bind(symbol)
             .execute(pool)
             .await
             .expect("Failed to clean up database");
