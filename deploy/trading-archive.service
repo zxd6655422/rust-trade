@@ -1,0 +1,11 @@
+[Unit]
+Description=Trading Data Archive Service
+After=network.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+ExecStart=/bin/bash /home/ubuntu/apps/trading-core/archive.sh --days 7
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=trading-archive

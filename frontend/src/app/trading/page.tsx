@@ -25,6 +25,7 @@ import PriceAlerts from '@/components/trading/PriceAlerts';
 import StrategyAnalysisPanel from '@/components/trading/StrategyAnalysisPanel';
 import SignalHistory from '@/components/trading/SignalHistory';
 import SymbolManager, { loadSymbols } from '@/components/trading/SymbolManager';
+import DataManager from '@/components/trading/DataManager';
 
 // 子页面内容 (内联导入)
 import BacktestContent from './BacktestContent';
@@ -34,18 +35,23 @@ import PaperTradingContent from './PaperTradingContent';
 type MarketType = 'spot' | 'futures';
 
 export default function TradingPage() {
-  const [symbols, setSymbols] = useState<string[]>(['BTCUSDT', 'ETHUSDT', 'SOLUSDT']);
+  const [symbols, setSymbols] = useState<string[]>([]);
   const [selectedSymbol, setSelectedSymbol] = useState('BTCUSDT');
   const [marketType, setMarketType] = useState<MarketType>('futures');
   const [showSymbolManager, setShowSymbolManager] = useState(false);
+  const [showDataManager, setShowDataManager] = useState(false);
   const { t } = useLanguage();
 
   // 加载交易对列表
   useEffect(() => {
     loadSymbols().then(s => {
       setSymbols(s);
+      // 选择第一个交易对（如果当前选中的不在列表中）
       if (s.length > 0 && !s.includes(selectedSymbol)) {
         setSelectedSymbol(s[0]);
+      } else if (s.length === 0) {
+        // 如果没有交易对，使用默认值
+        setSelectedSymbol('BTCUSDT');
       }
     });
   }, []);
@@ -120,7 +126,7 @@ export default function TradingPage() {
             </Badge>
           </div>
 
-          {/* Symbol Manager Toggle + Price Ticker */}
+          {/* Symbol Manager Toggle + Data Manager Toggle + Price Ticker */}
           <div className="flex items-center gap-2">
             <button
               onClick={() => setShowSymbolManager(!showSymbolManager)}
@@ -131,10 +137,28 @@ export default function TradingPage() {
               <Settings2 className="w-3.5 h-3.5" />
               管理交易对
             </button>
+            <button
+              onClick={() => setShowDataManager(!showDataManager)}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all border ${
+                showDataManager ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              <Database className="w-3.5 h-3.5" />
+              数据管理
+            </button>
           </div>
 
           {showSymbolManager && (
             <SymbolManager onSymbolsChange={(s) => {
+              setSymbols(s);
+              if (s.length > 0 && !s.includes(selectedSymbol)) {
+                setSelectedSymbol(s[0]);
+              }
+            }} />
+          )}
+
+          {showDataManager && (
+            <DataManager onSymbolsChange={(s) => {
               setSymbols(s);
               if (s.length > 0 && !s.includes(selectedSymbol)) {
                 setSelectedSymbol(s[0]);

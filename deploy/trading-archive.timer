@@ -1,0 +1,11 @@
+[Unit]
+Description=Trading Data Archive Timer
+Requires=trading-archive.service
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=3600
+
+[Install]
+WantedBy=timers.target

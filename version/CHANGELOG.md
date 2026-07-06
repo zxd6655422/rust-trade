@@ -1,5 +1,171 @@
 # Changelog
 
+## [2026-07-06] 部署流程优化（代码目录保持干净）
+
+### 部署目录分离
+
+| 模块 | 状态 | 说明 |
+|------|------|------|
+| 脚本分离 | ✅ | 执行脚本在 `~/apps/deploy/`，源代码在 `~/rust-trade/deploy/` |
+| 自动同步 | ✅ | `publish.sh` 会自动同步更新 `~/apps/deploy/` 中的脚本 |
+| 定时归档 | ✅ | systemd timer 每天自动执行归档 |
+| 文档更新 | ✅ | README.md、DEPLOY.md 已更新 |
+
+### 新的部署流程
+
+**首次部署：**
+```bash
+bash ~/rust-trade/deploy/first-time-setup.sh
+```
+
+**日常更新：**
+```bash
+bash ~/apps/deploy/publish.sh  # 从 apps 目录执行
+```
+
+### 文件改动
+
+| 文件 | 改动 |
+|------|------|
+| `deploy/first-time-setup.sh` | 添加脚本复制到 ~/apps/deploy/ |
+| `deploy/publish.sh` | 添加脚本同步到 ~/apps/deploy/ |
+| `deploy/trading-archive.service` | 新建 systemd 服务配置 |
+| `deploy/trading-archive.timer` | 新建定时任务配置（每天执行） |
+| `deploy/README.md` | 更新部署说明 |
+| `deploy/DEPLOY.md` | 更新部署指南 |
+
+---
+
+## [2026-07-06] 部署流程优化
+
+### 部署脚本优化
+
+| 模块 | 状态 | 说明 |
+|------|------|------|
+| publish.sh 优化 | ✅ | 支持 `--skip-build` / `--no-restart` 参数 |
+| DEPLOY.md | ✅ | 新建部署指南文档 |
+| README.md 更新 | ✅ | 优化部署说明 |
+
+### 部署流程
+
+**首次部署：**
+```bash
+bash ~/rust-trade/deploy/first-time-setup.sh
+```
+
+**日常更新：**
+```bash
+bash ~/rust-trade/deploy/publish.sh
+```
+
+### 文件改动
+
+| 文件 | 改动 |
+|------|------|
+| `deploy/publish.sh` | 优化脚本，支持参数选项 |
+| `deploy/DEPLOY.md` | 新建部署指南 |
+| `deploy/README.md` | 更新部署说明 |
+
+---
+
+## [2026-07-06] 数据管理功能优化
+
+### 新增数据管理功能
+
+| 模块 | 状态 | 说明 |
+|------|------|------|
+| DataManager 组件 | ✅ | 前端数据管理面板，支持添加/归档/删除 |
+| 数据采集状态 API | ✅ | `get_collection_status` / `get_all_collection_status` |
+| 一键添加采集 | ✅ | `add_symbol_with_collection`，添加并开始采集 |
+| 数据归档 API | ✅ | `archive_symbol_data` / `archive_all_symbols` |
+| Parquet 导出 | ✅ | 集成 PolarsRepository 导出到 Parquet |
+
+### 简化后的流程
+
+**之前（繁琐）：**
+1. 手动修改 `development.toml` 配置文件
+2. 重启 trading-core 服务
+3. 执行 `archive_klines` 命令行工具
+
+**现在（简单）：**
+1. 前端输入交易对 → 点击"添加"
+2. 自动开始数据采集
+3. 点击"归档"按钮 → 一键导出到 Parquet
+
+### 文件改动
+
+| 文件 | 改动 |
+|------|------|
+| `src-tauri/src/commands.rs` | 新增数据管理命令 |
+| `src-tauri/src/main.rs` | 注册新命令 |
+| `frontend/src/components/trading/DataManager.tsx` | 新建数据管理组件 |
+| `frontend/src/app/trading/page.tsx` | 集成 DataManager |
+
+---
+
+## [2026-07-06] 前端交易对动态加载优化
+
+### 交易对选择优化
+
+| 模块 | 状态 | 说明 |
+|------|------|------|
+| SymbolSelect 组件 | ✅ | 新建通用交易对下拉选择组件 |
+| PriceTicker 优化 | ✅ | 从数据库动态加载交易对，移除硬编码 |
+| SymbolManager 增强 | ✅ | 新增 loadAllSymbols 方法 |
+| PaperTrading 修复 | ✅ | 从数据库加载交易对列表 |
+
+### 设计原则
+
+- 交易对列表统一从数据库 `symbol_config` 表读取
+- 下拉选择器自动过滤已启用的交易对
+- 保持降级机制：数据库不可用时使用默认列表
+
+### 文件改动
+
+| 文件 | 改动 |
+|------|------|
+| `frontend/src/components/trading/SymbolSelect.tsx` | 新建通用交易对下拉选择组件 |
+| `frontend/src/components/trading/PriceTicker.tsx` | 集成 SymbolSelect，动态加载交易对 |
+| `frontend/src/components/trading/SymbolManager.tsx` | 新增 loadAllSymbols 方法 |
+| `frontend/src/app/trading/page.tsx` | 移除硬编码默认值 |
+| `frontend/src/app/trading/PaperTradingContent.tsx` | 从数据库加载交易对 |
+
+---
+
+## [2026-07-05] 策略信号闭环优化
+
+### 策略信号生命周期管理
+
+| 模块 | 状态 | 说明 |
+|------|------|------|
+| 信号表分离 | ✅ | `strategy_signals`（引擎专属）+ `strategy_analysis_log`（前端专属） |
+| 生命周期闭环 | ✅ | pending → confirmed/invalidated/expired/superseded |
+| 定时任务调度 | ✅ | `StrategyAnalysisScheduler`，每 5 分钟自动分析 |
+| 信号验证追踪 | ✅ | best_price/worst_price/eval_count 追踪价格变化 |
+| 过期清理机制 | ✅ | 24 小时自动过期，可配置 |
+
+### 信号闭环流程
+
+```
+策略分析 → 生成信号 → 保存 pending
+      ↓
+定时任务验证:
+  - 同方向+未过期 → 更新验证
+  - 达到确认阈值 → confirmed
+  - 方向反转 → superseded
+  - 超时 → expired
+```
+
+### 文件改动
+
+| 文件 | 改动 |
+|------|------|
+| `trading-core/src/service/strategy_scheduler.rs` | 新建策略分析调度器 |
+| `trading-common/src/data/repository.rs` | 新增信号生命周期管理方法 |
+| `config/schema_v3.sql` | 新建两张信号表（完全分离） |
+
+---
+
 ## [2026-07-04] Polars 集成
 
 ### Polars 集成 (性能提升 10-50 倍)

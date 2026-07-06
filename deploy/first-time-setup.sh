@@ -16,6 +16,7 @@ NC='\033[0m'
 # 目录配置
 REPO_DIR="$HOME/rust-trade"
 APPS_DIR="$HOME/apps"
+DEPLOY_DIR="$APPS_DIR/deploy"
 COLLECTOR_DIR="$APPS_DIR/trading-core"
 ENGINE_DIR="$APPS_DIR/trading-engine"
 CURRENT_USER=$(whoami)
@@ -49,14 +50,15 @@ echo -e "${GREEN}  编译完成 ✓${NC}"
 # ============================================================
 echo -e "\n${YELLOW}[3/7] 创建目录结构...${NC}"
 DATA_DIR="$APPS_DIR/trading-data"
-for dir in "$COLLECTOR_DIR" "$COLLECTOR_DIR/config" "$COLLECTOR_DIR/logs" \
+for dir in "$DEPLOY_DIR" "$COLLECTOR_DIR" "$COLLECTOR_DIR/config" "$COLLECTOR_DIR/logs" \
            "$ENGINE_DIR" "$ENGINE_DIR/config" "$ENGINE_DIR/logs" \
            "$DATA_DIR/parquet" "$DATA_DIR/logs"; do
     mkdir -p "$dir"
 done
-echo -e "${GREEN}  $COLLECTOR_DIR/${NC}"
-echo -e "${GREEN}  $ENGINE_DIR/${NC}"
-echo -e "${GREEN}  $DATA_DIR/    ✓${NC}"
+echo -e "${GREEN}  $DEPLOY_DIR/      ✓${NC}"
+echo -e "${GREEN}  $COLLECTOR_DIR/  ✓${NC}"
+echo -e "${GREEN}  $ENGINE_DIR/     ✓${NC}"
+echo -e "${GREEN}  $DATA_DIR/       ✓${NC}"
 
 # ============================================================
 # 4. 复制二进制文件
@@ -78,6 +80,14 @@ echo -e "  ${GREEN}archive_klines ✓${NC}"
 cp "$REPO_DIR/deploy/archive.sh" "$COLLECTOR_DIR/archive.sh"
 chmod +x "$COLLECTOR_DIR/archive.sh"
 echo -e "  ${GREEN}archive.sh ✓${NC}"
+
+# 复制部署脚本到 ~/apps/deploy/
+cp "$REPO_DIR/deploy/publish.sh" "$DEPLOY_DIR/publish.sh"
+cp "$REPO_DIR/deploy/monitor.sh" "$DEPLOY_DIR/monitor.sh"
+cp "$REPO_DIR/deploy/backup.sh" "$DEPLOY_DIR/backup.sh"
+cp "$REPO_DIR/deploy/archive.sh" "$DEPLOY_DIR/archive.sh"
+chmod +x "$DEPLOY_DIR"/*.sh
+echo -e "  ${GREEN}部署脚本 → $DEPLOY_DIR/ ✓${NC}"
 
 # ============================================================
 # 5. 复制配置和启动脚本（不覆盖已有配置）
@@ -169,6 +179,23 @@ echo -e "  ${GREEN}trading-engine.service ✓${NC}"
 sudo systemctl daemon-reload
 sudo systemctl enable trading-collector trading-engine 2>/dev/null || true
 echo -e "  ${GREEN}systemd 已重载并设置开机自启 ✓${NC}"
+
+# ============================================================
+# 6.5 安装归档定时任务
+# ============================================================
+echo -e "\n${YELLOW}[6.5/7] 安装归档定时任务...${NC}"
+
+# 复制 systemd 文件
+sudo cp "$REPO_DIR/deploy/trading-archive.service" /etc/systemd/system/
+sudo cp "$REPO_DIR/deploy/trading-archive.timer" /etc/systemd/system/
+sudo chmod 644 /etc/systemd/system/trading-archive.service /etc/systemd/system/trading-archive.timer
+
+# 启用定时任务
+sudo systemctl daemon-reload
+sudo systemctl enable trading-archive.timer 2>/dev/null || true
+sudo systemctl start trading-archive.timer 2>/dev/null || true
+echo -e "  ${GREEN}trading-archive.timer ✓${NC}"
+echo -e "  ${GREEN}每天自动执行归档（保留 7 天数据）✓${NC}"
 
 # ============================================================
 # 7. 完成

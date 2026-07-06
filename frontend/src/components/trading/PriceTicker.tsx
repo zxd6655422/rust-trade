@@ -9,11 +9,14 @@ import { RealtimePrice } from '@/types/trading';
 import { Button } from '@/components/ui/button';
 import { useLanguage } from '@/lib/i18n/context';
 import { useRealtimeData, DataSource } from '@/lib/useRealtimeData';
+import SymbolSelect from './SymbolSelect';
 
 interface PriceTickerProps {
   symbols?: string[];
   onSymbolSelect?: (symbol: string) => void;
   selectedSymbol?: string;
+  /** 显示交易对选择器，默认 true */
+  showSymbolSelect?: boolean;
 }
 
 /** 数据源状态指示器 */
@@ -43,9 +46,24 @@ function DataSourceIndicator({ source }: { source: DataSource }) {
   );
 }
 
-export default function PriceTicker({ symbols, onSymbolSelect, selectedSymbol }: PriceTickerProps) {
+export default function PriceTicker({ symbols, onSymbolSelect, selectedSymbol, showSymbolSelect = true }: PriceTickerProps) {
   const { t } = useLanguage();
-  const defaultSymbols = symbols || ['BTCUSDT', 'ETHUSDT', 'SOLUSDT'];
+  // 如果未指定 symbols，从数据库加载
+  const [defaultSymbols, setDefaultSymbols] = useState<string[]>(symbols || []);
+
+  useEffect(() => {
+    if (!symbols) {
+      // 从数据库加载交易对列表
+      invoke<{ symbol: string; enabled: boolean }[]>('get_symbols')
+        .then(result => {
+          const enabled = result.filter(s => s.enabled).map(s => s.symbol);
+          setDefaultSymbols(enabled.length > 0 ? enabled : ['BTCUSDT', 'ETHUSDT', 'SOLUSDT']);
+        })
+        .catch(() => {
+          setDefaultSymbols(['BTCUSDT', 'ETHUSDT', 'SOLUSDT']);
+        });
+    }
+  }, [symbols]);
 
   // 使用实时数据 hook（自动选择 WebSocket 或轮询）
   const { prices: realtimePrices, dataSource, isConnected, reconnect } = useRealtimeData({
@@ -112,6 +130,15 @@ export default function PriceTicker({ symbols, onSymbolSelect, selectedSymbol }:
         <div className="flex items-center gap-2">
           <h3 className="text-sm font-medium text-muted-foreground">{t.priceTicker.marketPrices}</h3>
           <DataSourceIndicator source={dataSource} />
+          {/* 交易对选择器 */}
+          {showSymbolSelect && selectedSymbol && onSymbolSelect && (
+            <SymbolSelect
+              value={selectedSymbol}
+              onChange={onSymbolSelect}
+              enabledOnly={true}
+              className="ml-2"
+            />
+          )}
         </div>
         <div className="flex items-center gap-1">
           {!isConnected && dataSource !== 'polling' && (

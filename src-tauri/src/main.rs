@@ -104,6 +104,12 @@ fn main() {
             add_symbol,
             remove_symbol,
             toggle_symbol,
+            // 数据管理
+            get_collection_status,
+            get_all_collection_status,
+            add_symbol_with_collection,
+            archive_symbol_data,
+            archive_all_symbols,
             // 系统状态
             check_trading_core_status
         ])

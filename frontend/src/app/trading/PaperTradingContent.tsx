@@ -75,7 +75,19 @@ export default function PaperTradingContent() {
 
   // 配置
   const [initialCapital, setInitialCapital] = useState('10000');
-  const [symbols, setSymbols] = useState(['BTCUSDT', 'ETHUSDT']);
+  const [symbols, setSymbols] = useState<string[]>([]);
+
+  // 加载交易对列表
+  useEffect(() => {
+    invoke<{ symbol: string; enabled: boolean }[]>('get_symbols')
+      .then(result => {
+        const enabled = result.filter(s => s.enabled).map(s => s.symbol);
+        setSymbols(enabled.length > 0 ? enabled : ['BTCUSDT', 'ETHUSDT', 'SOLUSDT']);
+      })
+      .catch(() => {
+        setSymbols(['BTCUSDT', 'ETHUSDT', 'SOLUSDT']);
+      });
+  }, []);
 
   // 下单表单
   const [orderSymbol, setOrderSymbol] = useState('BTCUSDT');
@@ -260,7 +272,7 @@ export default function PaperTradingContent() {
             <div>
               <label className="text-sm font-medium">{t.paperTrading?.symbols || 'Symbols'}</label>
               <div className="flex flex-wrap gap-2 mt-1">
-                {['BTCUSDT', 'ETHUSDT', 'SOLUSDT'].map(s => (
+                {symbols.map(s => (
                   <button
                     key={s}
                     onClick={() => {

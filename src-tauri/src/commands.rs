@@ -1661,3 +1661,239 @@ pub async fn remove_symbol(state: State<'_, AppState>, symbol: String) -> Result
 pub async fn toggle_symbol(state: State<'_, AppState>, symbol: String, enabled: bool) -> Result<(), String> {
     state.repository.set_symbol_enabled(&symbol, enabled).await.map_err(|e| e.to_string())
 }
+
+// ============ 数据管理 Commands ============
+
+/// 数据采集状态
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CollectionStatus {
+    /// 交易对
+    pub symbol: String,
+    /// 是否正在采集
+    pub collecting: bool,
+    /// 数据库中已有的记录数
+    pub record_count: i64,
+    /// 最早数据时间
+    pub earliest_time: Option<String>,
+    /// 最新数据时间
+    pub latest_time: Option<String>,
+}
+
+/// 归档结果
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ArchiveResult {
+    /// 交易对
+    pub symbol: String,
+    /// 归档的记录数
+    pub archived_count: u64,
+    /// Parquet 文件大小 (MB)
+    pub file_size_mb: f64,
+    /// 是否成功
+    pub success: bool,
+    /// 错误信息
+    pub error: Option<String>,
+}
+
+/// 获取数据采集状态
+#[tauri::command]
+pub async fn get_collection_status(
+    state: State<'_, AppState>,
+    symbol: String,
+) -> Result<CollectionStatus, String> {
+    let pool = state.repository.get_pool();
+
+    // 获取记录数
+    let count: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM kline_1m WHERE symbol = $1"
+    )
+    .bind(&symbol)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    // 获取最早和最新时间
+    let time_range: (Option<chrono::NaiveDateTime>, Option<chrono::NaiveDateTime>) = sqlx::query_as(
+        "SELECT MIN(timestamp), MAX(timestamp) FROM kline_1m WHERE symbol = $1"
+    )
+    .bind(&symbol)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    // 检查是否在 symbol_config 中启用
+    let enabled: bool = sqlx::query_scalar(
+        "SELECT enabled FROM symbol_config WHERE symbol = $1"
+    )
+    .bind(&symbol)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())?
+    .unwrap_or(false);
+
+    Ok(CollectionStatus {
+        symbol,
+        collecting: enabled,
+        record_count: count.0,
+        earliest_time: time_range.0.map(|t| t.format("%Y-%m-%d %H:%M:%S").to_string()),
+        latest_time: time_range.1.map(|t| t.format("%Y-%m-%d %H:%M:%S").to_string()),
+    })
+}
+
+/// 获取所有交易对的采集状态
+#[tauri::command]
+pub async fn get_all_collection_status(
+    state: State<'_, AppState>,
+) -> Result<Vec<CollectionStatus>, String> {
+    let pool = state.repository.get_pool();
+
+    // 获取所有交易对
+    let symbols: Vec<String> = sqlx::query_scalar(
+        "SELECT symbol FROM symbol_config ORDER BY symbol"
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let mut statuses = Vec::new();
+    for symbol in symbols {
+        let status = get_collection_status(state.clone(), symbol).await?;
+        statuses.push(status);
+    }
+
+    Ok(statuses)
+}
+
+/// 添加交易对并开始采集
+#[tauri::command]
+pub async fn add_symbol_with_collection(
+    state: State<'_, AppState>,
+    symbol: String,
+    backfill_days: Option<i64>,
+) -> Result<CollectionStatus, String> {
+    let symbol = symbol.to_uppercase();
+
+    // 1. 添加到 symbol_config 并启用
+    state.repository.add_symbol(&symbol).await.map_err(|e| e.to_string())?;
+
+    info!("Added symbol {} to collection", symbol);
+
+    // 2. 如果指定了回填天数，记录日志（实际回填需要重启服务）
+    if let Some(days) = backfill_days {
+        if days > 0 {
+            info!("Backfill requested for {} ({} days). Will take effect on next service restart.", symbol, days);
+        }
+    }
+
+    // 3. 返回状态
+    get_collection_status(state, symbol).await
+}
+
+/// 执行数据归档（导出到 Parquet）
+#[tauri::command]
+pub async fn archive_symbol_data(
+    state: State<'_, AppState>,
+    symbol: String,
+    days_to_keep: i64,
+) -> Result<ArchiveResult, String> {
+    let pool = state.repository.get_pool();
+
+    info!("Archiving data for {} (keeping {} days)", symbol, days_to_keep);
+
+    // 1. 查询要归档的数据数量
+    let cutoff = chrono::Utc::now() - chrono::Duration::days(days_to_keep);
+
+    let count: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM kline_1m WHERE symbol = $1 AND timestamp < $2"
+    )
+    .bind(&symbol)
+    .bind(cutoff)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    if count.0 == 0 {
+        info!("No data to archive for {}", symbol);
+        return Ok(ArchiveResult {
+            symbol,
+            archived_count: 0,
+            file_size_mb: 0.0,
+            success: true,
+            error: None,
+        });
+    }
+
+    // 2. 获取要归档的数据
+    let klines = state.repository.get_klines_before(&symbol, cutoff, count.0).await
+        .map_err(|e| e.to_string())?;
+
+    // 3. 导出到 Parquet
+    let output_dir = std::path::PathBuf::from("data/parquet");
+    std::fs::create_dir_all(&output_dir).map_err(|e| e.to_string())?;
+
+    // 使用 Polars 导出
+    let config = trading_common::data::polars_repository::PolarsRepositoryConfig {
+        parquet_path: output_dir.clone(),
+        hot_data_days: days_to_keep,
+    };
+    let polars_repo = trading_common::data::polars_repository::PolarsRepository::new(config);
+
+    match polars_repo.export_klines(&symbol, &klines) {
+        Ok(exported) => {
+            info!("Exported {} klines to Parquet for {}", exported, symbol);
+
+            // 获取文件大小
+            let stats = polars_repo.get_stats(&symbol).unwrap_or_default();
+            let file_size_mb = stats.total_size_bytes as f64 / 1024.0 / 1024.0;
+
+            // 4. 删除已归档的数据（可选，这里先保留）
+            // let deleted = sqlx::query("DELETE FROM kline_1m WHERE symbol = $1 AND timestamp < $2")
+            //     .bind(&symbol)
+            //     .bind(cutoff)
+            //     .execute(pool)
+            //     .await?;
+
+            Ok(ArchiveResult {
+                symbol,
+                archived_count: exported as u64,
+                file_size_mb,
+                success: true,
+                error: None,
+            })
+        }
+        Err(e) => {
+            error!("Failed to archive {}: {}", symbol, e);
+            Ok(ArchiveResult {
+                symbol,
+                archived_count: 0,
+                file_size_mb: 0.0,
+                success: false,
+                error: Some(e.to_string()),
+            })
+        }
+    }
+}
+
+/// 批量归档所有交易对
+#[tauri::command]
+pub async fn archive_all_symbols(
+    state: State<'_, AppState>,
+    days_to_keep: i64,
+) -> Result<Vec<ArchiveResult>, String> {
+    let pool = state.repository.get_pool();
+
+    // 获取所有交易对
+    let symbols: Vec<String> = sqlx::query_scalar(
+        "SELECT symbol FROM symbol_config ORDER BY symbol"
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let mut results = Vec::new();
+    for symbol in symbols {
+        let result = archive_symbol_data(state.clone(), symbol, days_to_keep).await?;
+        results.push(result);
+    }
+
+    Ok(results)
+}

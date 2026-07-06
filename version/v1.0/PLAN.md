@@ -1,6 +1,41 @@
 # rust-trade v1.0 开发计划
 
-## 当前进度 (2026-07-04 更新)
+## 当前进度 (2026-07-06 更新)
+
+### ✅ 数据管理功能
+
+| 模块 | 状态 | 说明 |
+|------|------|------|
+| DataManager 组件 | ✅ 已完成 | 前端数据管理面板 |
+| 数据采集状态 API | ✅ 已完成 | 查询交易对采集状态 |
+| 一键添加采集 | ✅ 已完成 | 添加交易对并开始采集 |
+| 数据归档 API | ✅ 已完成 | 导出到 Parquet |
+| Parquet 导出 | ✅ 已完成 | 集成 PolarsRepository |
+
+---
+
+### ✅ 前端交易对动态加载
+
+| 模块 | 状态 | 说明 |
+|------|------|------|
+| SymbolSelect 组件 | ✅ 已完成 | 通用交易对下拉选择组件 |
+| PriceTicker 优化 | ✅ 已完成 | 从数据库动态加载交易对 |
+| SymbolManager 增强 | ✅ 已完成 | 新增 loadAllSymbols 方法 |
+| PaperTrading 修复 | ✅ 已完成 | 移除硬编码，动态加载 |
+
+---
+
+### ✅ 策略信号闭环
+
+| 模块 | 状态 | 说明 |
+|------|------|------|
+| 信号表分离 | ✅ 已完成 | `strategy_signals`（引擎）+ `strategy_analysis_log`（前端） |
+| 生命周期闭环 | ✅ 已完成 | pending → confirmed/invalidated/expired/superseded |
+| 定时任务调度 | ✅ 已完成 | `StrategyAnalysisScheduler`，每 5 分钟自动分析 |
+| 信号验证追踪 | ✅ 已完成 | best_price/worst_price/eval_count 追踪价格变化 |
+| 过期清理机制 | ✅ 已完成 | 24 小时自动过期，可配置 |
+
+---
 
 ### ✅ 核心模块
 
@@ -13,7 +48,7 @@
 | 数据采集 (candle1m) | ✅ 完成 | REST 轮询拉取 + kline_1m 写入 + 历史数据回填 + 缺失补齐 |
 | K线聚合器 | ✅ 完成 | 1m → 5m/15m/30m/1h/4h/1d |
 | 多时间框架策略框架 | ✅ 完成 | MultiTimeframeStrategy trait + TrendStrategy |
-| 数据库 Schema V2 | ✅ 完成 | kline_1m, backtest_results, strategy_signals 等表 |
+| 数据库 Schema V2/V3 | ✅ 完成 | kline_1m, backtest_results, strategy_signals(引擎)/strategy_analysis_log(前端) |
 | trading-core 服务化 | ✅ 完成 | HTTP API + WebSocket + 数据采集 |
 
 ### ✅ 回测引擎
@@ -623,12 +658,13 @@ candle1m 数据源:
 | P5 | 多时间框架回测支持 | ✅ 已完成 | MultiTimeframeBacktestEngine + 做空支持 |
 | P6 | 回测增强 - 样本外测试 + 滚动前进测试 | ✅ 已完成 | WalkForwardEngine + 过拟合检测 |
 | P7 | 回测增强 - 多交易对 + 市场状态分析 | ✅ 已完成 | MultiSymbolBacktestEngine + MarketStateAnalyzer |
+| P12 | 策略信号闭环优化 | ✅ 已完成 | StrategyAnalysisScheduler + 信号生命周期管理 |
 | P8 | 监控桌面应用 - 实时行情图表 | ✅ 已完成 | get_realtime_prices, get_kline_history, get_24h_stats |
 | P9 | 监控桌面应用 - 持仓/交易记录 | ✅ 已完成 | get_positions, get_trade_history, get_pnl_summary |
 | P10 | 监控桌面应用 - 统计分析 | ✅ 已完成 | get_equity_curve, get_performance_metrics, get_commission_stats |
 | P11 | Exchange trait 分层重构 | ✅ 已完成 | MarketDataProvider / TradingOperations 分离 |
 
-**完成进度：P0-P11 ✅ (12/12)**
+**完成进度：P0-P12 ✅ (13/13)**
 
 ---
 

@@ -185,3 +185,16 @@ export async function loadSymbols(): Promise<string[]> {
     return ['BTCUSDT', 'ETHUSDT', 'SOLUSDT'];
   }
 }
+
+/// 从数据库加载所有交易对（含启用状态）
+export async function loadAllSymbols(): Promise<SymbolConfig[]> {
+  try {
+    return await invoke<SymbolConfig[]>('get_symbols');
+  } catch {
+    return [
+      { symbol: 'BTCUSDT', enabled: true },
+      { symbol: 'ETHUSDT', enabled: true },
+      { symbol: 'SOLUSDT', enabled: true },
+    ];
+  }
+}
