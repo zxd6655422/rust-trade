@@ -51,12 +51,8 @@ cd rust-trade
 # 2. 执行首次部署（会自动复制脚本到 ~/apps/deploy/）
 bash deploy/first-time-setup.sh
 
-# 3. 编辑配置文件
-vim ~/apps/trading-core/config/production.toml
-vim ~/apps/trading-engine/config/engine-production.toml
-
-# 4. 启动服务
-sudo systemctl start trading-collector trading-engine
+# 3. 后续操作都可以从 ~/apps/deploy/ 执行
+bash ~/apps/deploy/first-time-setup.sh  # 也可以这样执行
 ```
 
 ### 日常更新（一键部署）
@@ -70,11 +66,13 @@ bash ~/apps/deploy/publish.sh
 
 | 脚本 | 用途 | 执行位置 |
 |------|------|----------|
-| `first-time-setup.sh` | 首次部署 | `bash ~/rust-trade/deploy/first-time-setup.sh` |
+| `first-time-setup.sh` | 首次部署 | `bash ~/apps/deploy/first-time-setup.sh` |
 | `publish.sh` | 日常更新 | `bash ~/apps/deploy/publish.sh` |
 | `archive.sh` | 数据归档 | `bash ~/apps/deploy/archive.sh` |
 | `monitor.sh` | 服务监控 | `bash ~/apps/deploy/monitor.sh` |
 | `backup.sh` | 数据备份 | `bash ~/apps/deploy/backup.sh` |
+
+> 💡 首次部署从 `~/rust-trade/deploy/first-time-setup.sh` 执行，后续所有操作都在 `~/apps/deploy/` 中执行
 
 ## ⚠️ 重要说明
 
