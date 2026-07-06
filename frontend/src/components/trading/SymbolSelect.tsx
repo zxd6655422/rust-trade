@@ -9,9 +9,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Loader2, Coins, Database, Search } from 'lucide-react';
+import { Loader2, Coins, Database, Eye } from 'lucide-react';
 
-interface SymbolConfig {
+interface TradingPair {
+  symbol: string;
+  market_type: string;
+  status: string;
+}
+
+interface MonitorConfig {
   symbol: string;
   enabled: boolean;
 }
@@ -19,8 +25,6 @@ interface SymbolConfig {
 interface SymbolSelectProps {
   value: string;
   onChange: (symbol: string) => void;
-  /** 是否只显示启用的交易对，默认 true */
-  enabledOnly?: boolean;
   /** 占位符文本 */
   placeholder?: string;
   /** 禁用状态 */
@@ -31,44 +35,54 @@ interface SymbolSelectProps {
 
 /**
  * 通用交易对下拉选择组件
- * 分两部分：
- * 1. 数据库已有的交易对（来自 kline_1m 表）
- * 2. 新增交易对（手动输入）
+ * 显示所有交易对（来自 trading_pairs 表）
+ * 监控中的交易对会标记绿点
  */
 export default function SymbolSelect({
   value,
   onChange,
-  enabledOnly = true,
   placeholder = '选择交易对',
   disabled = false,
   className,
 }: SymbolSelectProps) {
-  const [symbols, setSymbols] = useState<SymbolConfig[]>([]);
+  const [pairs, setPairs] = useState<TradingPair[]>([]);
+  const [monitorList, setMonitorList] = useState<MonitorConfig[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const loadSymbols = async () => {
+    const loadData = async () => {
       try {
-        const result = await invoke<SymbolConfig[]>('get_symbols');
-        setSymbols(result);
+        const [pairsResult, monitors] = await Promise.all([
+          invoke<TradingPair[]>('get_trading_pairs'),
+          invoke<MonitorConfig[]>('get_symbols'),
+        ]);
+        setPairs(pairsResult);
+        setMonitorList(monitors);
       } catch (e) {
         console.error('Failed to load symbols:', e);
         // 降级：使用默认列表
-        setSymbols([
-          { symbol: 'BTCUSDT', enabled: true },
-          { symbol: 'ETHUSDT', enabled: true },
-          { symbol: 'SOLUSDT', enabled: true },
+        setPairs([
+          { symbol: 'BTCUSDT', market_type: 'spot', status: 'active' },
+          { symbol: 'ETHUSDT', market_type: 'spot', status: 'active' },
+          { symbol: 'SOLUSDT', market_type: 'spot', status: 'active' },
         ]);
       } finally {
         setLoading(false);
       }
     };
-    loadSymbols();
+    loadData();
   }, []);
 
-  const displaySymbols = enabledOnly
-    ? symbols.filter(s => s.enabled)
-    : symbols;
+  const isMonitoring = (symbol: string) => {
+    return monitorList.some(m => m.symbol === symbol && m.enabled);
+  };
+
+  // 按监控状态排序：监控中的在前
+  const sortedPairs = [...pairs].sort((a, b) => {
+    const aMon = isMonitoring(a.symbol) ? 0 : 1;
+    const bMon = isMonitoring(b.symbol) ? 0 : 1;
+    return aMon - bMon;
+  });
 
   if (loading) {
     return (
@@ -88,16 +102,40 @@ export default function SymbolSelect({
         </div>
       </SelectTrigger>
       <SelectContent>
-        {/* 已有交易对 */}
-        {displaySymbols.length > 0 && (
+        {/* 监控中的交易对 */}
+        {sortedPairs.some(p => isMonitoring(p.symbol)) && (
+          <>
+            <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+              <Eye className="w-3 h-3" />
+              监控中
+            </div>
+            {sortedPairs.filter(p => isMonitoring(p.symbol)).map((p) => (
+              <SelectItem key={p.symbol} value={p.symbol}>
+                <div className="flex items-center gap-2">
+                  <span>{p.symbol}</span>
+                  <span className="text-[10px] text-muted-foreground">
+                    {p.market_type === 'futures' ? '合约' : '现货'}
+                  </span>
+                </div>
+              </SelectItem>
+            ))}
+          </>
+        )}
+        {/* 其他交易对 */}
+        {sortedPairs.some(p => !isMonitoring(p.symbol)) && (
           <>
             <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground flex items-center gap-1.5">
               <Database className="w-3 h-3" />
-              数据库已有
+              全部交易对
             </div>
-            {displaySymbols.map((s) => (
-              <SelectItem key={s.symbol} value={s.symbol}>
-                {s.symbol}
+            {sortedPairs.filter(p => !isMonitoring(p.symbol)).map((p) => (
+              <SelectItem key={p.symbol} value={p.symbol}>
+                <div className="flex items-center gap-2">
+                  <span>{p.symbol}</span>
+                  <span className="text-[10px] text-muted-foreground">
+                    {p.market_type === 'futures' ? '合约' : '现货'}
+                  </span>
+                </div>
               </SelectItem>
             ))}
           </>
@@ -112,7 +150,7 @@ export default function SymbolSelect({
  */
 export async function fetchEnabledSymbols(): Promise<string[]> {
   try {
-    const result = await invoke<SymbolConfig[]>('get_symbols');
+    const result = await invoke<MonitorConfig[]>('get_symbols');
     return result.filter(s => s.enabled).map(s => s.symbol);
   } catch {
     return ['BTCUSDT', 'ETHUSDT', 'SOLUSDT'];
@@ -120,15 +158,12 @@ export async function fetchEnabledSymbols(): Promise<string[]> {
 }
 
 /**
- * 获取数据库中已有的交易对列表
+ * 获取所有交易对列表
  */
-export async function fetchExistingSymbols(): Promise<string[]> {
+export async function fetchAllSymbols(): Promise<string[]> {
   try {
-    // 从 kline_1m 表获取所有有数据的交易对
-    const result = await invoke<{ symbol: string; records_count: number }[]>('get_data_info');
-    return result
-      .sort((a, b) => b.records_count - a.records_count)
-      .map(s => s.symbol);
+    const result = await invoke<TradingPair[]>('get_trading_pairs');
+    return result.map(s => s.symbol);
   } catch {
     return ['BTCUSDT', 'ETHUSDT', 'SOLUSDT'];
   }

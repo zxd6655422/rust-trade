@@ -1,23 +1,23 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import {
   Activity, LineChart, FlaskConical, Zap,
-  CircleDot, Layers, TrendingUp, Settings2, Database
+  CircleDot, Layers, TrendingUp, Settings2, Database,
+  Wrench
 } from 'lucide-react';
 import { useLanguage } from '@/lib/i18n/context';
 
 // 子组件
 import PriceTicker from '@/components/trading/PriceTicker';
 import AccountProfitDashboard from '@/components/trading/AccountProfitDashboard';
+import AutoTradingStatus from '@/components/trading/AutoTradingStatus';
 import KlineChart from '@/components/trading/KlineChart';
 import PositionTable from '@/components/trading/PositionTable';
 import TradeHistory from '@/components/trading/TradeHistory';
-import PnlSummaryCards from '@/components/trading/PnlSummaryCards';
 import EquityCurve from '@/components/trading/EquityCurve';
-import PerformancePanel from '@/components/trading/PerformancePanel';
 import CommissionStats from '@/components/trading/CommissionStats';
 import StrategyWinRate from '@/components/trading/StrategyWinRate';
 import OrderPanel from '@/components/trading/OrderPanel';
@@ -32,12 +32,15 @@ import AdvancedBacktestContent from './AdvancedBacktestContent';
 import PaperTradingContent from './PaperTradingContent';
 
 type MarketType = 'spot' | 'futures';
+type Exchange = 'binance' | 'okx';
 
 export default function TradingPage() {
   const [symbols, setSymbols] = useState<string[]>([]);
   const [selectedSymbol, setSelectedSymbol] = useState('BTCUSDT');
   const [marketType, setMarketType] = useState<MarketType>('futures');
+  const [exchange, setExchange] = useState<Exchange>('binance');
   const [showDataManager, setShowDataManager] = useState(false);
+  const [showDebugOrder, setShowDebugOrder] = useState(false);
   const { t } = useLanguage();
 
   return (
@@ -79,7 +82,83 @@ export default function TradingPage() {
 
         {/* ============ Live Trading Tab ============ */}
         <TabsContent value="live" className="space-y-6">
-          {/* Market Type Sub-Tabs */}
+          {/* 交易所切换 */}
+          <div className="flex items-center gap-4">
+            <div className="flex bg-muted rounded-lg p-1">
+              <button
+                onClick={() => setExchange('binance')}
+                className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all ${
+                  exchange === 'binance'
+                    ? 'bg-background text-foreground shadow-sm'
+                    : 'text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                <img src="/binance.svg" alt="Binance" className="w-4 h-4" onError={(e) => {
+                  e.currentTarget.style.display = 'none';
+                }} />
+                Binance
+              </button>
+              <button
+                onClick={() => setExchange('okx')}
+                className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all ${
+                  exchange === 'okx'
+                    ? 'bg-background text-foreground shadow-sm'
+                    : 'text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                <img src="/okx.svg" alt="OKX" className="w-4 h-4" onError={(e) => {
+                  e.currentTarget.style.display = 'none';
+                }} />
+                OKX
+              </button>
+            </div>
+            <Badge variant="secondary" className="text-xs">
+              {exchange.toUpperCase()}
+            </Badge>
+          </div>
+
+          {/* Account Profit Dashboard - 醒目位置 */}
+          <AccountProfitDashboard symbol={selectedSymbol} exchange={exchange} />
+
+          {/* Data Manager Toggle */}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShowDataManager(!showDataManager)}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all border ${
+                showDataManager ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              <Database className="w-3.5 h-3.5" />
+              交易对管理
+            </button>
+          </div>
+
+          {showDataManager && (
+            <DataManager onSymbolsChange={(s) => {
+              setSymbols(s);
+              if (s.length > 0 && !s.includes(selectedSymbol)) {
+                setSelectedSymbol(s[0]);
+              }
+            }} />
+          )}
+
+          <PriceTicker
+            symbols={symbols}
+            onSymbolSelect={setSelectedSymbol}
+            selectedSymbol={selectedSymbol}
+          />
+
+          {/* 自动交易状态 + K线图 */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div className="lg:col-span-1">
+              <AutoTradingStatus symbol={selectedSymbol} />
+            </div>
+            <div className="lg:col-span-2">
+              <KlineChart symbol={selectedSymbol} marketType={marketType} exchange={exchange} autoRefreshInterval={30000} />
+            </div>
+          </div>
+
+          {/* 现货/合约切换 */}
           <div className="flex items-center gap-4">
             <div className="flex bg-muted rounded-lg p-1">
               <button
@@ -110,56 +189,26 @@ export default function TradingPage() {
             </Badge>
           </div>
 
-          {/* Data Manager Toggle */}
-          <div className="flex items-center gap-2">
+          {/* Positions */}
+          <PositionTable exchange={exchange} />
+
+          {/* Strategy Analysis Panel */}
+          <StrategyAnalysisPanel symbol={selectedSymbol} autoRefreshInterval={60000} />
+
+          {/* 调试下单（折叠） */}
+          <div>
             <button
-              onClick={() => setShowDataManager(!showDataManager)}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all border ${
-                showDataManager ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground hover:text-foreground'
-              }`}
+              onClick={() => setShowDebugOrder(!showDebugOrder)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all border bg-muted text-muted-foreground hover:text-foreground"
             >
-              <Database className="w-3.5 h-3.5" />
-              交易对管理
+              <Wrench className="w-3.5 h-3.5" />
+              {showDebugOrder ? '隐藏调试下单' : '调试下单'}
             </button>
-          </div>
-
-          {showDataManager && (
-            <DataManager onSymbolsChange={(s) => {
-              setSymbols(s);
-              if (s.length > 0 && !s.includes(selectedSymbol)) {
-                setSelectedSymbol(s[0]);
-              }
-            }} />
-          )}
-
-          <PriceTicker
-            symbols={symbols}
-            onSymbolSelect={setSelectedSymbol}
-            selectedSymbol={selectedSymbol}
-          />
-
-          {/* Account Profit Dashboard - 醒目位置 */}
-          <AccountProfitDashboard symbol={selectedSymbol} />
-
-          {/* K Line Chart + Strategy Analysis + Order Panel */}
-          <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
-            <div className="lg:col-span-3">
-              <KlineChart symbol={selectedSymbol} marketType={marketType} autoRefreshInterval={30000} />
-            </div>
-            <div className="lg:col-span-2 space-y-6">
-              <StrategyAnalysisPanel symbol={selectedSymbol} autoRefreshInterval={60000} />
-              <OrderPanel symbol={selectedSymbol} marketType={marketType} />
-            </div>
-          </div>
-
-          {/* Positions + PnL Summary Row */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div className="lg:col-span-2">
-              <PositionTable />
-            </div>
-            <div>
-              <PnlSummaryCards symbol={selectedSymbol} days={30} />
-            </div>
+            {showDebugOrder && (
+              <div className="mt-4">
+                <OrderPanel symbol={selectedSymbol} marketType={marketType} exchange={exchange} />
+              </div>
+            )}
           </div>
 
           {/* Strategy Win Rate + Signal History */}
@@ -168,7 +217,7 @@ export default function TradingPage() {
             <SignalHistory symbol={selectedSymbol} limit={30} />
           </div>
 
-          {/* Equity Curve + Performance Row */}
+          {/* Equity Curve + Price Alerts */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2">
               <EquityCurve symbol={selectedSymbol} days={90} />
@@ -177,8 +226,6 @@ export default function TradingPage() {
               <PriceAlerts symbol={selectedSymbol} />
             </div>
           </div>
-
-          <PerformancePanel symbol={selectedSymbol} days={30} />
 
           {/* Commission Stats */}
           <CommissionStats symbol={selectedSymbol} days={30} />

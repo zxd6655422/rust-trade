@@ -627,10 +627,15 @@ pub async fn get_pnl_summary(
 ) -> Result<PnlSummary, String> {
     let days = request.days.unwrap_or(30);
 
-    info!("Getting PnL summary for {} days", days);
+    info!("Getting PnL summary for {} days, exchange={:?}, market_type={:?}", days, request.exchange, request.market_type);
 
     let summary_data = state.repository
-        .get_pnl_summary(request.symbol.as_deref(), days)
+        .get_pnl_summary(
+            request.symbol.as_deref(),
+            days,
+            request.exchange.as_deref(),
+            request.market_type.as_deref(),
+        )
         .await
         .map_err(|e| {
             error!("Failed to get PnL summary: {}", e);
@@ -698,10 +703,15 @@ pub async fn get_performance_metrics(
 ) -> Result<PerformanceMetrics, String> {
     let days = request.days.unwrap_or(30);
 
-    info!("Getting performance metrics for {} days", days);
+    info!("Getting performance metrics for {} days, exchange={:?}, market_type={:?}", days, request.exchange, request.market_type);
 
     let metrics_data = state.repository
-        .get_performance_metrics(request.symbol.as_deref(), days)
+        .get_performance_metrics(
+            request.symbol.as_deref(),
+            days,
+            request.exchange.as_deref(),
+            request.market_type.as_deref(),
+        )
         .await
         .map_err(|e| {
             error!("Failed to get performance metrics: {}", e);
@@ -1903,6 +1913,41 @@ pub async fn remove_from_monitor(
 ) -> Result<(), String> {
     state.repository.remove_symbol(&symbol).await.map_err(|e| e.to_string())?;
     info!("Removed {} from monitoring list", symbol);
+    Ok(())
+}
+
+// ============ 策略调度器控制 Commands ============
+
+/// 获取策略调度器状态
+#[tauri::command]
+pub async fn get_scheduler_status(
+    state: State<'_, AppState>,
+) -> Result<SchedulerStatus, String> {
+    let is_paused = state.repository.is_scheduler_paused().await.unwrap_or(false);
+    Ok(SchedulerStatus {
+        is_running: !is_paused,
+        is_paused,
+        strategy_id: "trend".to_string(),
+    })
+}
+
+/// 暂停策略调度器
+#[tauri::command]
+pub async fn pause_scheduler(
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state.repository.set_scheduler_paused(true).await.map_err(|e| e.to_string())?;
+    info!("Strategy scheduler paused");
+    Ok(())
+}
+
+/// 恢复策略调度器
+#[tauri::command]
+pub async fn resume_scheduler(
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state.repository.set_scheduler_paused(false).await.map_err(|e| e.to_string())?;
+    info!("Strategy scheduler resumed");
     Ok(())
 }
 

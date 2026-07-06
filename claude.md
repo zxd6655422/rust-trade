@@ -1,5 +1,5 @@
 # 外部市场API
-- F:\rust_projects\rust-trade\api-doc  包含了binance、okx相关的api接口
+- F:\rust_projects\rust-trade\api-docs  包含了binance、okx相关的api接口
 
 # 文档结构
 - F:\rust_projects\rust-trade\README_CN.md 应用说明
@@ -13,3 +13,4 @@
 - 功能实现避免过度设计，需要结合项目实际拥有的资源来实现
 - 每次完成功能点开发都需要更新开发计划与进度文件，每一次新的需求都要记录到开发计划
 - 每次完成一个开发计划都要按照时间线更新 CHANGELOG.md
+- 数据库永远不要使用视图

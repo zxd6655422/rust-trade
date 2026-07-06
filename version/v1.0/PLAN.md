@@ -1354,3 +1354,456 @@ rust-trade/
 - 性能良好、资源占用合理
 
 **P0-P2 全部完成，项目功能完备！**
+
+---
+
+## 十、Strategy-Service 策略服务 (2026-07-07)
+
+### 10.1 背景与目标
+
+当前系统将指标计算、策略分析、交易执行都放在 trading-core 的 `StrategyManager` 中，存在以下问题：
+
+| 问题 | 说明 |
+|------|------|
+| 策略参数硬编码 | config.toml 中写死，无法动态管理 |
+| 策略与采集耦合 | 修改策略需要重启 trading-core |
+| 信号无法溯源 | 不知道哪个策略实例产生了信号 |
+| 历史记录不完整 | 交易记录缺少策略上下文 |
+
+**目标**：新建 strategy-service，实现：
+1. 策略持久化（PostgreSQL）
+2. 信号产生可溯源到具体策略实例
+3. 自动交易执行关联策略
+4. 历史交易记录详细追踪
+5. 前端可查询策略、信号、交易记录
+
+### 10.2 系统架构
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  trading-core (改造后)                                           │
+│  ├── 数据采集（保留）                                            │
+│  ├── 指标预计算（保留）                                          │
+│  ├── 写入 Redis 缓存（保留）                                     │
+│  └── 移除：StrategyManager, RiskManager, TradingEngine          │
+├─────────────────────────────────────────────────────────────────┤
+│  Redis 缓存结构                                                  │
+│  ├── kline:{symbol}:1m → 最新100根K线                            │
+│  ├── indicator:{symbol}:ma → {ma7, ma25, ma99}                  │
+│  ├── indicator:{symbol}:rsi → 62.5                              │
+│  └── indicator:{symbol}:macd → {macd, signal, hist}             │
+├─────────────────────────────────────────────────────────────────┤
+│  strategy-service (新建)                                         │
+│  ├── 从 PostgreSQL 加载策略实例配置                               │
+│  ├── 从 Redis 读取指标数据（毫秒级）                              │
+│  ├── 运行策略逻辑产生信号                                        │
+│  ├── 信号写入 PostgreSQL（关联策略实例）                          │
+│  └── 触发交易执行（如果 auto_trade=true）                         │
+├─────────────────────────────────────────────────────────────────┤
+│  trading-engine (改造后)                                         │
+│  ├── 接收交易执行请求（HTTP API）                                 │
+│  ├── 执行下单                                                    │
+│  └── 交易结果写入 trades 表（关联 signal_id）                     │
+├─────────────────────────────────────────────────────────────────┤
+│  PostgreSQL 数据库                                                │
+│  ├── strategy_instances → 策略实例配置                            │
+│  ├── strategy_signals → 策略信号（含市场快照）                    │
+│  ├── trades → 交易记录（关联信号和策略）                          │
+│  └── strategy_performance → 策略性能统计                          │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 10.3 数据库设计 (schema_v6.sql)
+
+#### 10.3.1 策略实例表 `strategy_instances`
+
+每个策略实例是某个策略类型的独立配置，可以在多个交易对上运行。
+
+```sql
+CREATE TABLE strategy_instances (
+    -- 【ID】主键
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    -- 【策略类型】rsi, macd, bollinger, volume, trend, multi_tf
+    strategy_type VARCHAR(50) NOT NULL,
+
+    -- 【显示名称】如 "RSI-BTC-激进版"
+    display_name VARCHAR(100) NOT NULL,
+
+    -- 【策略参数】JSON 格式，不同策略类型有不同参数结构
+    params JSONB NOT NULL,
+
+    -- 【运行状态】active(运行中) / paused(暂停) / archived(归档)
+    status VARCHAR(20) NOT NULL DEFAULT 'active'
+        CHECK (status IN ('active', 'paused', 'archived')),
+
+    -- 【适用交易对】数组类型，支持多交易对
+    symbols TEXT[] NOT NULL DEFAULT '{}',
+
+    -- 【是否启用自动交易】true=信号触发自动下单
+    auto_trade BOOLEAN NOT NULL DEFAULT false,
+
+    -- 【仓位大小】相对于总资金的百分比
+    position_size_pct DECIMAL(5,2) NOT NULL DEFAULT 10.0,
+
+    -- 【交易所】binance / okx
+    exchange VARCHAR(20) NOT NULL DEFAULT 'binance',
+
+    -- 【市场类型】spot / futures
+    market_type VARCHAR(10) NOT NULL DEFAULT 'futures',
+
+    -- 【备注】
+    note TEXT,
+
+    -- 【创建时间】
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    -- 【更新时间】
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- 索引
+CREATE INDEX idx_strategy_instances_type ON strategy_instances(strategy_type);
+CREATE INDEX idx_strategy_instances_status ON strategy_instances(status);
+CREATE INDEX idx_strategy_instances_exchange ON strategy_instances(exchange);
+```
+
+#### 10.3.2 策略信号表 `strategy_signals` (改造)
+
+扩展现有表，加入策略实例关联和更丰富的上下文。
+
+```sql
+-- 新增字段（ALTER TABLE）
+ALTER TABLE strategy_signals ADD COLUMN IF NOT EXISTS
+    instance_id UUID REFERENCES strategy_instances(id);
+
+ALTER TABLE strategy_signals ADD COLUMN IF NOT EXISTS
+    signal_strength DECIMAL(5,4);  -- 信号强度 0-1
+
+ALTER TABLE strategy_signals ADD COLUMN IF NOT EXISTS
+    market_context JSONB;  -- 当时的市场快照（价格、成交量、指标值）
+
+ALTER TABLE strategy_signals ADD COLUMN IF NOT EXISTS
+    entry_price DECIMAL(20,8);  -- 建议入场价
+
+ALTER TABLE strategy_signals ADD COLUMN IF NOT EXISTS
+    stop_loss DECIMAL(20,8);  -- 建议止损价
+
+ALTER TABLE strategy_signals ADD COLUMN IF NOT EXISTS
+    take_profit DECIMAL(20,8);  -- 建议止盈价
+
+ALTER TABLE strategy_signals ADD COLUMN IF NOT EXISTS
+    exchange VARCHAR(20) NOT NULL DEFAULT 'binance';
+
+ALTER TABLE strategy_signals ADD COLUMN IF NOT EXISTS
+    market_type VARCHAR(10) NOT NULL DEFAULT 'futures';
+
+-- 新增索引
+CREATE INDEX IF NOT EXISTS idx_signals_instance ON strategy_signals(instance_id, signal_time DESC);
+CREATE INDEX IF NOT EXISTS idx_signals_exchange ON strategy_signals(exchange);
+```
+
+#### 10.3.3 交易记录表 `trades` (改造)
+
+确保每笔交易都能追溯到信号和策略。
+
+```sql
+-- 新增字段
+ALTER TABLE trades ADD COLUMN IF NOT EXISTS
+    signal_id UUID REFERENCES strategy_signals(id);  -- 关联信号
+
+ALTER TABLE trades ADD COLUMN IF NOT EXISTS
+    exchange VARCHAR(20) NOT NULL DEFAULT 'binance';
+
+ALTER TABLE trades ADD COLUMN IF NOT EXISTS
+    market_type VARCHAR(10) NOT NULL DEFAULT 'futures';
+
+ALTER TABLE trades ADD COLUMN IF NOT EXISTS
+    order_status VARCHAR(20) DEFAULT 'filled';  -- pending/filled/cancelled/rejected
+
+ALTER TABLE trades ADD COLUMN IF NOT EXISTS
+    order_type VARCHAR(20) DEFAULT 'market';  -- market/limit/stop
+
+ALTER TABLE trades ADD COLUMN IF NOT EXISTS
+    leverage INTEGER DEFAULT 1;
+
+ALTER TABLE trades ADD COLUMN IF NOT EXISTS
+    slippage DECIMAL(10,6);  -- 滑点
+
+ALTER TABLE trades ADD COLUMN IF NOT EXISTS
+    metadata JSONB;  -- 额外信息（交易所返回的原始数据等）
+
+-- 新增索引
+CREATE INDEX IF NOT EXISTS idx_trades_signal ON trades(signal_id);
+CREATE INDEX IF NOT EXISTS idx_trades_exchange ON trades(exchange);
+```
+
+#### 10.3.4 策略性能统计表 `strategy_performance` (新增)
+
+定期汇总每个策略实例的运行指标。
+
+```sql
+CREATE TABLE strategy_performance (
+    -- 【ID】主键
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    -- 【策略实例ID】
+    instance_id UUID NOT NULL REFERENCES strategy_instances(id),
+
+    -- 【统计周期开始】
+    period_start TIMESTAMPTZ NOT NULL,
+
+    -- 【统计周期结束】
+    period_end TIMESTAMPTZ NOT NULL,
+
+    -- 【信号统计】
+    total_signals INTEGER NOT NULL DEFAULT 0,
+    buy_signals INTEGER NOT NULL DEFAULT 0,
+    sell_signals INTEGER NOT NULL DEFAULT 0,
+
+    -- 【交易统计】
+    total_trades INTEGER NOT NULL DEFAULT 0,
+    winning_trades INTEGER NOT NULL DEFAULT 0,
+    losing_trades INTEGER NOT NULL DEFAULT 0,
+
+    -- 【盈亏统计】
+    total_pnl DECIMAL(20,8) NOT NULL DEFAULT 0,
+    win_rate DECIMAL(5,4),
+    avg_win DECIMAL(20,8),
+    avg_loss DECIMAL(20,8),
+    profit_factor DECIMAL(10,4),
+    max_drawdown DECIMAL(10,4),
+
+    -- 【更新时间】
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    -- 唯一约束：每个策略实例在每个统计周期只有一条记录
+    UNIQUE(instance_id, period_start, period_end)
+);
+
+-- 索引
+CREATE INDEX idx_performance_instance ON strategy_performance(instance_id, period_start DESC);
+```
+
+### 10.4 策略参数结构
+
+```json
+// RSI 策略
+{
+  "period": 14,
+  "overbought": 70,
+  "oversold": 30,
+  "confirm_candles": 2
+}
+
+// MACD 策略
+{
+  "fast_period": 12,
+  "slow_period": 26,
+  "signal_period": 9,
+  "histogram_threshold": 0
+}
+
+// 布林带策略
+{
+  "period": 20,
+  "std_dev": 2.0,
+  "squeeze_threshold": 0.02
+}
+
+// 成交量策略
+{
+  "volume_ma_period": 20,
+  "volume_spike_threshold": 2.0,
+  "price_change_threshold": 0.01
+}
+
+// 趋势策略
+{
+  "fast_ma": 7,
+  "slow_ma": 25,
+  "trend_ma": 99,
+  "adx_threshold": 25
+}
+
+// 多时间框架策略
+{
+  "timeframes": ["1h", "4h", "1d"],
+  "min_agreement": 2,
+  "weight_h4": 0.5,
+  "weight_d1": 0.3,
+  "weight_h1": 0.2
+}
+```
+
+### 10.5 Rust 代码结构
+
+```
+rust-trade/strategy-service/
+├── Cargo.toml
+├── config.toml
+└── src/
+    ├── main.rs                    # 启动入口，初始化连接
+    ├── config.rs                  # 配置加载
+    ├── db/
+    │   ├── mod.rs
+    │   ├── strategies.rs          # strategy_instances CRUD
+    │   ├── signals.rs             # strategy_signals 写入/查询
+    │   ├── trades.rs              # trades 查询（关联策略）
+    │   └── performance.rs         # strategy_performance 统计
+    ├── redis_reader.rs            # 从 Redis 读取指标数据
+    ├── strategies/
+    │   ├── mod.rs                 # Strategy trait 定义
+    │   ├── rsi.rs                 # RSI 策略实现
+    │   ├── macd.rs                # MACD 策略实现
+    │   ├── bollinger.rs           # 布林带策略
+    │   ├── volume.rs              # 成交量策略
+    │   ├── trend.rs               # 趋势策略
+    │   └── multi_tf.rs            # 多时间框架策略
+    ├── engine.rs                  # 策略执行引擎（定时轮询）
+    ├── signal_writer.rs           # 信号写入 PostgreSQL
+    └── api.rs                     # HTTP API
+```
+
+### 10.6 核心 API
+
+#### 策略管理
+
+| 方法 | 端点 | 功能 |
+|------|------|------|
+| GET | `/api/strategies` | 列出所有策略实例 |
+| GET | `/api/strategies/{id}` | 获取策略详情（含参数） |
+| POST | `/api/strategies` | 创建策略实例 |
+| PUT | `/api/strategies/{id}` | 更新策略参数 |
+| PUT | `/api/strategies/{id}/status` | 启用/暂停策略 |
+| DELETE | `/api/strategies/{id}` | 删除策略 |
+
+#### 信号查询
+
+| 方法 | 端点 | 功能 |
+|------|------|------|
+| GET | `/api/signals?strategy_id=xxx` | 按策略查信号 |
+| GET | `/api/signals?symbol=BTCUSDT` | 按交易对查信号 |
+| GET | `/api/signals?start=xxx&end=xxx` | 按时间范围查 |
+
+#### 交易记录
+
+| 方法 | 端点 | 功能 |
+|------|------|------|
+| GET | `/api/trades?strategy_id=xxx` | 按策略查交易 |
+| GET | `/api/trades?symbol=BTCUSDT` | 按交易对查 |
+| GET | `/api/trades/{id}` | 交易详情（含信号上下文） |
+
+#### 策略统计
+
+| 方法 | 端点 | 功能 |
+|------|------|------|
+| GET | `/api/strategies/{id}/performance` | 策略收益统计 |
+| GET | `/api/strategies/{id}/trades` | 策略历史交易 |
+| GET | `/api/strategies/{id}/signals` | 策略历史信号 |
+
+### 10.7 执行流程
+
+```
+1. 策略引擎每 5 秒从 PostgreSQL 加载 active 策略实例
+2. 对每个实例，从 Redis 读取其 symbols 对应的指标数据
+3. 运行策略逻辑，产生信号
+4. 信号写入 strategy_signals（关联 instance_id，含市场快照）
+5. 如果策略 auto_trade=true，触发交易执行引擎
+6. 交易执行后写入 trades（关联 signal_id → instance_id）
+7. 定期（每小时）汇总 strategy_performance
+```
+
+### 10.8 数据完整性：信号→交易的完整链路
+
+```
+strategy_instances (策略定义)
+    ↓ 1:N
+strategy_signals (每次信号产生一条记录)
+    ↓ 1:1
+trades (每笔执行的交易)
+    ↓ 关联
+positions (当前持仓)
+```
+
+#### 查询示例
+
+```sql
+-- 查看某个策略的所有交易及对应信号
+SELECT t.*, s.signal_type, s.signal_price, s.confidence, s.market_context
+FROM trades t
+JOIN strategy_signals s ON t.signal_id = s.id
+WHERE s.instance_id = 'xxx'
+ORDER BY t.trade_time DESC;
+
+-- 查看策略在某段时间的盈亏
+SELECT
+    si.display_name,
+    COUNT(*) as total_trades,
+    SUM(t.realized_pnl) as total_pnl,
+    COUNT(*) FILTER (WHERE t.realized_pnl > 0) as winning_trades
+FROM trades t
+JOIN strategy_signals s ON t.signal_id = s.id
+JOIN strategy_instances si ON s.instance_id = si.id
+WHERE t.trade_time BETWEEN '2025-01-01' AND '2025-06-30'
+GROUP BY si.id, si.display_name;
+```
+
+### 10.9 依赖配置
+
+```toml
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "chrono", "json"] }
+redis = { version = "0.24", features = ["tokio-comp", "connection-manager"] }
+axum = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+anyhow = "1"
+```
+
+### 10.10 实施步骤
+
+| 步骤 | 任务 | 状态 |
+|------|------|------|
+| Step 1 | 创建 `config/schema_v6.sql`，包含所有表结构变更 | ⬜ 待开发 |
+| Step 2 | 运行迁移验证 | ⬜ 待开发 |
+| Step 3 | 创建 strategy-service Cargo.toml 和 main.rs | ⬜ 待开发 |
+| Step 4 | 实现配置加载、PostgreSQL 和 Redis 连接 | ⬜ 待开发 |
+| Step 5 | 实现 strategy_instances 表的 CRUD | ⬜ 待开发 |
+| Step 6 | 实现 HTTP API endpoints（策略管理） | ⬜ 待开发 |
+| Step 7 | 实现从 Redis 读取 kline、MA、RSI、MACD 数据 | ⬜ 待开发 |
+| Step 8 | 定义 Strategy trait | ⬜ 待开发 |
+| Step 9 | 实现 6 个策略（RSI/MACD/布林/成交量/趋势/多时间框架） | ⬜ 待开发 |
+| Step 10 | 实现策略执行引擎（定时轮询 PostgreSQL + Redis） | ⬜ 待开发 |
+| Step 11 | 信号写入数据库（含完整上下文） | ⬜ 待开发 |
+| Step 12 | 信号触发后调用 trading-engine 执行 | ⬜ 待开发 |
+| Step 13 | 交易结果回调写入 trades 表（关联 signal_id） | ⬜ 待开发 |
+| Step 14 | 前端接口对接（策略/信号/交易查询） | ⬜ 待开发 |
+
+### 10.11 验证方式
+
+1. **数据库验证**：运行 schema_v6.sql，检查所有表和索引创建成功
+2. **API 测试**：
+   ```bash
+   # 创建策略
+   curl -X POST http://localhost:8082/api/strategies \
+     -H "Content-Type: application/json" \
+     -d '{"strategy_type":"rsi","display_name":"RSI-BTC","params":{"period":14,"overbought":70,"oversold":30},"symbols":["BTCUSDT"],"auto_trade":false}'
+
+   # 查询策略列表
+   curl http://localhost:8082/api/strategies
+
+   # 查询信号
+   curl http://localhost:8082/api/signals?strategy_id=xxx
+
+   # 查询交易记录
+   curl http://localhost:8082/api/trades?strategy_id=xxx
+   ```
+3. **完整流程验证**：
+   - 创建策略 → 产生信号 → 信号写入 DB → 触发交易 → 交易记录关联信号
+   - 查询交易记录能追溯到信号和策略

@@ -39,6 +39,19 @@ initial_capital = 10000.0
 # - candle1m: Collect 1m candle data (low frequency, 1 record/minute/symbol, RECOMMENDED)
 mode = "candle1m"
 
+# Strategy scheduler configuration
+[strategy]
+# Analysis interval in seconds (default: 300 = 5 minutes)
+interval_secs = 300
+# Signal max age in hours (default: 24)
+signal_max_age_hours = 24
+# Confirm threshold - profit % to confirm signal (default: 0.5)
+confirm_threshold_pct = 0.5
+# Stop loss threshold - loss % to close signal (default: -2.0)
+stop_loss_pct = -2.0
+# Take profit threshold - profit % to close signal (default: 3.0)
+take_profit_pct = 3.0
+
 # Enable tick data collection in parallel (for high-frequency analysis)
 # This will use more resources but provides more detailed data
 enable_tick = false

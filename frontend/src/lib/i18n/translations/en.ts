@@ -44,6 +44,13 @@ export const en = {
     futuresMarket: 'USDT-M Futures',
     paperTradingDesc: 'Simulate trading strategies with real market data but without risking real capital. This feature will be available in a future update.',
     accountProfit: 'Account Profit',
+    noTrades: 'No trades yet',
+    combined: 'Combined',
+    spotProfit: 'Spot',
+    futuresProfit: 'Futures',
+    exchange: 'Exchange',
+    binance: 'Binance',
+    okx: 'OKX',
   },
 
   // Price Ticker

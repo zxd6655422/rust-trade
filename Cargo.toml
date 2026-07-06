@@ -3,6 +3,7 @@ members = [
     "trading-common",
     "trading-core",
     "trading-engine",
+    "strategy-service",
     "archive-klines",
     "src-tauri"
 ]

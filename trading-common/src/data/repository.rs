@@ -427,53 +427,62 @@ impl TickDataRepository {
         &self,
         symbol: Option<&str>,
         days: i32,
+        exchange: Option<&str>,
+        market_type: Option<&str>,
     ) -> DataResult<serde_json::Value> {
-        debug!("Getting PnL summary for {} days", days);
+        debug!("Getting PnL summary for {} days, exchange={:?}, market_type={:?}", days, exchange, market_type);
 
         let days_f64 = days as f64;
 
-        let sql = match symbol {
-            Some(_) => {
-                r#"
-                SELECT
-                    COUNT(*) as total_trades,
-                    SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END) as winning_trades,
-                    SUM(CASE WHEN realized_pnl < 0 THEN 1 ELSE 0 END) as losing_trades,
-                    SUM(realized_pnl) as total_pnl,
-                    SUM(commission) as total_commission,
-                    MAX(realized_pnl) as best_trade,
-                    MIN(realized_pnl) as worst_trade,
-                    AVG(realized_pnl) as avg_pnl
-                FROM trades
-                WHERE symbol = $1
-                  AND trade_time > NOW() - INTERVAL '1 day' * $2
-                  AND realized_pnl IS NOT NULL
-                "#
-            }
-            None => {
-                r#"
-                SELECT
-                    COUNT(*) as total_trades,
-                    SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END) as winning_trades,
-                    SUM(CASE WHEN realized_pnl < 0 THEN 1 ELSE 0 END) as losing_trades,
-                    SUM(realized_pnl) as total_pnl,
-                    SUM(commission) as total_commission,
-                    MAX(realized_pnl) as best_trade,
-                    MIN(realized_pnl) as worst_trade,
-                    AVG(realized_pnl) as avg_pnl
-                FROM trades
-                WHERE trade_time > NOW() - INTERVAL '1 day' * $1
-                  AND realized_pnl IS NOT NULL
-                "#
-            }
-        };
+        // Build dynamic WHERE clause
+        let mut conditions: Vec<String> = vec![
+            "trade_time > NOW() - INTERVAL '1 day' * $1".to_string(),
+            "realized_pnl IS NOT NULL".to_string(),
+        ];
+        let mut param_index = 2;
 
-        let mut query = sqlx::query(sql);
+        if symbol.is_some() {
+            conditions.push(format!("symbol = ${}", param_index));
+            param_index += 1;
+        }
+        if exchange.is_some() {
+            conditions.push(format!("exchange = ${}", param_index));
+            param_index += 1;
+        }
+        if market_type.is_some() {
+            conditions.push(format!("market_type = ${}", param_index));
+        }
+
+        let where_clause = conditions.join(" AND ");
+        let sql = format!(
+            r#"
+            SELECT
+                COUNT(*) as total_trades,
+                SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END) as winning_trades,
+                SUM(CASE WHEN realized_pnl < 0 THEN 1 ELSE 0 END) as losing_trades,
+                SUM(realized_pnl) as total_pnl,
+                SUM(commission) as total_commission,
+                MAX(realized_pnl) as best_trade,
+                MIN(realized_pnl) as worst_trade,
+                AVG(realized_pnl) as avg_pnl
+            FROM trades
+            WHERE {}
+            "#,
+            where_clause
+        );
+
+        let mut query = sqlx::query(&sql);
+        query = query.bind(days_f64);
 
         if let Some(sym) = symbol {
             query = query.bind(sym);
         }
-        query = query.bind(days_f64);
+        if let Some(ex) = exchange {
+            query = query.bind(ex);
+        }
+        if let Some(mt) = market_type {
+            query = query.bind(mt);
+        }
 
         let row = query.fetch_one(&self.pool).await?;
 
@@ -638,45 +647,58 @@ impl TickDataRepository {
         &self,
         symbol: Option<&str>,
         days: i32,
+        exchange: Option<&str>,
+        market_type: Option<&str>,
     ) -> DataResult<serde_json::Value> {
-        debug!("Getting performance metrics for {} days", days);
+        debug!("Getting performance metrics for {} days, exchange={:?}, market_type={:?}", days, exchange, market_type);
 
         let days_f64 = days as f64;
 
-        let sql = match symbol {
-            Some(_) => {
-                r#"
-                SELECT
-                    realized_pnl,
-                    commission,
-                    trade_time
-                FROM trades
-                WHERE symbol = $1
-                  AND trade_time > NOW() - INTERVAL '1 day' * $2
-                  AND realized_pnl IS NOT NULL
-                ORDER BY trade_time
-                "#
-            }
-            None => {
-                r#"
-                SELECT
-                    realized_pnl,
-                    commission,
-                    trade_time
-                FROM trades
-                WHERE trade_time > NOW() - INTERVAL '1 day' * $1
-                  AND realized_pnl IS NOT NULL
-                ORDER BY trade_time
-                "#
-            }
-        };
+        // Build dynamic WHERE clause
+        let mut conditions: Vec<String> = vec![
+            "trade_time > NOW() - INTERVAL '1 day' * $1".to_string(),
+            "realized_pnl IS NOT NULL".to_string(),
+        ];
+        let mut param_index = 2;
 
-        let mut query = sqlx::query(sql);
+        if symbol.is_some() {
+            conditions.push(format!("symbol = ${}", param_index));
+            param_index += 1;
+        }
+        if exchange.is_some() {
+            conditions.push(format!("exchange = ${}", param_index));
+            param_index += 1;
+        }
+        if market_type.is_some() {
+            conditions.push(format!("market_type = ${}", param_index));
+        }
+
+        let where_clause = conditions.join(" AND ");
+        let sql = format!(
+            r#"
+            SELECT
+                realized_pnl,
+                commission,
+                trade_time
+            FROM trades
+            WHERE {}
+            ORDER BY trade_time
+            "#,
+            where_clause
+        );
+
+        let mut query = sqlx::query(&sql);
+        query = query.bind(days_f64);
 
         if let Some(sym) = symbol {
             query = query.bind(sym);
         }
-        query = query.bind(days_f64);
+        if let Some(ex) = exchange {
+            query = query.bind(ex);
+        }
+        if let Some(mt) = market_type {
+            query = query.bind(mt);
+        }
 
         let rows = query.fetch_all(&self.pool).await?;
 
@@ -2205,6 +2227,47 @@ impl TickDataRepository {
         sqlx::query("UPDATE symbol_config SET enabled = $2 WHERE symbol = $1")
             .bind(symbol).bind(enabled).execute(&self.pool).await?;
         info!("Symbol {} enabled={}", symbol, enabled);
+        Ok(())
+    }
+}
+
+// =================================================================
+// 系统配置操作
+// =================================================================
+
+impl TickDataRepository {
+    /// 获取系统配置值
+    pub async fn get_system_config(&self, key: &str) -> DataResult<Option<String>> {
+        let row = sqlx::query("SELECT value FROM system_config WHERE key = $1")
+            .bind(key)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|r| r.get::<String, _>("value")))
+    }
+
+    /// 设置系统配置值
+    pub async fn set_system_config(&self, key: &str, value: &str) -> DataResult<()> {
+        sqlx::query(
+            "INSERT INTO system_config (key, value, updated_at) VALUES ($1, $2, NOW()) \
+             ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()"
+        )
+        .bind(key)
+        .bind(value)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// 获取调度器是否暂停
+    pub async fn is_scheduler_paused(&self) -> DataResult<bool> {
+        let value = self.get_system_config("scheduler_paused").await?;
+        Ok(value.map(|v| v == "true").unwrap_or(false))
+    }
+
+    /// 设置调度器暂停状态
+    pub async fn set_scheduler_paused(&self, paused: bool) -> DataResult<()> {
+        self.set_system_config("scheduler_paused", &paused.to_string()).await?;
+        info!("Scheduler paused={}", paused);
         Ok(())
     }
 }

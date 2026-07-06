@@ -479,10 +479,15 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
     let scheduler_repo = repository.clone();
     let (scheduler_shutdown_tx, scheduler_shutdown_rx) = tokio::sync::broadcast::channel(1);
     let scheduler_config = service::StrategySchedulerConfig {
-        interval_secs: 300, // 5 分钟
+        interval_secs: settings.strategy.interval_secs,
         strategy_id: "trend".to_string(),
-        signal_max_age_hours: 24,
-        confirm_threshold_pct: rust_decimal::Decimal::from_str("0.5").unwrap_or(rust_decimal::Decimal::ZERO),
+        signal_max_age_hours: settings.strategy.signal_max_age_hours,
+        confirm_threshold_pct: rust_decimal::Decimal::from_str(&settings.strategy.confirm_threshold_pct.to_string())
+            .unwrap_or(rust_decimal::Decimal::ZERO),
+        stop_loss_pct: rust_decimal::Decimal::from_str(&settings.strategy.stop_loss_pct.to_string())
+            .unwrap_or(rust_decimal::Decimal::ZERO),
+        take_profit_pct: rust_decimal::Decimal::from_str(&settings.strategy.take_profit_pct.to_string())
+            .unwrap_or(rust_decimal::Decimal::ZERO),
     };
     let scheduler_handle = tokio::spawn(async move {
         let scheduler = service::StrategyAnalysisScheduler::new(
@@ -490,7 +495,8 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
         );
         scheduler.start().await;
     });
-    info!("📊 Strategy analysis scheduler started (every 5min)");
+    info!("📊 Strategy analysis scheduler started (every {}s, stop_loss={}%, take_profit={}%)",
+        settings.strategy.interval_secs, settings.strategy.stop_loss_pct, settings.strategy.take_profit_pct);
 
     // Start API server
     let api_config = api::server::ApiServerConfig {

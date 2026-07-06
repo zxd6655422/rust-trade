@@ -345,6 +345,9 @@ pub struct TradeHistoryRequest {
 pub struct PnlSummaryRequest {
     pub symbol: Option<String>,
     pub days: Option<i32>,
+    pub exchange: Option<String>,
+    #[serde(alias = "marketType")]
+    pub market_type: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -405,6 +408,9 @@ pub struct PerformanceMetrics {
 pub struct PerformanceRequest {
     pub symbol: Option<String>,
     pub days: Option<i32>,
+    pub exchange: Option<String>,
+    #[serde(alias = "marketType")]
+    pub market_type: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -593,4 +599,12 @@ pub struct SignalHistoryResult {
 pub struct SymbolConfig {
     pub symbol: String,
     pub enabled: bool,
+}
+
+/// 策略调度器状态
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SchedulerStatus {
+    pub is_running: bool,
+    pub is_paused: bool,
+    pub strategy_id: String,
 }

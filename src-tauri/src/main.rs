@@ -118,6 +118,10 @@ fn main() {
             get_available_symbols_from_data,
             add_to_monitor,
             remove_from_monitor,
+            // 策略调度器控制
+            get_scheduler_status,
+            pause_scheduler,
+            resume_scheduler,
             // 系统状态
             check_trading_core_status
         ])

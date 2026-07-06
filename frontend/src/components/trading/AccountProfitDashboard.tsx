@@ -7,30 +7,46 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
   Loader2, TrendingUp, DollarSign, Percent,
-  RefreshCw, ArrowUpRight, ArrowDownRight, Trophy, Target
+  RefreshCw, ArrowUpRight, ArrowDownRight, Trophy, Target,
+  CircleDot, Layers, BarChart3
 } from 'lucide-react';
 import { PnlSummary, PerformanceMetrics } from '@/types/trading';
 import { useLanguage } from '@/lib/i18n/context';
 
+type MarketFilter = 'all' | 'spot' | 'futures';
+
 interface AccountProfitDashboardProps {
   symbol?: string;
+  exchange?: 'binance' | 'okx';
 }
 
-export default function AccountProfitDashboard({ symbol }: AccountProfitDashboardProps) {
+export default function AccountProfitDashboard({ symbol, exchange = 'binance' }: AccountProfitDashboardProps) {
   const [pnl, setPnl] = useState<PnlSummary | null>(null);
   const [metrics, setMetrics] = useState<PerformanceMetrics | null>(null);
   const [loading, setLoading] = useState(true);
+  const [marketFilter, setMarketFilter] = useState<MarketFilter>('all');
   const { t } = useLanguage();
 
   const fetchData = async () => {
     try {
       setLoading(true);
+
       const [pnlResult, metricsResult] = await Promise.all([
         invoke<PnlSummary>('get_pnl_summary', {
-          request: { symbol: symbol || null, days: 30 }
+          request: {
+            symbol: symbol || null,
+            days: 30,
+            exchange: exchange,
+            marketType: marketFilter === 'all' ? null : marketFilter,
+          }
         }),
         invoke<PerformanceMetrics>('get_performance_metrics', {
-          request: { symbol: symbol || null, days: 30 }
+          request: {
+            symbol: symbol || null,
+            days: 30,
+            exchange: exchange,
+            marketType: marketFilter === 'all' ? null : marketFilter,
+          }
         })
       ]);
       setPnl(pnlResult);
@@ -47,7 +63,7 @@ export default function AccountProfitDashboard({ symbol }: AccountProfitDashboar
     // 每 30 秒刷新
     const interval = setInterval(fetchData, 30000);
     return () => clearInterval(interval);
-  }, [symbol]);
+  }, [symbol, marketFilter, exchange]);
 
   if (loading) {
     return (
@@ -70,22 +86,55 @@ export default function AccountProfitDashboard({ symbol }: AccountProfitDashboar
   const maxDd = parseFloat(metrics.max_drawdown || '0');
   const profitFactor = parseFloat(metrics.profit_factor || '0');
 
+  const filterButtons: { key: MarketFilter; label: string; icon: React.ReactNode }[] = [
+    { key: 'all', label: t.trading.combined, icon: <BarChart3 className="w-3 h-3" /> },
+    { key: 'spot', label: t.trading.spotProfit, icon: <CircleDot className="w-3 h-3" /> },
+    { key: 'futures', label: t.trading.futuresProfit, icon: <Layers className="w-3 h-3" /> },
+  ];
+
   return (
     <Card className="bg-gradient-to-br from-slate-900 via-blue-950 to-slate-900 border-blue-800/50 shadow-lg">
       <CardContent className="p-6">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center">
+            <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${
+              exchange === 'okx' ? 'bg-orange-600' : 'bg-blue-600'
+            }`}>
               <DollarSign className="w-5 h-5 text-white" />
             </div>
             <div>
               <h2 className="text-lg font-bold text-white">{t.trading.accountProfit}</h2>
-              <p className="text-xs text-blue-300">30 {t.common.trades}</p>
+              <p className="text-xs text-blue-300">
+                {pnl.total_trades > 0
+                  ? `${pnl.total_trades} ${t.common.trades}`
+                  : t.trading.noTrades}
+              </p>
             </div>
           </div>
-          <Button variant="ghost" size="sm" onClick={fetchData} className="text-blue-300 hover:text-white">
-            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-          </Button>
+
+          <div className="flex items-center gap-2">
+            {/* 市场类型切换 */}
+            <div className="flex bg-slate-800 rounded-lg p-0.5">
+              {filterButtons.map((btn) => (
+                <button
+                  key={btn.key}
+                  onClick={() => setMarketFilter(btn.key)}
+                  className={`flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-medium transition-all ${
+                    marketFilter === btn.key
+                      ? 'bg-blue-600 text-white'
+                      : 'text-gray-400 hover:text-white'
+                  }`}
+                >
+                  {btn.icon}
+                  {btn.label}
+                </button>
+              ))}
+            </div>
+
+            <Button variant="ghost" size="sm" onClick={fetchData} className="text-blue-300 hover:text-white">
+              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+            </Button>
+          </div>
         </div>
 
         <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
@@ -178,9 +227,16 @@ export default function AccountProfitDashboard({ symbol }: AccountProfitDashboar
               {t.pnlSummary.worstTrade}: <span className="text-red-400 font-bold">${parseFloat(pnl.worst_trade || '0').toFixed(2)}</span>
             </span>
           </div>
-          <Badge variant="outline" className="text-blue-300 border-blue-500/50">
-            {t.trading.liveData}
-          </Badge>
+          <div className="flex items-center gap-2">
+            <Badge variant="outline" className={`${
+              exchange === 'okx' ? 'text-orange-300 border-orange-500/50' : 'text-blue-300 border-blue-500/50'
+            }`}>
+              {exchange.toUpperCase()}
+            </Badge>
+            <Badge variant="outline" className="text-blue-300 border-blue-500/50">
+              {t.trading.liveData}
+            </Badge>
+          </div>
         </div>
       </CardContent>
     </Card>

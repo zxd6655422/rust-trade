@@ -103,6 +103,43 @@ pub struct PaperTrading {
     pub initial_capital: f64,
 }
 
+#[derive(Debug, Deserialize, Clone)]
+pub struct StrategyConfig {
+    /// 分析间隔（秒），默认 300
+    #[serde(default = "default_strategy_interval")]
+    pub interval_secs: u64,
+    /// 信号过期时间（小时），默认 24
+    #[serde(default = "default_signal_max_age")]
+    pub signal_max_age_hours: i64,
+    /// 确认阈值（收益率%），默认 0.5
+    #[serde(default = "default_confirm_threshold")]
+    pub confirm_threshold_pct: f64,
+    /// 止损阈值（收益率%），默认 -2.0
+    #[serde(default = "default_stop_loss")]
+    pub stop_loss_pct: f64,
+    /// 止盈阈值（收益率%），默认 3.0
+    #[serde(default = "default_take_profit")]
+    pub take_profit_pct: f64,
+}
+
+fn default_strategy_interval() -> u64 { 300 }
+fn default_signal_max_age() -> i64 { 24 }
+fn default_confirm_threshold() -> f64 { 0.5 }
+fn default_stop_loss() -> f64 { -2.0 }
+fn default_take_profit() -> f64 { 3.0 }
+
+impl Default for StrategyConfig {
+    fn default() -> Self {
+        Self {
+            interval_secs: 300,
+            signal_max_age_hours: 24,
+            confirm_threshold_pct: 0.5,
+            stop_loss_pct: -2.0,
+            take_profit_pct: 3.0,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct Settings {
     pub database: Database,
@@ -115,6 +152,9 @@ pub struct Settings {
     /// 数据采集配置
     #[serde(default)]
     pub collector: CollectorConfig,
+    /// 策略配置
+    #[serde(default)]
+    pub strategy: StrategyConfig,
     /// 日志等级: trace, debug, info, warn, error
     #[serde(default = "default_log_level")]
     pub log_level: String,

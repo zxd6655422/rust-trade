@@ -4,7 +4,7 @@
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tokio::time::{interval, Duration};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use rust_decimal::Decimal;
 use std::str::FromStr;
 
@@ -27,6 +27,10 @@ pub struct StrategySchedulerConfig {
     pub signal_max_age_hours: i64,
     /// 确认阈值（收益率%），默认 0.5
     pub confirm_threshold_pct: Decimal,
+    /// 止损阈值（收益率%），默认 -2.0
+    pub stop_loss_pct: Decimal,
+    /// 止盈阈值（收益率%），默认 3.0
+    pub take_profit_pct: Decimal,
 }
 
 impl Default for StrategySchedulerConfig {
@@ -36,6 +40,8 @@ impl Default for StrategySchedulerConfig {
             strategy_id: "trend".to_string(),
             signal_max_age_hours: 24,
             confirm_threshold_pct: Decimal::from_str("0.5").unwrap(),
+            stop_loss_pct: Decimal::from_str("-2.0").unwrap(),
+            take_profit_pct: Decimal::from_str("3.0").unwrap(),
         }
     }
 }
@@ -65,12 +71,28 @@ impl StrategyAnalysisScheduler {
 
         let mut tick = interval(Duration::from_secs(self.config.interval_secs));
 
-        // 首次启动立即执行一次
-        self.run_analysis_cycle().await;
+        // 首次启动立即执行一次（检查数据库暂停状态）
+        match self.repository.is_scheduler_paused().await {
+            Ok(true) => info!("Scheduler is paused (from DB), skipping initial cycle"),
+            Ok(false) => self.run_analysis_cycle().await,
+            Err(e) => warn!("Failed to check scheduler pause state: {}", e),
+        }
 
         loop {
             tokio::select! {
                 _ = tick.tick() => {
+                    // 从数据库检查是否暂停
+                    match self.repository.is_scheduler_paused().await {
+                        Ok(true) => {
+                            debug!("Scheduler is paused, skipping cycle");
+                            continue;
+                        }
+                        Ok(false) => {}
+                        Err(e) => {
+                            warn!("Failed to check scheduler pause state: {}", e);
+                            // 出错时继续执行，避免停止交易
+                        }
+                    }
                     self.run_analysis_cycle().await;
                 }
                 _ = self.shutdown_rx.recv() => {
@@ -161,11 +183,27 @@ impl StrategyAnalysisScheduler {
         {
             let is_same_dir = prev.direction == dir_str;
             let age_hours = (chrono::Utc::now() - prev.created_at).num_hours();
+            let return_pct = calc_return_pct(&prev.direction, prev.entry_price, current_price);
 
-            if is_same_dir && age_hours <= self.config.signal_max_age_hours {
-                // 同方向+未过期 → 更新验证
+            // 5.1 止损检查
+            if return_pct <= self.config.stop_loss_pct {
+                let _ = self.repository.close_analysis(
+                    prev.id, "invalidated", "stop_loss", current_price, return_pct
+                ).await;
+                info!("[{}] Stop loss triggered {} (return={}%)", symbol, prev.id, return_pct);
+                need_save = true;
+            }
+            // 5.2 止盈检查
+            else if return_pct >= self.config.take_profit_pct {
+                let _ = self.repository.close_analysis(
+                    prev.id, "confirmed", "take_profit", current_price, return_pct
+                ).await;
+                info!("[{}] Take profit triggered {} (return={}%)", symbol, prev.id, return_pct);
+                need_save = true;
+            }
+            // 5.3 同方向+未过期 → 更新验证
+            else if is_same_dir && age_hours <= self.config.signal_max_age_hours {
                 let _ = self.repository.update_analysis_eval(prev.id, current_price).await;
-                let return_pct = calc_return_pct(&prev.direction, prev.entry_price, current_price);
                 let confirmed = match prev.direction.as_str() {
                     "bullish" => return_pct > self.config.confirm_threshold_pct,
                     "bearish" => return_pct < -self.config.confirm_threshold_pct,
@@ -180,16 +218,16 @@ impl StrategyAnalysisScheduler {
                 } else {
                     need_save = false;
                 }
-            } else if !is_same_dir {
-                // 方向反转
-                let return_pct = calc_return_pct(&prev.direction, prev.entry_price, current_price);
+            }
+            // 5.4 方向反转
+            else if !is_same_dir {
                 let _ = self.repository.close_analysis(
                     prev.id, "superseded", "direction_changed", current_price, return_pct
                 ).await;
                 info!("[{}] Superseded analysis {} ({} -> {})", symbol, prev.id, prev.direction, dir_str);
-            } else {
-                // 超时
-                let return_pct = calc_return_pct(&prev.direction, prev.entry_price, current_price);
+            }
+            // 5.5 超时
+            else {
                 let _ = self.repository.close_analysis(
                     prev.id, "expired", "timeout", current_price, return_pct
                 ).await;

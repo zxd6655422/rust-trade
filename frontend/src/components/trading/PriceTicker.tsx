@@ -135,7 +135,6 @@ export default function PriceTicker({ symbols, onSymbolSelect, selectedSymbol, s
             <SymbolSelect
               value={selectedSymbol}
               onChange={onSymbolSelect}
-              enabledOnly={true}
               className="ml-2"
             />
           )}

@@ -46,6 +46,13 @@ export const zh: Translations = {
     futuresMarket: 'USDT 永续合约',
     paperTradingDesc: '使用真实市场数据模拟交易策略，无需承担真实资金风险。此功能将在后续更新中提供。',
     accountProfit: '账户盈亏',
+    noTrades: '暂无交易记录',
+    combined: '合计',
+    spotProfit: '现货',
+    futuresProfit: '合约',
+    exchange: '交易所',
+    binance: 'Binance',
+    okx: 'OKX',
   },
 
   // 价格行情

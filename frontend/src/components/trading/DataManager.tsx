@@ -9,7 +9,7 @@ import { Input } from '@/components/ui/input';
 import {
   Database, Archive, RefreshCw, Loader2, CheckCircle,
   AlertCircle, Plus, Trash2, HardDrive, Clock,
-  Play, Pause, Settings2, Eye, EyeOff
+  Play, Pause, Settings2, Eye, EyeOff, Search
 } from 'lucide-react';
 
 interface TradingPairConfig {
@@ -54,8 +54,6 @@ export default function DataManager({ onSymbolsChange }: Props) {
   const [tradingPairs, setTradingPairs] = useState<TradingPairConfig[]>([]);
   // 监控列表
   const [monitorList, setMonitorList] = useState<MonitorConfig[]>([]);
-  // 数据库中有数据的交易对
-  const [availableSymbols, setAvailableSymbols] = useState<string[]>([]);
   // 采集状态
   const [statuses, setStatuses] = useState<CollectionStatus[]>([]);
   // 新增交易对
@@ -65,6 +63,8 @@ export default function DataManager({ onSymbolsChange }: Props) {
   // 归档
   const [archiving, setArchiving] = useState(false);
   const [archiveResults, setArchiveResults] = useState<ArchiveResult[]>([]);
+  // 搜索
+  const [searchQuery, setSearchQuery] = useState('');
   // 通用
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -74,14 +74,12 @@ export default function DataManager({ onSymbolsChange }: Props) {
   const loadAllData = async () => {
     setLoading(true);
     try {
-      const [pairs, symbols, stats, monitors] = await Promise.all([
+      const [pairs, stats, monitors] = await Promise.all([
         invoke<TradingPairConfig[]>('get_trading_pairs'),
-        invoke<string[]>('get_available_symbols_from_data'),
         invoke<CollectionStatus[]>('get_all_collection_status'),
         invoke<MonitorConfig[]>('get_symbols'),
       ]);
       setTradingPairs(pairs);
-      setAvailableSymbols(symbols);
       setStatuses(stats);
       setMonitorList(monitors);
       // 通知父组件：只返回启用的交易对
@@ -242,7 +240,7 @@ export default function DataManager({ onSymbolsChange }: Props) {
             <Database className="w-4 h-4" />
             交易对管理
             <Badge variant="secondary" className="text-xs">
-              {monitorList.filter(m => m.enabled).length} 监控中
+              {tradingPairs.filter(p => isInMonitor(p.symbol)).length} 监控中
             </Badge>
           </CardTitle>
           <Button
@@ -327,40 +325,17 @@ export default function DataManager({ onSymbolsChange }: Props) {
                   添加
                 </Button>
               </div>
-              {/* 从数据库选择已有交易对 */}
-              {availableSymbols.length > 0 && (
-                <div className="mt-2">
-                  <div className="flex flex-wrap gap-1.5">
-                    {availableSymbols.slice(0, 10).map((symbol) => {
-                      const exists = tradingPairs.some(p => p.symbol === symbol);
-                      return (
-                        <button
-                          key={symbol}
-                          onClick={async () => {
-                            if (!exists) {
-                              await invoke('add_trading_pair', {
-                                symbol,
-                                marketType: 'futures',
-                                exchange: 'binance',
-                                note: null,
-                              });
-                              await loadAllData();
-                            }
-                          }}
-                          disabled={exists}
-                          className={`px-2 py-1 rounded text-[10px] font-medium transition-all ${
-                            exists
-                              ? 'bg-muted text-muted-foreground cursor-not-allowed'
-                              : 'bg-primary/10 text-primary hover:bg-primary/20 cursor-pointer'
-                          }`}
-                        >
-                          {symbol}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
+            </div>
+
+            {/* 搜索框 */}
+            <div className="relative">
+              <Search className="absolute left-2.5 top-2 h-3.5 w-3.5 text-muted-foreground" />
+              <Input
+                placeholder="搜索交易对..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="h-8 text-sm pl-8"
+              />
             </div>
 
             {/* 交易对列表 */}
@@ -375,7 +350,9 @@ export default function DataManager({ onSymbolsChange }: Props) {
                   暂无交易对，请先添加
                 </div>
               ) : (
-                tradingPairs.map((pair) => {
+                tradingPairs
+                  .filter(pair => !searchQuery || pair.symbol.toLowerCase().includes(searchQuery.toLowerCase()))
+                  .map((pair) => {
                   const status = statuses.find(s => s.symbol === pair.symbol);
                   const monitoring = isInMonitor(pair.symbol);
                   return (

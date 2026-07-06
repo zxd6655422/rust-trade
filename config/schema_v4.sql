@@ -45,11 +45,11 @@ CREATE INDEX IF NOT EXISTS idx_trading_pairs_market ON trading_pairs(market_type
 -- =================================================================
 
 INSERT INTO trading_pairs (symbol, market_type, exchange, status) VALUES
-    ('BTCUSDT', 'futures', 'binance', 'active'),
-    ('ETHUSDT', 'futures', 'binance', 'active'),
-    ('SOLUSDT', 'futures', 'binance', 'active'),
-    ('SUIUSDT', 'futures', 'binance', 'active'),
-    ('BNBUSDT', 'futures', 'binance', 'active')
+    ('BTCUSDT', 'spot', 'binance', 'active'),
+    ('ETHUSDT', 'spot', 'binance', 'active'),
+    ('SOLUSDT', 'spot', 'binance', 'active'),
+    ('SUIUSDT', 'spot', 'binance', 'active'),
+    ('BNBUSDT', 'spot', 'binance', 'active')
 ON CONFLICT (symbol) DO NOTHING;
 
 -- =================================================================
