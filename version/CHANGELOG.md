@@ -1,5 +1,70 @@
 # Changelog
 
+## [2026-07-06] 交易对管理增强（合并 SymbolManager）
+
+### 合并后的 DataManager 功能
+
+| Tab | 功能 |
+|-----|------|
+| **交易对配置** | 管理所有交易对，加入/移除监控 |
+| **监控列表** | 查看当前监控中的交易对 |
+| **新增交易对** | 从数据库选择 或 手动输入 |
+| **数据归档** | 导出到 Parquet |
+
+### 数据流
+
+```
+trading_pairs (所有交易对)
+    ↓ 用户选择
+symbol_config (监控列表)
+    ↓
+数据采集
+```
+
+### 文件改动
+
+| 文件 | 改动 |
+|------|------|
+| `config/schema_v4.sql` | 新建交易对配置表 |
+| `src-tauri/src/commands.rs` | 新增 7 个 API |
+| `src-tauri/src/main.rs` | 注册新命令 |
+| `trading-core/src/main.rs` | 新增配置同步逻辑 |
+| `frontend/src/components/trading/DataManager.tsx` | 合并 SymbolManager 功能 |
+| `frontend/src/app/trading/page.tsx` | 移除 SymbolManager 引用 |
+
+---
+
+## [2026-07-06] 交易对管理增强
+
+### 新增 trading_pairs 表
+
+| 模块 | 状态 | 说明 |
+|------|------|------|
+| 数据库 Schema V4 | ✅ | 新增 `trading_pairs` 表 |
+| 交易对配置 API | ✅ | 增删改查 + 状态管理 |
+| 前端 DataManager | ✅ | 三 Tab 设计（监控/新增/归档） |
+| 从数据库选择 | ✅ | 从 kline_1m 获取已有交易对 |
+| 新增交易对 | ✅ | 手动输入，支持现货/合约 |
+
+### 交易对状态
+
+| 状态 | 说明 | 采集 | 分析 |
+|------|------|------|------|
+| `active` | 正常采集 | ✅ | ✅ |
+| `paused` | 暂停采集 | ❌ | ❌ |
+| `archived` | 归档删除 | ❌ | ❌ |
+
+### 文件改动
+
+| 文件 | 改动 |
+|------|------|
+| `config/schema_v4.sql` | 新建交易对配置表 |
+| `src-tauri/src/commands.rs` | 新增 7 个 API |
+| `src-tauri/src/main.rs` | 注册新命令 |
+| `frontend/src/components/trading/DataManager.tsx` | 重新设计 UI |
+
+---
+
 ## [2026-07-06] 部署流程优化（代码目录保持干净）
 
 ### 部署目录分离

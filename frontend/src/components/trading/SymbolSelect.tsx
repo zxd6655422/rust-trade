@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Loader2, Coins } from 'lucide-react';
+import { Loader2, Coins, Database, Search } from 'lucide-react';
 
 interface SymbolConfig {
   symbol: string;
@@ -31,7 +31,9 @@ interface SymbolSelectProps {
 
 /**
  * 通用交易对下拉选择组件
- * 从数据库 symbol_config 表读取交易对列表
+ * 分两部分：
+ * 1. 数据库已有的交易对（来自 kline_1m 表）
+ * 2. 新增交易对（手动输入）
  */
 export default function SymbolSelect({
   value,
@@ -86,16 +88,19 @@ export default function SymbolSelect({
         </div>
       </SelectTrigger>
       <SelectContent>
-        {displaySymbols.length === 0 ? (
-          <SelectItem value="empty" disabled>
-            暂无交易对
-          </SelectItem>
-        ) : (
-          displaySymbols.map((s) => (
-            <SelectItem key={s.symbol} value={s.symbol}>
-              {s.symbol}
-            </SelectItem>
-          ))
+        {/* 已有交易对 */}
+        {displaySymbols.length > 0 && (
+          <>
+            <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+              <Database className="w-3 h-3" />
+              数据库已有
+            </div>
+            {displaySymbols.map((s) => (
+              <SelectItem key={s.symbol} value={s.symbol}>
+                {s.symbol}
+              </SelectItem>
+            ))}
+          </>
         )}
       </SelectContent>
     </Select>
@@ -109,6 +114,21 @@ export async function fetchEnabledSymbols(): Promise<string[]> {
   try {
     const result = await invoke<SymbolConfig[]>('get_symbols');
     return result.filter(s => s.enabled).map(s => s.symbol);
+  } catch {
+    return ['BTCUSDT', 'ETHUSDT', 'SOLUSDT'];
+  }
+}
+
+/**
+ * 获取数据库中已有的交易对列表
+ */
+export async function fetchExistingSymbols(): Promise<string[]> {
+  try {
+    // 从 kline_1m 表获取所有有数据的交易对
+    const result = await invoke<{ symbol: string; records_count: number }[]>('get_data_info');
+    return result
+      .sort((a, b) => b.records_count - a.records_count)
+      .map(s => s.symbol);
   } catch {
     return ['BTCUSDT', 'ETHUSDT', 'SOLUSDT'];
   }

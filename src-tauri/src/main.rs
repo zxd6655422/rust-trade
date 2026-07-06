@@ -110,6 +110,14 @@ fn main() {
             add_symbol_with_collection,
             archive_symbol_data,
             archive_all_symbols,
+            // 交易对配置 (trading_pairs)
+            get_trading_pairs,
+            add_trading_pair,
+            update_trading_pair_status,
+            delete_trading_pair,
+            get_available_symbols_from_data,
+            add_to_monitor,
+            remove_from_monitor,
             // 系统状态
             check_trading_core_status
         ])

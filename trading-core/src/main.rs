@@ -247,6 +247,9 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
     // Create repository
     let repository = Arc::new(TickDataRepository::new(pool, cache));
 
+    // Sync config symbols to trading_pairs table (first-time setup)
+    sync_config_to_trading_pairs(&repository, &settings.symbols, &settings.futures_symbols).await;
+
     // Create broadcast channel for real-time data
     let (tick_tx, _) = tokio::sync::broadcast::channel::<trading_common::data::types::TickData>(1000);
 
@@ -1113,6 +1116,71 @@ async fn run_live_application(settings: Settings) -> Result<(), Box<dyn std::err
             Err(Box::new(e))
         }
     }
+}
+
+/// 同步配置文件中的交易对到 trading_pairs 表
+/// 首次部署时自动执行，将配置文件中的初始交易对写入数据库
+async fn sync_config_to_trading_pairs(
+    repository: &TickDataRepository,
+    symbols: &[String],
+    futures_symbols: &[String],
+) {
+    let pool = repository.get_pool();
+
+    // 合并所有交易对，标记市场类型
+    let mut pairs_to_sync: Vec<(String, String)> = Vec::new();
+
+    // 普通交易对（可能是现货或合约，根据配置文件判断）
+    for symbol in symbols {
+        // 检查是否在 futures_symbols 中
+        let market_type = if futures_symbols.contains(symbol) {
+            "futures"
+        } else {
+            "spot"
+        };
+        pairs_to_sync.push((symbol.clone(), market_type.to_string()));
+    }
+
+    // 纯合约交易对
+    for symbol in futures_symbols {
+        if !symbols.contains(symbol) {
+            pairs_to_sync.push((symbol.clone(), "futures".to_string()));
+        }
+    }
+
+    // 插入到 trading_pairs 表（忽略已存在的）
+    let mut synced_count = 0;
+    for (symbol, market_type) in &pairs_to_sync {
+        let result = sqlx::query(
+            "INSERT INTO trading_pairs (symbol, market_type, exchange, status) \
+             VALUES ($1, $2, 'binance', 'active') \
+             ON CONFLICT (symbol) DO NOTHING"
+        )
+        .bind(symbol)
+        .bind(market_type)
+        .execute(pool)
+        .await;
+
+        match result {
+            Ok(r) if r.rows_affected() > 0 => {
+                synced_count += 1;
+                info!("Synced config symbol: {} ({})", symbol, market_type);
+            }
+            Ok(_) => {
+                // 已存在，跳过
+            }
+            Err(e) => {
+                warn!("Failed to sync symbol {}: {}", symbol, e);
+            }
+        }
+    }
+
+    if synced_count > 0 {
+        info!("✅ Synced {} config symbols to trading_pairs table", synced_count);
+    }
+
+    // 注意：symbol_config 表不自动同步
+    // 由前端用户自主选择要监控的交易对
 }
 
 /// Create database connection pool

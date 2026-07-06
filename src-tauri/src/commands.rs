@@ -126,7 +126,7 @@ pub async fn run_backtest(
     state: State<'_, AppState>,
     request: BacktestRequest,
 ) -> Result<BacktestResponse, String> {
-    info!("Starting backtest: strategy={}, symbol={}, data_count={}", 
+    info!("Starting backtest: strategy={}, symbol={}, data_count={}",
           request.strategy_id, request.symbol, request.data_count);
 
     let initial_capital = Decimal::from_str(&request.initial_capital)
@@ -141,7 +141,61 @@ pub async fn run_backtest(
         config = config.with_param(&key, &value);
     }
 
-    info!("Creating strategy: {}", request.strategy_id);
+    // 检查是否是多时间框架策略
+    let is_mtf = trading_common::backtest::strategy::is_multi_timeframe_strategy(&request.strategy_id);
+
+    if is_mtf {
+        // 多时间框架策略回测
+        info!("Using multi-timeframe backtest for strategy: {}", request.strategy_id);
+
+        // 获取 1m K线数据
+        let candle_count = request.data_count.max(1000) as u32;
+        let klines_1m = match state.repository.get_klines(&request.symbol, candle_count).await {
+            Ok(klines) if !klines.is_empty() => klines,
+            _ => {
+                return Err("No 1m kline data available for multi-timeframe backtest".to_string());
+            }
+        };
+
+        info!("Loaded {} 1m klines for backtest", klines_1m.len());
+
+        // 创建多时间框架策略
+        let strategy = trading_common::backtest::strategy::create_multi_timeframe_strategy(&request.strategy_id)
+            .map_err(|e| format!("Failed to create strategy: {}", e))?;
+
+        // 创建并运行多时间框架回测引擎
+        let mut engine = trading_common::backtest::MultiTimeframeBacktestEngine::new(
+            strategy,
+            config,
+            request.symbol.clone(),
+        )
+        .map_err(|e| format!("Failed to create backtest engine: {}", e))?;
+
+        let result = engine.run(klines_1m);
+
+        return Ok(BacktestResponse {
+            strategy_name: request.strategy_id,
+            initial_capital: format!("${}", initial_capital),
+            final_value: format!("${:.2}", result.final_value),
+            total_pnl: format!("${:.2}", result.final_value - initial_capital),
+            return_percentage: format!("{:.2}%", result.return_percentage),
+            total_trades: result.total_trades,
+            winning_trades: result.winning_trades,
+            losing_trades: result.losing_trades,
+            max_drawdown: format!("{:.2}%", result.max_drawdown),
+            sharpe_ratio: format!("{:.2}", result.sharpe_ratio),
+            volatility: "N/A".to_string(),
+            win_rate: format!("{:.2}%", result.win_rate),
+            profit_factor: format!("{:.2}", result.profit_factor),
+            total_commission: "N/A".to_string(),
+            trades: vec![],
+            equity_curve: vec![],
+            data_source: "1m-klines".to_string(),
+        });
+    }
+
+    // 单时间框架策略回测
+    info!("Creating single-timeframe strategy: {}", request.strategy_id);
     let temp_strategy = create_strategy(&request.strategy_id)
         .map_err(|e| {
             error!("Failed to create strategy: {}", e);
@@ -154,19 +208,19 @@ pub async fn run_backtest(
     if temp_strategy.supports_ohlc() {
         if let Some(timeframe) = temp_strategy.preferred_timeframe() {
             info!("Strategy supports OHLC, attempting {} timeframe", timeframe.as_str());
-            
+
             // Estimate candle count (roughly data_count / 50, minimum 100)
             let candle_count = (request.data_count / 50).max(100) as u32;
-            
+
             match state.repository.generate_recent_ohlc_for_backtest(
-                &request.symbol, 
-                timeframe, 
+                &request.symbol,
+                timeframe,
                 candle_count
             ).await {
                 Ok(ohlc_data) if !ohlc_data.is_empty() => {
                     info!("Generated {} OHLC candles, running OHLC backtest", ohlc_data.len());
                     data_source = format!("OHLC-{}", timeframe.as_str());
-                    
+
                     let strategy = create_strategy(&request.strategy_id)?;
                     let mut engine = BacktestEngine::new(strategy, config)
                         .map_err(|e| {
@@ -1662,15 +1716,220 @@ pub async fn toggle_symbol(state: State<'_, AppState>, symbol: String, enabled: 
     state.repository.set_symbol_enabled(&symbol, enabled).await.map_err(|e| e.to_string())
 }
 
+// ============ 交易对配置 Commands (trading_pairs) ============
+
+/// 获取所有交易对配置
+#[tauri::command]
+pub async fn get_trading_pairs(
+    state: State<'_, AppState>,
+    status: Option<String>,
+) -> Result<Vec<TradingPairConfig>, String> {
+    let pool = state.repository.get_pool();
+
+    let rows = if let Some(s) = status {
+        sqlx::query(
+            "SELECT id, symbol, market_type, exchange, status, note, created_at, updated_at \
+             FROM trading_pairs WHERE status = $1 ORDER BY symbol"
+        )
+        .bind(&s)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string())?
+    } else {
+        sqlx::query(
+            "SELECT id, symbol, market_type, exchange, status, note, created_at, updated_at \
+             FROM trading_pairs ORDER BY symbol"
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string())?
+    };
+
+    let pairs: Vec<TradingPairConfig> = rows.iter().map(|row| TradingPairConfig {
+        id: row.get("id"),
+        symbol: row.get("symbol"),
+        market_type: row.get("market_type"),
+        exchange: row.get("exchange"),
+        status: row.get("status"),
+        note: row.get("note"),
+        created_at: row.get::<chrono::DateTime<chrono::Utc>, _>("created_at").format("%Y-%m-%d %H:%M:%S").to_string(),
+        updated_at: row.get::<chrono::DateTime<chrono::Utc>, _>("updated_at").format("%Y-%m-%d %H:%M:%S").to_string(),
+    }).collect();
+
+    Ok(pairs)
+}
+
+/// 添加交易对配置
+#[tauri::command]
+pub async fn add_trading_pair(
+    state: State<'_, AppState>,
+    symbol: String,
+    market_type: String,
+    exchange: String,
+    note: Option<String>,
+) -> Result<TradingPairConfig, String> {
+    let pool = state.repository.get_pool();
+    let symbol = symbol.to_uppercase();
+
+    // 验证参数
+    if !["spot", "futures"].contains(&market_type.as_str()) {
+        return Err("market_type must be 'spot' or 'futures'".to_string());
+    }
+    if !["binance", "okx"].contains(&exchange.as_str()) {
+        return Err("exchange must be 'binance' or 'okx'".to_string());
+    }
+
+    // 插入或更新
+    let row = sqlx::query(
+        "INSERT INTO trading_pairs (symbol, market_type, exchange, status, note) \
+         VALUES ($1, $2, $3, 'active', $4) \
+         ON CONFLICT (symbol) DO UPDATE SET \
+             market_type = EXCLUDED.market_type, \
+             exchange = EXCLUDED.exchange, \
+             status = 'active', \
+             note = EXCLUDED.note, \
+             updated_at = NOW() \
+         RETURNING id, symbol, market_type, exchange, status, note, created_at, updated_at"
+    )
+    .bind(&symbol)
+    .bind(&market_type)
+    .bind(&exchange)
+    .bind(&note)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    info!("Added trading pair: {} ({}/{})", symbol, market_type, exchange);
+
+    Ok(TradingPairConfig {
+        id: row.get("id"),
+        symbol: row.get("symbol"),
+        market_type: row.get("market_type"),
+        exchange: row.get("exchange"),
+        status: row.get("status"),
+        note: row.get("note"),
+        created_at: row.get::<chrono::DateTime<chrono::Utc>, _>("created_at").format("%Y-%m-%d %H:%M:%S").to_string(),
+        updated_at: row.get::<chrono::DateTime<chrono::Utc>, _>("updated_at").format("%Y-%m-%d %H:%M:%S").to_string(),
+    })
+}
+
+/// 更新交易对状态
+#[tauri::command]
+pub async fn update_trading_pair_status(
+    state: State<'_, AppState>,
+    symbol: String,
+    status: String,
+) -> Result<(), String> {
+    let pool = state.repository.get_pool();
+
+    if !["active", "paused", "archived"].contains(&status.as_str()) {
+        return Err("status must be 'active', 'paused', or 'archived'".to_string());
+    }
+
+    let affected = sqlx::query(
+        "UPDATE trading_pairs SET status = $1, updated_at = NOW() WHERE symbol = $2"
+    )
+    .bind(&status)
+    .bind(&symbol)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?
+    .rows_affected();
+
+    if affected == 0 {
+        return Err(format!("Trading pair {} not found", symbol));
+    }
+
+    info!("Updated trading pair {} status to {}", symbol, status);
+    Ok(())
+}
+
+/// 删除交易对配置
+#[tauri::command]
+pub async fn delete_trading_pair(
+    state: State<'_, AppState>,
+    symbol: String,
+) -> Result<(), String> {
+    let pool = state.repository.get_pool();
+
+    let affected = sqlx::query("DELETE FROM trading_pairs WHERE symbol = $1")
+        .bind(&symbol)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?
+        .rows_affected();
+
+    if affected == 0 {
+        return Err(format!("Trading pair {} not found", symbol));
+    }
+
+    info!("Deleted trading pair {}", symbol);
+    Ok(())
+}
+
+/// 从 kline_1m 获取有数据的交易对（去重）
+#[tauri::command]
+pub async fn get_available_symbols_from_data(
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    let pool = state.repository.get_pool();
+
+    let rows = sqlx::query_scalar::<_, String>(
+        "SELECT DISTINCT symbol FROM kline_1m ORDER BY symbol"
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    Ok(rows)
+}
+
+/// 将交易对添加到监控列表 (symbol_config)
+#[tauri::command]
+pub async fn add_to_monitor(
+    state: State<'_, AppState>,
+    symbol: String,
+) -> Result<(), String> {
+    state.repository.add_symbol(&symbol).await.map_err(|e| e.to_string())?;
+    info!("Added {} to monitoring list", symbol);
+    Ok(())
+}
+
+/// 从监控列表移除交易对
+#[tauri::command]
+pub async fn remove_from_monitor(
+    state: State<'_, AppState>,
+    symbol: String,
+) -> Result<(), String> {
+    state.repository.remove_symbol(&symbol).await.map_err(|e| e.to_string())?;
+    info!("Removed {} from monitoring list", symbol);
+    Ok(())
+}
+
 // ============ 数据管理 Commands ============
+
+/// 交易对配置
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TradingPairConfig {
+    pub id: i32,
+    pub symbol: String,
+    pub market_type: String,  // spot/futures
+    pub exchange: String,     // binance/okx
+    pub status: String,       // active/paused/archived
+    pub note: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
 
 /// 数据采集状态
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CollectionStatus {
     /// 交易对
     pub symbol: String,
-    /// 是否正在采集
-    pub collecting: bool,
+    /// 状态
+    pub status: String,
+    /// 市场类型
+    pub market_type: String,
     /// 数据库中已有的记录数
     pub record_count: i64,
     /// 最早数据时间
@@ -1720,19 +1979,21 @@ pub async fn get_collection_status(
     .await
     .map_err(|e| e.to_string())?;
 
-    // 检查是否在 symbol_config 中启用
-    let enabled: bool = sqlx::query_scalar(
-        "SELECT enabled FROM symbol_config WHERE symbol = $1"
+    // 获取交易对配置
+    let pair_config: Option<(String, String)> = sqlx::query_as(
+        "SELECT market_type, status FROM trading_pairs WHERE symbol = $1"
     )
     .bind(&symbol)
     .fetch_optional(pool)
     .await
-    .map_err(|e| e.to_string())?
-    .unwrap_or(false);
+    .map_err(|e| e.to_string())?;
+
+    let (market_type, status) = pair_config.unwrap_or(("futures".to_string(), "active".to_string()));
 
     Ok(CollectionStatus {
         symbol,
-        collecting: enabled,
+        status,
+        market_type,
         record_count: count.0,
         earliest_time: time_range.0.map(|t| t.format("%Y-%m-%d %H:%M:%S").to_string()),
         latest_time: time_range.1.map(|t| t.format("%Y-%m-%d %H:%M:%S").to_string()),
@@ -1746,19 +2007,28 @@ pub async fn get_all_collection_status(
 ) -> Result<Vec<CollectionStatus>, String> {
     let pool = state.repository.get_pool();
 
-    // 获取所有交易对
-    let symbols: Vec<String> = sqlx::query_scalar(
-        "SELECT symbol FROM symbol_config ORDER BY symbol"
+    // 从 trading_pairs 表获取所有交易对配置
+    let rows = sqlx::query(
+        "SELECT tp.symbol, tp.market_type, tp.status, \
+                COALESCE((SELECT COUNT(*) FROM kline_1m k WHERE k.symbol = tp.symbol), 0) as record_count, \
+                (SELECT MIN(timestamp) FROM kline_1m k WHERE k.symbol = tp.symbol) as earliest_time, \
+                (SELECT MAX(timestamp) FROM kline_1m k WHERE k.symbol = tp.symbol) as latest_time \
+         FROM trading_pairs tp ORDER BY tp.symbol"
     )
     .fetch_all(pool)
     .await
     .map_err(|e| e.to_string())?;
 
-    let mut statuses = Vec::new();
-    for symbol in symbols {
-        let status = get_collection_status(state.clone(), symbol).await?;
-        statuses.push(status);
-    }
+    let statuses: Vec<CollectionStatus> = rows.iter().map(|row| CollectionStatus {
+        symbol: row.get("symbol"),
+        market_type: row.get("market_type"),
+        status: row.get("status"),
+        record_count: row.get::<Option<i64>, _>("record_count").unwrap_or(0),
+        earliest_time: row.get::<Option<chrono::DateTime<chrono::Utc>>, _>("earliest_time")
+            .map(|t| t.format("%Y-%m-%d %H:%M:%S").to_string()),
+        latest_time: row.get::<Option<chrono::DateTime<chrono::Utc>>, _>("latest_time")
+            .map(|t| t.format("%Y-%m-%d %H:%M:%S").to_string()),
+    }).collect();
 
     Ok(statuses)
 }
@@ -1822,9 +2092,32 @@ pub async fn archive_symbol_data(
         });
     }
 
-    // 2. 获取要归档的数据
-    let klines = state.repository.get_klines_before(&symbol, cutoff, count.0).await
-        .map_err(|e| e.to_string())?;
+    // 2. 获取要归档的数据（使用 SQL 直接查询）
+    let rows = sqlx::query(
+        "SELECT timestamp, symbol, open, high, low, close, volume, trade_count \
+         FROM kline_1m WHERE symbol = $1 AND timestamp < $2 ORDER BY timestamp ASC"
+    )
+    .bind(&symbol)
+    .bind(cutoff)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let klines: Vec<trading_common::data::types::OHLCData> = rows.iter().map(|row| {
+        trading_common::data::types::OHLCData {
+            timestamp: row.get("timestamp"),
+            symbol: row.get("symbol"),
+            timeframe: trading_common::data::types::Timeframe::OneMinute,
+            open: row.get("open"),
+            high: row.get("high"),
+            low: row.get("low"),
+            close: row.get("close"),
+            volume: row.get("volume"),
+            trade_count: row.get::<i32, _>("trade_count") as u64,
+        }
+    }).collect();
+
+    info!("Fetched {} klines for archiving", klines.len());
 
     // 3. 导出到 Parquet
     let output_dir = std::path::PathBuf::from("data/parquet");
@@ -1841,16 +2134,11 @@ pub async fn archive_symbol_data(
         Ok(exported) => {
             info!("Exported {} klines to Parquet for {}", exported, symbol);
 
-            // 获取文件大小
-            let stats = polars_repo.get_stats(&symbol).unwrap_or_default();
-            let file_size_mb = stats.total_size_bytes as f64 / 1024.0 / 1024.0;
-
-            // 4. 删除已归档的数据（可选，这里先保留）
-            // let deleted = sqlx::query("DELETE FROM kline_1m WHERE symbol = $1 AND timestamp < $2")
-            //     .bind(&symbol)
-            //     .bind(cutoff)
-            //     .execute(pool)
-            //     .await?;
+            // 获取文件大小（安全处理）
+            let file_size_mb = match polars_repo.get_stats(&symbol) {
+                Ok(stats) => stats.total_size_bytes as f64 / 1024.0 / 1024.0,
+                Err(_) => 0.0,
+            };
 
             Ok(ArchiveResult {
                 symbol,
