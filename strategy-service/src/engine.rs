@@ -83,37 +83,39 @@ async fn process_strategy(
     }
 
     // 写入信号到数据库
-    let signal_type_str = match signal.signal_type {
-        SignalType::Buy => "BUY",
-        SignalType::Sell => "SELL",
-        SignalType::Hold => "HOLD",
+    let direction = match signal.signal_type {
+        SignalType::Buy => "bullish",
+        SignalType::Sell => "bearish",
+        SignalType::Hold => "neutral",
+    };
+
+    let entry_direction = match signal.signal_type {
+        SignalType::Buy => Some("long"),
+        SignalType::Sell => Some("short"),
+        SignalType::Hold => None,
     };
 
     let signal_request = signals::CreateSignalRequest {
         strategy_id: strategy_instance.strategy_type.clone(),
         symbol: symbol.to_string(),
-        signal_time: Utc::now(),
-        signal_type: signal_type_str.to_string(),
-        signal_price: rust_decimal::Decimal::try_from(signal.entry_price)?,
-        signal_quantity: None,
-        confidence: Some(rust_decimal::Decimal::try_from(signal.confidence)?),
-        trend_direction: None,
-        timeframe_analysis: None,
+        direction: direction.to_string(),
+        entry_price: rust_decimal::Decimal::try_from(signal.entry_price)?,
+        overall_confidence: rust_decimal::Decimal::try_from(signal.confidence)?,
+        entry_allowed: signal.signal_type != SignalType::Hold,
+        entry_direction: entry_direction.map(|s| s.to_string()),
+        timeframe_details: None,
         instance_id: Some(strategy_instance.id),
         signal_strength: Some(rust_decimal::Decimal::try_from(signal.signal_strength)?),
         market_context: Some(signal.market_context),
-        entry_price: Some(rust_decimal::Decimal::try_from(signal.entry_price)?),
         stop_loss: signal.stop_loss.map(|v| rust_decimal::Decimal::try_from(v)).transpose()?,
         take_profit: signal.take_profit.map(|v| rust_decimal::Decimal::try_from(v)).transpose()?,
-        exchange: Some(strategy_instance.exchange.clone()),
-        market_type: Some(strategy_instance.market_type.clone()),
     };
 
     let saved_signal = signals::create_signal(pool, signal_request).await?;
 
     info!(
         "Signal generated: {} {} at {} (strength={:.2}, reason={})",
-        signal_type_str,
+        direction,
         symbol,
         signal.entry_price,
         signal.signal_strength,
@@ -147,7 +149,7 @@ async fn should_skip_signal(
     let min_interval = chrono::Duration::minutes(5); // 最小间隔 5 分钟
 
     for recent in recent_signals {
-        if recent.symbol == symbol && recent.signal_time + min_interval > now {
+        if recent.symbol == symbol && recent.created_at + min_interval > now {
             return Ok(true); // 太近了，跳过
         }
     }

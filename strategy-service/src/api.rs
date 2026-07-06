@@ -144,6 +144,7 @@ struct SignalQueryParams {
     symbol: Option<String>,
     start: Option<chrono::DateTime<chrono::Utc>>,
     end: Option<chrono::DateTime<chrono::Utc>>,
+    status: Option<String>,
     limit: Option<i64>,
 }
 
@@ -157,6 +158,7 @@ async fn query_signals(
         symbol: params.symbol,
         start: params.start,
         end: params.end,
+        status: params.status,
         limit: params.limit,
     };
 

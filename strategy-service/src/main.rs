@@ -18,6 +18,23 @@ async fn main() -> Result<()> {
 
     info!("Starting strategy-service...");
 
+    // 加载 .env 文件
+    let run_mode = std::env::var("RUN_MODE").unwrap_or_else(|_| "development".to_string());
+    let env_file = match run_mode.as_str() {
+        "production" | "prod" => ".env.production",
+        "test" => ".env.test",
+        _ => ".env.development",
+    };
+
+    // 尝试加载环境特定的 .env 文件，失败则加载默认 .env
+    if dotenv::from_filename(env_file).is_err() {
+        dotenv::dotenv().ok();
+    }
+    // 也尝试从 strategy-service 目录加载
+    let _ = dotenv::from_filename("strategy-service/.env");
+
+    info!("Loading config from: {}", env_file);
+
     // 加载配置
     let config = config::AppConfig::load()?;
     info!("Config loaded: {:?}", config);

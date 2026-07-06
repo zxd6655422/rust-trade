@@ -58,54 +58,31 @@ CREATE INDEX IF NOT EXISTS idx_strategy_instances_exchange ON strategy_instances
 
 -- =================================================================
 -- 2. 策略信号表 (strategy_signals) 扩展
--- 用途：记录策略生成的交易信号，关联策略实例
+-- 注意：表结构已存在，instance_id 等字段可能已添加
+-- 这里只添加缺失的字段
 -- =================================================================
 
--- 新增字段
-ALTER TABLE strategy_signals ADD COLUMN IF NOT EXISTS
-    instance_id UUID REFERENCES strategy_instances(id);
+-- 新增字段（这些字段可能已存在，使用 IF NOT EXISTS 避免报错）
+-- signal_time 字段不存在于当前表，使用 created_at 替代
+-- entry_price 字段已存在，跳过
 
-ALTER TABLE strategy_signals ADD COLUMN IF NOT EXISTS
-    signal_strength DECIMAL(5,4);
-
-ALTER TABLE strategy_signals ADD COLUMN IF NOT EXISTS
-    market_context JSONB;
-
-ALTER TABLE strategy_signals ADD COLUMN IF NOT EXISTS
-    entry_price DECIMAL(20,8);
-
-ALTER TABLE strategy_signals ADD COLUMN IF NOT EXISTS
-    stop_loss DECIMAL(20,8);
-
-ALTER TABLE strategy_signals ADD COLUMN IF NOT EXISTS
-    take_profit DECIMAL(20,8);
-
-ALTER TABLE strategy_signals ADD COLUMN IF NOT EXISTS
-    exchange VARCHAR(20) NOT NULL DEFAULT 'binance';
-
-ALTER TABLE strategy_signals ADD COLUMN IF NOT EXISTS
-    market_type VARCHAR(10) NOT NULL DEFAULT 'futures';
-
--- 新增索引
-CREATE INDEX IF NOT EXISTS idx_signals_instance ON strategy_signals(instance_id, signal_time DESC);
-CREATE INDEX IF NOT EXISTS idx_signals_exchange ON strategy_signals(exchange);
+-- 新增索引（使用 created_at 而不是 signal_time）
+CREATE INDEX IF NOT EXISTS idx_signals_instance ON strategy_signals(instance_id, created_at DESC);
 
 -- =================================================================
 -- 3. 交易记录表 (trades) 扩展
 -- 用途：确保每笔交易都能追溯到信号和策略
 -- =================================================================
 
--- 新增字段
+-- 新增字段（关联信号）
 ALTER TABLE trades ADD COLUMN IF NOT EXISTS
     signal_id UUID REFERENCES strategy_signals(id);
 
 ALTER TABLE trades ADD COLUMN IF NOT EXISTS
-    order_status VARCHAR(20) DEFAULT 'filled'
-        CHECK (order_status IN ('pending', 'filled', 'cancelled', 'rejected'));
+    order_status VARCHAR(20) DEFAULT 'filled';
 
 ALTER TABLE trades ADD COLUMN IF NOT EXISTS
-    order_type VARCHAR(20) DEFAULT 'market'
-        CHECK (order_type IN ('market', 'limit', 'stop'));
+    order_type VARCHAR(20) DEFAULT 'market';
 
 ALTER TABLE trades ADD COLUMN IF NOT EXISTS
     leverage INTEGER DEFAULT 1;
@@ -118,7 +95,6 @@ ALTER TABLE trades ADD COLUMN IF NOT EXISTS
 
 -- 新增索引
 CREATE INDEX IF NOT EXISTS idx_trades_signal ON trades(signal_id);
-CREATE INDEX IF NOT EXISTS idx_trades_exchange ON trades(exchange);
 
 -- =================================================================
 -- 4. 策略性能统计表 (strategy_performance)
@@ -187,7 +163,7 @@ BEGIN
     RAISE NOTICE '========================================';
     RAISE NOTICE 'Schema V6 迁移完成';
     RAISE NOTICE '  - strategy_instances (策略实例表)';
-    RAISE NOTICE '  - strategy_signals 扩展 (instance_id, market_context)';
+    RAISE NOTICE '  - strategy_signals 索引 (instance_id)';
     RAISE NOTICE '  - trades 扩展 (signal_id, order_status)';
     RAISE NOTICE '  - strategy_performance (策略性能统计)';
     RAISE NOTICE '========================================';

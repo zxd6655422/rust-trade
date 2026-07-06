@@ -1,7 +1,6 @@
 use anyhow::Result;
-use serde::Deserialize;
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Clone)]
 pub struct AppConfig {
     pub server: ServerConfig,
     pub database: DatabaseConfig,
@@ -9,50 +8,52 @@ pub struct AppConfig {
     pub engine: EngineConfig,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Clone)]
 pub struct ServerConfig {
     pub host: String,
     pub port: u16,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Clone)]
 pub struct DatabaseConfig {
     pub url: String,
     pub max_connections: u32,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Clone)]
 pub struct RedisConfig {
     pub url: String,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Clone)]
 pub struct EngineConfig {
     pub poll_interval_secs: u64,
 }
 
+fn get_env(key: &str) -> Result<String> {
+    std::env::var(key).map_err(|_| anyhow::anyhow!("configuration property \"{}\" not found", key))
+}
+
+fn get_env_or(key: &str, default: &str) -> String {
+    std::env::var(key).unwrap_or_else(|_| default.to_string())
+}
+
 impl AppConfig {
     pub fn load() -> Result<Self> {
-        dotenv::dotenv().ok();
-
-        let config = config::Config::builder()
-            .add_source(config::Environment::default().separator("__"))
-            .build()?;
-
         let app_config = AppConfig {
             server: ServerConfig {
-                host: config.get_string("SERVER_HOST").unwrap_or_else(|_| "0.0.0.0".to_string()),
-                port: config.get_int("SERVER_PORT").unwrap_or(8082) as u16,
+                host: get_env_or("SERVER_HOST", "0.0.0.0"),
+                port: get_env_or("SERVER_PORT", "8082").parse()?,
             },
             database: DatabaseConfig {
-                url: config.get_string("DATABASE_URL")?,
-                max_connections: config.get_int("DATABASE_MAX_CONNECTIONS").unwrap_or(10) as u32,
+                url: get_env("DATABASE_URL")?,
+                max_connections: get_env_or("DATABASE_MAX_CONNECTIONS", "10").parse()?,
             },
             redis: RedisConfig {
-                url: config.get_string("REDIS_URL")?,
+                url: get_env("REDIS_URL")?,
             },
             engine: EngineConfig {
-                poll_interval_secs: config.get_int("ENGINE_POLL_INTERVAL_SECS").unwrap_or(5) as u64,
+                poll_interval_secs: get_env_or("ENGINE_POLL_INTERVAL_SECS", "5").parse()?,
             },
         };
 
