@@ -13,6 +13,7 @@ mod api;
 mod config;
 mod exchange;
 mod live_trading;
+mod redis_writer;
 mod service;
 
 // Import from trading-common
@@ -303,6 +304,7 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
                 BinanceExchange::with_futures_symbols(futures_symbols.clone())
             );
             let symbols = settings.symbols.clone();
+            let redis_url = settings.cache.redis.url.clone();
             let price_tx = tick_tx.clone();
 
             Some(tokio::spawn(async move {
@@ -435,7 +437,7 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
                         // 等待当前批次完成
                         let results = futures::future::join_all(fetch_futures).await;
 
-                        // 批量插入数据 + 广播最新价格
+                        // 批量插入数据 + 广播最新价格 + 写入 Redis
                         for result in results.into_iter().flatten() {
                             let (symbol, ohlc_list) = result;
                             let count = ohlc_list.len();
@@ -453,6 +455,16 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
                                 };
                                 let _ = price_tx.send(tick);
                             }
+
+                            // 写入 Redis（在 batch_insert_klines 之前克隆数据）
+                            let redis_ohlc = ohlc_list.clone();
+                            let redis_url_clone = redis_url.clone();
+                            let sym_clone = symbol.clone();
+                            tokio::task::spawn_blocking(move || {
+                                if let Err(e) = redis_writer::write_market_data(&redis_url_clone, &sym_clone, &redis_ohlc) {
+                                    warn!("[{}] Redis 写入失败: {}", sym_clone, e);
+                                }
+                            });
 
                             match repo.batch_insert_klines(ohlc_list).await {
                                 Ok(inserted) => {
