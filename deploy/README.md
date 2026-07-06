@@ -96,6 +96,7 @@ bash ~/apps/deploy/archive.sh --symbol BTCUSDT --days 30
 | `archive.sh` | 数据归档 | `bash ~/apps/deploy/archive.sh` |
 | `monitor.sh` | 服务监控 | `bash ~/apps/deploy/monitor.sh` |
 | `backup.sh` | 数据备份 | `bash ~/apps/deploy/backup.sh` |
+| `logs.sh` | 查看日志 | `bash ~/apps/deploy/logs.sh` |
 
 > 💡 首次部署从 `~/rust-trade/deploy/first-time-setup.sh` 执行，后续所有操作都在 `~/apps/deploy/` 中执行
 
@@ -110,8 +111,20 @@ sudo systemctl status trading-engine
 
 # 重启服务
 sudo systemctl restart trading-collector trading-engine
+```
 
-# 查看日志
+### 查看日志
+
+```bash
+# 使用 logs.sh 脚本（推荐）
+bash ~/apps/deploy/logs.sh                           # 查看采集服务最近 100 行
+bash ~/apps/deploy/logs.sh trading-engine -f         # 实时跟踪引擎日志
+bash ~/apps/deploy/logs.sh -n 50                     # 查看最近 50 行
+bash ~/apps/deploy/logs.sh -s '1 hour ago'           # 最近 1 小时的日志
+bash ~/apps/deploy/logs.sh -p err                    # 只看错误日志
+bash ~/apps/deploy/logs.sh -s today                  # 今天的日志
+
+# 直接使用 journalctl
 sudo journalctl -u trading-collector -f
 sudo journalctl -u trading-engine -f
 ```

@@ -93,6 +93,7 @@ cp "$REPO_DIR/deploy/publish.sh" "$DEPLOY_DIR/publish.sh"
 cp "$REPO_DIR/deploy/monitor.sh" "$DEPLOY_DIR/monitor.sh"
 cp "$REPO_DIR/deploy/backup.sh" "$DEPLOY_DIR/backup.sh"
 cp "$REPO_DIR/deploy/archive.sh" "$DEPLOY_DIR/archive.sh"
+cp "$REPO_DIR/deploy/logs.sh" "$DEPLOY_DIR/logs.sh"
 cp "$REPO_DIR/deploy/first-time-setup.sh" "$DEPLOY_DIR/first-time-setup.sh"
 chmod +x "$DEPLOY_DIR"/*.sh
 echo -e "  ${GREEN}部署脚本 → $DEPLOY_DIR/ ✓${NC}"
