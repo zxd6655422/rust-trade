@@ -64,6 +64,13 @@ echo -e "${GREEN}  $DATA_DIR/       ✓${NC}"
 # 4. 复制二进制文件
 # ============================================================
 echo -e "\n${YELLOW}[4/7] 部署二进制文件...${NC}"
+
+# 先停止服务（如果正在运行）
+echo -e "  ${CYAN}停止服务...${NC}"
+sudo systemctl stop trading-collector 2>/dev/null || true
+sudo systemctl stop trading-engine 2>/dev/null || true
+sleep 1
+
 cp "$REPO_DIR/target/release/trading-core" "$COLLECTOR_DIR/trading-core"
 chmod +x "$COLLECTOR_DIR/trading-core"
 echo -e "  ${GREEN}trading-core ✓${NC}"
