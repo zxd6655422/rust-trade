@@ -127,6 +127,14 @@ else
     echo -e "  ${YELLOW}engine-production.toml (已存在，跳过)${NC}"
 fi
 
+# trading-engine 环境变量（从 config/ 目录加载，不覆盖已有配置）
+if [ ! -f "$ENGINE_DIR/config/.env.production" ]; then
+    cp "$REPO_DIR/dist/trading-engine/config/.env.production" "$ENGINE_DIR/config/.env.production"
+    echo -e "  ${GREEN}config/.env.production (新建，请编辑填写 API Key)${NC}"
+else
+    echo -e "  ${YELLOW}config/.env.production (已存在，跳过)${NC}"
+fi
+
 # strategy-service 配置（从 config/ 目录加载，不覆盖已有配置）
 if [ ! -f "$STRATEGY_DIR/config/.env.production" ]; then
     cp "$REPO_DIR/dist/strategy-service/config/.env.production" "$STRATEGY_DIR/config/.env.production"
@@ -189,7 +197,7 @@ ExecStart=$ENGINE_DIR/trading-engine
 Restart=always
 RestartSec=10
 
-EnvironmentFile=$ENGINE_DIR/.env
+EnvironmentFile=$ENGINE_DIR/config/.env.production
 Environment=RUST_LOG=info
 Environment=RUN_MODE=production
 
