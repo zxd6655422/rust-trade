@@ -17,6 +17,9 @@ pub enum ExchangeError {
     #[error("Authentication error: {0}")]
     AuthenticationError(String),
 
+    #[error("API permission denied: {0}")]
+    PermissionDenied(String),
+
     #[error("Invalid symbol: {0}")]
     InvalidSymbol(String),
 

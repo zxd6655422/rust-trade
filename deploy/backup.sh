@@ -56,6 +56,7 @@ if [ "$BACKUP_CONFIG" = true ]; then
     mkdir -p $BACKUP_PATH/config
     cp -r $APPS_DIR/trading-core/config/* $BACKUP_PATH/config/trading-core/ 2>/dev/null || true
     cp -r $APPS_DIR/trading-engine/config/* $BACKUP_PATH/config/trading-engine/ 2>/dev/null || true
+    cp $APPS_DIR/strategy-service/config/.env.production $BACKUP_PATH/config/strategy-service.env.production 2>/dev/null || true
     echo -e "${GREEN}✓ 配置文件已备份${NC}"
 fi
 

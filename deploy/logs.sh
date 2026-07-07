@@ -20,7 +20,7 @@ LEVEL=""
 # 解析参数
 while [[ $# -gt 0 ]]; do
     case $1 in
-        trading-collector|trading-engine|trading-archive)
+        trading-collector|trading-engine|strategy-service|trading-archive)
             SERVICE="$1"; shift ;;
         -f|--follow)
             FOLLOW=true; shift ;;
@@ -36,6 +36,7 @@ while [[ $# -gt 0 ]]; do
             echo "服务名:"
             echo "  trading-collector   数据采集服务（默认）"
             echo "  trading-engine      交易引擎服务"
+            echo "  strategy-service    策略分析服务"
             echo "  trading-archive     归档任务"
             echo ""
             echo "选项:"

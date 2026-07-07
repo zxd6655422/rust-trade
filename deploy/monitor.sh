@@ -53,6 +53,17 @@ check_services() {
         echo -e "  状态: ${RED}● 未运行${NC}"
     fi
 
+    # 检查 strategy-service
+    echo -e "\n${YELLOW}Strategy Service:${NC}"
+    if systemctl is-active --quiet strategy-service; then
+        echo -e "  状态: ${GREEN}● 运行中${NC}"
+        echo -e "  PID: $(systemctl show strategy-service --property=MainPID --value)"
+        echo -e "  内存: $(systemctl show strategy-service --property=MemoryCurrent --value | numfmt --to=iec 2>/dev/null || echo 'N/A')"
+        echo -e "  运行时间: $(systemctl show strategy-service --property=ActiveEnterTimestamp --value)"
+    else
+        echo -e "  状态: ${RED}● 未运行${NC}"
+    fi
+
     # 检查数据库连接
     echo -e "\n${YELLOW}数据库连接:${NC}"
     if PGPASSWORD=$DB_PASSWORD psql -h $DB_HOST -p $DB_PORT -U postgres -c '\q' 2>/dev/null; then
@@ -74,7 +85,7 @@ check_services() {
 
     # 检查日志文件
     echo -e "\n${YELLOW}日志文件:${NC}"
-    for log in $APPS_DIR/trading-core/logs/*.log $APPS_DIR/trading-engine/logs/*.log; do
+    for log in $APPS_DIR/trading-core/logs/*.log $APPS_DIR/trading-engine/logs/*.log $APPS_DIR/strategy-service/logs/*.log; do
         if [ -f "$log" ]; then
             size=$(du -sh "$log" | cut -f1)
             echo -e "  $(basename $log): $size"
@@ -104,7 +115,7 @@ check_resources() {
 # 检查最近错误
 check_errors() {
     echo -e "\n${YELLOW}最近错误 (最后 5 条):${NC}"
-    for service in trading-collector trading-engine; do
+    for service in trading-collector trading-engine strategy-service; do
         errors=$(journalctl -u $service --since "1 hour ago" -p err --no-pager 2>/dev/null | tail -5)
         if [ -n "$errors" ]; then
             echo -e "  ${RED}$service:${NC}"

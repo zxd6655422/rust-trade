@@ -82,6 +82,37 @@ impl BinanceAdapter {
         })
     }
 
+    /// 根据 Binance 错误码分类错误，提供友好的错误提示
+    fn classify_error(&self, code: i64, message: String) -> ExchangeError {
+        match code {
+            // API Key 权限不足（只读 key 尝试写操作）
+            -2015 => ExchangeError::PermissionDenied(format!(
+                "{} (当前 API Key 为只读权限，无法执行交易操作。请在 Binance 后台开启交易权限，或仅使用只读功能)",
+                message
+            )),
+            // API Key 格式无效
+            -2014 => ExchangeError::AuthenticationError(format!(
+                "API Key 格式无效: {} (请检查 BINANCE_API_KEY 配置)", message
+            )),
+            // 签名无效
+            -1022 => ExchangeError::SignatureError(format!(
+                "签名验证失败: {} (请检查 BINANCE_API_SECRET 配置)", message
+            )),
+            // 时间戳超出 recvWindow
+            -1021 => ExchangeError::AuthenticationError(format!(
+                "时间戳超出允许范围: {} (请检查系统时间是否准确)", message
+            )),
+            // IP 不在白名单
+            -2016 => ExchangeError::PermissionDenied(format!(
+                "IP 地址不在 API Key 白名单中: {} (请在 Binance 后台添加当前服务器 IP)", message
+            )),
+            // 请求频率限制
+            -1003 => ExchangeError::RateLimitExceeded,
+            // 其他错误
+            _ => ExchangeError::ApiError { code, message },
+        }
+    }
+
     /// 生成 HMAC-SHA256 签名
     fn sign(&self, query_string: &str) -> Result<String, ExchangeError> {
         let mut mac = HmacSha256::new_from_slice(self.config.api_secret.as_bytes())
@@ -138,7 +169,7 @@ impl BinanceAdapter {
                 .unwrap_or("Unknown error")
                 .to_string();
 
-            return Err(ExchangeError::ApiError { code, message });
+            return Err(self.classify_error(code, message));
         }
 
         serde_json::from_str(&body).map_err(|e| ExchangeError::ParseError(e.to_string()))
@@ -190,7 +221,7 @@ impl BinanceAdapter {
                 .unwrap_or("Unknown error")
                 .to_string();
 
-            return Err(ExchangeError::ApiError { code, message });
+            return Err(self.classify_error(code, message));
         }
 
         serde_json::from_str(&body).map_err(|e| ExchangeError::ParseError(e.to_string()))
@@ -251,7 +282,7 @@ impl BinanceAdapter {
                 .unwrap_or_else(|_| serde_json::json!({"msg": body}));
             let code = error_response["code"].as_i64().unwrap_or(-1);
             let message = error_response["msg"].as_str().unwrap_or("Unknown error").to_string();
-            return Err(ExchangeError::ApiError { code, message });
+            return Err(self.classify_error(code, message));
         }
 
         if body.is_empty() {

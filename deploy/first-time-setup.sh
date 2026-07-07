@@ -19,6 +19,7 @@ APPS_DIR="$HOME/apps"
 DEPLOY_DIR="$APPS_DIR/deploy"
 COLLECTOR_DIR="$APPS_DIR/trading-core"
 ENGINE_DIR="$APPS_DIR/trading-engine"
+STRATEGY_DIR="$APPS_DIR/strategy-service"
 CURRENT_USER=$(whoami)
 
 echo -e "${GREEN}========================================${NC}"
@@ -42,7 +43,7 @@ echo -e "${GREEN}  Rust $(rustc --version) ✓${NC}"
 # ============================================================
 echo -e "\n${YELLOW}[2/7] 编译 release 版本 (可能需要几分钟)...${NC}"
 cd "$REPO_DIR"
-cargo build --release -p trading-core -p trading-engine -p archive-klines
+cargo build --release -p trading-core -p trading-engine -p strategy-service -p archive-klines
 echo -e "${GREEN}  编译完成 ✓${NC}"
 
 # ============================================================
@@ -52,12 +53,14 @@ echo -e "\n${YELLOW}[3/7] 创建目录结构...${NC}"
 DATA_DIR="$APPS_DIR/trading-data"
 for dir in "$DEPLOY_DIR" "$COLLECTOR_DIR" "$COLLECTOR_DIR/config" "$COLLECTOR_DIR/logs" \
            "$ENGINE_DIR" "$ENGINE_DIR/config" "$ENGINE_DIR/logs" \
+           "$STRATEGY_DIR" "$STRATEGY_DIR/config" "$STRATEGY_DIR/logs" \
            "$DATA_DIR/parquet" "$DATA_DIR/logs"; do
     mkdir -p "$dir"
 done
 echo -e "${GREEN}  $DEPLOY_DIR/      ✓${NC}"
 echo -e "${GREEN}  $COLLECTOR_DIR/  ✓${NC}"
 echo -e "${GREEN}  $ENGINE_DIR/     ✓${NC}"
+echo -e "${GREEN}  $STRATEGY_DIR/   ✓${NC}"
 echo -e "${GREEN}  $DATA_DIR/       ✓${NC}"
 
 # ============================================================
@@ -69,6 +72,7 @@ echo -e "\n${YELLOW}[4/7] 部署二进制文件...${NC}"
 echo -e "  ${CYAN}停止服务...${NC}"
 sudo systemctl stop trading-collector 2>/dev/null || true
 sudo systemctl stop trading-engine 2>/dev/null || true
+sudo systemctl stop strategy-service 2>/dev/null || true
 sleep 1
 
 cp "$REPO_DIR/target/release/trading-core" "$COLLECTOR_DIR/trading-core"
@@ -78,6 +82,10 @@ echo -e "  ${GREEN}trading-core ✓${NC}"
 cp "$REPO_DIR/target/release/trading-engine" "$ENGINE_DIR/trading-engine"
 chmod +x "$ENGINE_DIR/trading-engine"
 echo -e "  ${GREEN}trading-engine ✓${NC}"
+
+cp "$REPO_DIR/target/release/strategy-service" "$STRATEGY_DIR/strategy-service"
+chmod +x "$STRATEGY_DIR/strategy-service"
+echo -e "  ${GREEN}strategy-service ✓${NC}"
 
 cp "$REPO_DIR/target/release/archive_klines" "$COLLECTOR_DIR/archive_klines"
 chmod +x "$COLLECTOR_DIR/archive_klines"
@@ -119,10 +127,19 @@ else
     echo -e "  ${YELLOW}engine-production.toml (已存在，跳过)${NC}"
 fi
 
+# strategy-service 配置（从 config/ 目录加载，不覆盖已有配置）
+if [ ! -f "$STRATEGY_DIR/config/.env.production" ]; then
+    cp "$REPO_DIR/dist/strategy-service/config/.env.production" "$STRATEGY_DIR/config/.env.production"
+    echo -e "  ${GREEN}config/.env.production (新建，请编辑填写实际配置)${NC}"
+else
+    echo -e "  ${YELLOW}config/.env.production (已存在，跳过)${NC}"
+fi
+
 # 复制 start.sh
 cp "$REPO_DIR/deploy/trading-core/start.sh" "$COLLECTOR_DIR/start.sh"
 cp "$REPO_DIR/deploy/trading-engine/start.sh" "$ENGINE_DIR/start.sh"
-chmod +x "$COLLECTOR_DIR/start.sh" "$ENGINE_DIR/start.sh"
+cp "$REPO_DIR/deploy/strategy-service/start.sh" "$STRATEGY_DIR/start.sh"
+chmod +x "$COLLECTOR_DIR/start.sh" "$ENGINE_DIR/start.sh" "$STRATEGY_DIR/start.sh"
 echo -e "  ${GREEN}start.sh ✓${NC}"
 
 # ============================================================
@@ -185,8 +202,36 @@ WantedBy=multi-user.target
 EOF
 echo -e "  ${GREEN}trading-engine.service ✓${NC}"
 
+# strategy-service.service
+sudo tee /etc/systemd/system/strategy-service.service > /dev/null << EOF
+[Unit]
+Description=Strategy Analysis Service
+After=network.target trading-collector.service postgresql.service redis.service
+Wants=postgresql.service redis.service
+
+[Service]
+Type=simple
+User=$CURRENT_USER
+WorkingDirectory=$STRATEGY_DIR
+ExecStart=$STRATEGY_DIR/strategy-service
+Restart=always
+RestartSec=10
+
+EnvironmentFile=$STRATEGY_DIR/config/.env.production
+Environment=RUST_LOG=info
+Environment=RUN_MODE=production
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=strategy-service
+
+[Install]
+WantedBy=multi-user.target
+EOF
+echo -e "  ${GREEN}strategy-service.service ✓${NC}"
+
 sudo systemctl daemon-reload
-sudo systemctl enable trading-collector trading-engine 2>/dev/null || true
+sudo systemctl enable trading-collector trading-engine strategy-service 2>/dev/null || true
 echo -e "  ${GREEN}systemd 已重载并设置开机自启 ✓${NC}"
 
 # ============================================================
@@ -218,6 +263,7 @@ echo ""
 echo "  1. 编辑配置文件:"
 echo "     vim $COLLECTOR_DIR/config/production.toml"
 echo "     vim $ENGINE_DIR/config/engine-production.toml"
+echo "     vim $STRATEGY_DIR/.env"
 echo ""
 echo "  2. 创建环境变量文件 (trading-engine 需要):"
 echo "     vim $ENGINE_DIR/.env"
@@ -226,14 +272,17 @@ echo ""
 echo "  3. 启动服务:"
 echo "     sudo systemctl start trading-collector"
 echo "     sudo systemctl start trading-engine"
+echo "     sudo systemctl start strategy-service"
 echo ""
 echo "  4. 查看状态:"
 echo "     sudo systemctl status trading-collector"
 echo "     sudo systemctl status trading-engine"
+echo "     sudo systemctl status strategy-service"
 echo ""
 echo "  5. 查看日志:"
 echo "     sudo journalctl -u trading-collector -f"
 echo "     sudo journalctl -u trading-engine -f"
+echo "     sudo journalctl -u strategy-service -f"
 echo ""
 echo "  后续更新代码用: bash ~/rust-trade/deploy/publish.sh"
 echo ""

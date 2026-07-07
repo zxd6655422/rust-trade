@@ -66,7 +66,7 @@ echo -e "${GREEN}  ✓ 代码更新完成${NC}"
 if [ "$SKIP_BUILD" = false ]; then
     echo -e "\n${YELLOW}[2/4] 编译 release 版本...${NC}"
     echo -e "  ${CYAN}这可能需要几分钟，请耐心等待...${NC}"
-    cargo build --release -p trading-core -p trading-engine -p archive-klines
+    cargo build --release -p trading-core -p trading-engine -p strategy-service -p archive-klines
     echo -e "${GREEN}  ✓ 编译完成${NC}"
 else
     echo -e "\n${YELLOW}[2/4] 跳过编译 (--skip-build)${NC}"
@@ -79,6 +79,7 @@ if [ "$NO_RESTART" = false ]; then
     echo -e "\n${YELLOW}[3/4] 停止服务...${NC}"
     sudo systemctl stop trading-collector 2>/dev/null || true
     sudo systemctl stop trading-engine 2>/dev/null || true
+    sudo systemctl stop strategy-service 2>/dev/null || true
     sleep 2
     echo -e "${GREEN}  ✓ 服务已停止${NC}"
 else
@@ -102,6 +103,13 @@ if [ -f "$REPO_DIR/target/release/trading-engine" ]; then
     cp "$REPO_DIR/target/release/trading-engine" "$APPS_DIR/trading-engine/trading-engine"
     chmod +x "$APPS_DIR/trading-engine/trading-engine"
     echo -e "  ${GREEN}✓ trading-engine${NC}"
+fi
+
+# 部署 strategy-service
+if [ -f "$REPO_DIR/target/release/strategy-service" ]; then
+    cp "$REPO_DIR/target/release/strategy-service" "$APPS_DIR/strategy-service/strategy-service"
+    chmod +x "$APPS_DIR/strategy-service/strategy-service"
+    echo -e "  ${GREEN}✓ strategy-service${NC}"
 fi
 
 # 部署 archive_klines
@@ -134,6 +142,7 @@ if [ "$NO_RESTART" = false ]; then
     echo -e "\n${YELLOW}启动服务...${NC}"
     sudo systemctl start trading-collector
     sudo systemctl start trading-engine
+    sudo systemctl start strategy-service
     echo -e "${GREEN}  ✓ 服务已启动${NC}"
 fi
 
@@ -147,6 +156,9 @@ echo -e "${GREEN}╚════════════════════
 echo ""
 echo -e "${CYAN}常用命令:${NC}"
 echo "  查看状态:  sudo systemctl status trading-collector"
+echo "  查看状态:  sudo systemctl status trading-engine"
+echo "  查看状态:  sudo systemctl status strategy-service"
 echo "  查看日志:  sudo journalctl -u trading-collector -f"
+echo "  查看日志:  sudo journalctl -u strategy-service -f"
 echo "  数据归档:  bash ~/apps/trading-core/archive.sh --days 7"
 echo ""

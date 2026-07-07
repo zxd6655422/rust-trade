@@ -6,6 +6,7 @@ use anyhow::{anyhow, Result};
 use reqwest::Client;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
+use serde_json;
 use std::collections::HashMap;
 use tracing::{debug, error, info, warn};
 
@@ -170,6 +171,26 @@ impl ExchangeClient {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await?;
+
+            // 尝试解析 Binance 错误码，提供友好提示
+            if let Ok(err_json) = serde_json::from_str::<serde_json::Value>(&body) {
+                let code = err_json["code"].as_i64().unwrap_or(-1);
+                let msg = err_json["msg"].as_str().unwrap_or("Unknown error");
+                let friendly = match code {
+                    -2015 => format!(
+                        "API 权限不足: {} (当前 API Key 为只读权限，无法执行交易操作)", msg
+                    ),
+                    -2014 => format!("API Key 无效: {} (请检查 BINANCE_API_KEY 配置)", msg),
+                    -1022 => format!("签名验证失败: {} (请检查 BINANCE_API_SECRET 配置)", msg),
+                    -1021 => format!("时间戳超出范围: {} (请检查系统时间)", msg),
+                    -2016 => format!("IP 不在白名单: {} (请在 Binance 后台添加服务器 IP)", msg),
+                    -1003 => format!("请求频率超限: {}", msg),
+                    _ => format!("Binance API error ({}): {}", code, msg),
+                };
+                error!("{}", friendly);
+                return Err(anyhow!(friendly));
+            }
+
             error!("API error: {} - {}", status, body);
             return Err(anyhow!("API error: {} - {}", status, body));
         }

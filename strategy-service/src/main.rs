@@ -8,6 +8,7 @@ pub mod indicators;
 pub mod trade_executor;
 pub mod websocket;
 pub mod alert;
+pub mod account_sync;
 pub mod exchange;
 pub mod order_sync;
 pub mod okx_client;
@@ -26,20 +27,20 @@ async fn main() -> Result<()> {
 
     info!("Starting strategy-service...");
 
-    // 加载 .env 文件
+    // 加载 .env 文件（统一从 config/ 目录加载）
     let run_mode = std::env::var("RUN_MODE").unwrap_or_else(|_| "development".to_string());
     let env_file = match run_mode.as_str() {
-        "production" | "prod" => ".env.production",
-        "test" => ".env.test",
-        _ => ".env.development",
+        "production" | "prod" => "config/.env.production",
+        "test" => "config/.env.test",
+        _ => "config/.env.development",
     };
 
-    // 尝试加载环境特定的 .env 文件，失败则加载默认 .env
+    // 尝试加载环境特定的 .env 文件，失败则加载 config/.env
     if dotenv::from_filename(env_file).is_err() {
-        dotenv::dotenv().ok();
+        if dotenv::from_filename("config/.env").is_err() {
+            dotenv::dotenv().ok();
+        }
     }
-    // 也尝试从 strategy-service 目录加载
-    let _ = dotenv::from_filename("strategy-service/.env");
 
     info!("Loading config from: {}", env_file);
 
@@ -89,6 +90,17 @@ async fn main() -> Result<()> {
     };
     info!("Order sync task started (interval: {}s)", 10);
 
+    // 启动账户余额快照同步任务
+    let account_sync_handle = {
+        let pool = db_pool.clone();
+        let sync_interval = 300; // 每5分钟同步一次
+        tokio::spawn(async move {
+            let sync = Arc::new(account_sync::AccountSync::new(pool, sync_interval));
+            sync.start().await;
+        })
+    };
+    info!("Account snapshot sync started (interval: {}s)", 300);
+
     // 启动 HTTP + WebSocket 服务
     let ws_router = websocket::create_ws_router(ws_state.clone());
     let app = api::create_router(db_pool.clone()).merge(ws_router);
@@ -111,6 +123,9 @@ async fn main() -> Result<()> {
         }
         _ = order_sync_handle => {
             info!("Order sync task stopped");
+        }
+        _ = account_sync_handle => {
+            info!("Account snapshot sync stopped");
         }
     }
 

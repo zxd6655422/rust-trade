@@ -390,12 +390,38 @@ impl TradeValidator {
         }
     }
 
-    /// 从数据库获取余额（降级方案）
+    /// 从数据库获取余额（降级方案：读取 account_snapshot 最新快照）
     async fn get_balance_from_db(&self, exchange: &str, market_type: &str) -> Result<Decimal> {
-        // 从 Redis 或数据库获取缓存的余额
-        // 暂时返回默认值
-        warn!("Using default balance (10000 USDT)");
-        Ok(Decimal::from(10000))
+        let row = sqlx::query_scalar::<_, Decimal>(
+            r#"
+            SELECT available_balance
+            FROM account_snapshot
+            WHERE exchange = $1 AND market_type = $2
+            ORDER BY snapshot_at DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(exchange)
+        .bind(market_type)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(balance) => {
+                info!(
+                    "Using cached balance from snapshot: {} USDT ({} {})",
+                    balance, exchange, market_type
+                );
+                Ok(balance)
+            }
+            None => {
+                warn!(
+                    "No balance snapshot found for {} {}, returning 0",
+                    exchange, market_type
+                );
+                Ok(Decimal::ZERO)
+            }
+        }
     }
 
     /// 检查交易对精度
