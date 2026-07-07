@@ -367,7 +367,9 @@ pub async fn get_ohlc_preview(
         Timeframe::FifteenMinutes => (request.count as u32 * 15).max(1500),
         Timeframe::ThirtyMinutes => (request.count as u32 * 30).max(2500),
         Timeframe::OneHour => (request.count as u32 * 60).max(5000),
+        Timeframe::TwoHour => (request.count as u32 * 120).max(5000),
         Timeframe::FourHour => (request.count as u32 * 240).max(5000),
+        Timeframe::ThreeDay => 5000,
         Timeframe::OneDay => 5000,
         Timeframe::OneWeek => 5000,
     };
@@ -485,7 +487,9 @@ pub async fn get_kline_history(
         Timeframe::FifteenMinutes => (count as u32 * 15).max(1500),
         Timeframe::ThirtyMinutes => (count as u32 * 30).max(2500),
         Timeframe::OneHour => (count as u32 * 60).max(5000),
+        Timeframe::TwoHour => (count as u32 * 120).max(5000),
         Timeframe::FourHour => (count as u32 * 240).max(5000),
+        Timeframe::ThreeDay => 5000,
         Timeframe::OneDay => 5000,
         Timeframe::OneWeek => 5000,
     };
@@ -1691,6 +1695,30 @@ pub async fn get_signal_history(
             best_signal_pnl: stats_data.avg_return_pct.filter(|v| *v > Decimal::ZERO).map(|v| format!("+{:.2}%", v)).unwrap_or_else(|| "0".to_string()),
             worst_signal_pnl: stats_data.avg_return_pct.filter(|v| *v < Decimal::ZERO).map(|v| format!("{:.2}%", v)).unwrap_or_else(|| "0".to_string()),
         },
+    })
+}
+
+/// 获取信号统计数据（单独接口，供前端 AutoTradingStatus 调用）
+#[tauri::command]
+pub async fn get_signal_stats(
+    state: State<'_, AppState>,
+    request: SignalStatsRequest,
+) -> Result<SignalStats, String> {
+    let stats_data = state.repository.get_signal_stats(
+        &request.table,
+        request.symbol.as_deref(),
+        request.strategy_id.as_deref(),
+    ).await.map_err(|e| e.to_string())?;
+
+    Ok(SignalStats {
+        total_signals: stats_data.total_signals,
+        win_count: stats_data.confirmed,
+        loss_count: stats_data.invalidated,
+        win_rate: stats_data.confirmation_rate_pct.map(|v| v.to_string()).unwrap_or_else(|| "0".to_string()),
+        avg_win_pnl: stats_data.avg_return_pct.filter(|v| *v > Decimal::ZERO).map(|v| format!("+{:.2}%", v)).unwrap_or_else(|| "0".to_string()),
+        avg_loss_pnl: stats_data.avg_return_pct.filter(|v| *v < Decimal::ZERO).map(|v| format!("{:.2}%", v)).unwrap_or_else(|| "0".to_string()),
+        best_signal_pnl: stats_data.avg_return_pct.filter(|v| *v > Decimal::ZERO).map(|v| format!("+{:.2}%", v)).unwrap_or_else(|| "0".to_string()),
+        worst_signal_pnl: stats_data.avg_return_pct.filter(|v| *v < Decimal::ZERO).map(|v| format!("{:.2}%", v)).unwrap_or_else(|| "0".to_string()),
     })
 }
 

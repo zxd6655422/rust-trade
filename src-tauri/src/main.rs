@@ -99,6 +99,7 @@ fn main() {
             // 策略实时分析
             get_strategy_analysis,
             get_signal_history,
+            get_signal_stats,
             // 交易对管理
             get_symbols,
             add_symbol,

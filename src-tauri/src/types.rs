@@ -562,6 +562,14 @@ pub struct SignalHistoryRequest {
     pub limit: Option<i32>,
 }
 
+/// 信号统计请求
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SignalStatsRequest {
+    pub table: String,
+    pub symbol: Option<String>,
+    pub strategy_id: Option<String>,
+}
+
 /// 单条信号记录
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SignalRecord {

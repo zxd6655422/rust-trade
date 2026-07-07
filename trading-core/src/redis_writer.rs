@@ -210,19 +210,26 @@ fn write_kline_zset(
     let key = format!("kline:{}:{}", symbol, timeframe_key_suffix(timeframe));
     let ttl = timeframe_ttl(timeframe);
 
-    // 批量添加到 ZSET
+    // 先删除同时间戳的旧条目，再写入新数据，避免重复
+    // ZSET member 是 JSON，同一时间戳可能有多个不同 JSON（close/volume 变化）
     let mut pipe = redis::pipe();
     for kline in klines {
-        let member = KlineZsetMember {
+        // 精确删除该时间戳的所有旧条目（score = timestamp 即时间戳范围）
+        pipe.cmd("ZREMRANGEBYSCORE").arg(&key).arg(kline.timestamp).arg(kline.timestamp);
+    }
+    pipe.execute(conn);
+
+    // 写入新数据
+    let mut pipe = redis::pipe();
+    for kline in klines {
+        let member_json = serde_json::to_string(&KlineZsetMember {
             ts: kline.timestamp,
             o: kline.open,
             h: kline.high,
             l: kline.low,
             c: kline.close,
             v: kline.volume,
-        };
-        let member_json = serde_json::to_string(&member)?;
-        // ZADD key score member
+        })?;
         pipe.cmd("ZADD").arg(&key).arg(kline.timestamp).arg(&member_json);
     }
     pipe.execute(conn);
