@@ -324,6 +324,28 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
                 };
                 let repo = Arc::new(TickDataRepository::new(pool, cache));
 
+                // Step 0: Redis 预热 - 从 PostgreSQL 加载历史 K 线到 Redis
+                // 确保策略引擎重启后有足够数据计算指标
+                info!("Redis warm-up: loading historical klines from PostgreSQL...");
+                for symbol in &symbols {
+                    match repo.get_klines(symbol, 10000).await {
+                        Ok(klines) if !klines.is_empty() => {
+                            let count = klines.len();
+                            let redis_url_c = redis_url.clone();
+                            let sym_c = symbol.clone();
+                            tokio::task::spawn_blocking(move || {
+                                if let Err(e) = redis_writer::write_market_data(&redis_url_c, &sym_c, &klines) {
+                                    warn!("[{}] Redis warm-up failed: {}", sym_c, e);
+                                } else {
+                                    info!("[{}] Redis warm-up: loaded {} klines", sym_c, count);
+                                }
+                            });
+                        }
+                        Ok(_) => info!("[{}] No historical klines in DB for Redis warm-up", symbol),
+                        Err(e) => warn!("[{}] Redis warm-up failed: {}", symbol, e),
+                    }
+                }
+
                 // Step 1: Backfill historical data (if enabled)
                 // API 限制: Binance 20 req/s, OKX 12 req/s
                 // 使用信号量限制并发数，避免超出限制
