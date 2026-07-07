@@ -1,5 +1,60 @@
 # Changelog
 
+## [2026-07-07] 自动交易 + WebSocket 实时推送 + 告警系统
+
+### 自动交易功能（严谨版）
+
+| 模块 | 状态 | 说明 |
+|------|------|------|
+| TradeExecutor | ✅ | 交易执行器，将信号转化为订单 |
+| TradeValidator | ✅ | 交易验证器，检查所有前置条件 |
+| ExchangeClient (Binance) | ✅ | Binance API 客户端 |
+| OkxClient | ✅ | OKX API 客户端 |
+| OrderSync | ✅ | 订单状态同步模块 |
+| 多交易所支持 | ✅ | 支持 Binance/OKX |
+| 多市场支持 | ✅ | 支持现货/合约交易 |
+| 订单重复检查 | ✅ | 避免相同策略重复下单 |
+| 仓位阈值检查 | ✅ | 检查持仓数量和金额限制 |
+| 账户余额检查 | ✅ | 从交易所 API 获取实际余额 |
+| 交易对精度 | ✅ | 从交易所 API 获取精度信息 |
+| 最小下单金额 | ✅ | 检查最小下单金额限制 |
+| 止损止盈单 | ✅ | 支持 STOP_MARKET、TAKE_PROFIT_MARKET |
+| 订单状态同步 | ✅ | 轮询交易所订单状态，更新 trades 表 |
+| 持仓自动更新 | ✅ | 订单成交后自动更新持仓 |
+| 被拒订单记录 | ✅ | 记录被拒绝的订单和原因 |
+| API 签名 | ✅ | Binance HMAC-SHA256 / OKX HMAC-SHA256 |
+
+### WebSocket 实时推送
+
+| 模块 | 状态 | 说明 |
+|------|------|------|
+| WebSocket 端点 | ✅ | ws://host:8082/ws/signals |
+| 信号广播 | ✅ | 信号生成时实时推送到前端 |
+| 客户端管理 | ✅ | 支持多客户端连接 |
+
+### 告警系统
+
+| 模块 | 状态 | 说明 |
+|------|------|------|
+| AlertManager | ✅ | 告警管理器 |
+| 日志告警 | ✅ | 按级别输出到日志 |
+| Webhook 告警 | ✅ | 支持发送到外部服务 |
+| 冷却机制 | ✅ | 避免重复告警（默认5分钟） |
+| 告警级别 | ✅ | Info/Warning/Critical |
+
+### 文件改动
+
+| 文件 | 改动 |
+|------|------|
+| `strategy-service/src/trade_executor.rs` | 新建交易执行器 |
+| `strategy-service/src/websocket.rs` | 新建 WebSocket 模块 |
+| `strategy-service/src/alert.rs` | 新建告警系统 |
+| `strategy-service/src/engine.rs` | 集成自动交易/推送/告警 |
+| `strategy-service/src/main.rs` | 初始化新模块 |
+| `strategy-service/Cargo.toml` | 添加依赖 |
+
+---
+
 ## [2026-07-07] 大周期分析支持 + Redis 缓存优化
 
 ### Redis 缓存优化

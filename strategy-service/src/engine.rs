@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -9,6 +10,9 @@ use tracing::{error, info, warn};
 use crate::db::{signals, strategies as db_strategies};
 use crate::redis_reader::{self, Timeframe};
 use crate::strategies::{self, SignalType};
+use crate::trade_executor::{TradeExecutor, ExchangeConfig};
+use crate::websocket::{WsMessage, WsState};
+use crate::alert::{AlertManager, AlertConfig, create_signal_alert, create_trade_alert};
 
 /// 策略执行引擎配置
 pub struct EngineConfig {
@@ -27,19 +31,27 @@ impl Default for EngineConfig {
     }
 }
 
-pub async fn run(pool: PgPool, mut redis: ConnectionManager, interval_secs: u64) -> Result<()> {
+pub async fn run(
+    pool: PgPool,
+    mut redis: ConnectionManager,
+    interval_secs: u64,
+    ws_state: Option<Arc<WsState>>,
+    alert_manager: Option<Arc<AlertManager>>,
+) -> Result<()> {
     let config = EngineConfig {
         poll_interval_secs: interval_secs,
         ..Default::default()
     };
 
-    run_with_config(pool, redis, config).await
+    run_with_config(pool, redis, config, ws_state, alert_manager).await
 }
 
 pub async fn run_with_config(
     pool: PgPool,
     mut redis: ConnectionManager,
     config: EngineConfig,
+    ws_state: Option<Arc<WsState>>,
+    alert_manager: Option<Arc<AlertManager>>,
 ) -> Result<()> {
     info!(
         "Strategy engine started, polling every {} seconds, timeframe: {}, kline_limit: {}",
@@ -77,6 +89,8 @@ pub async fn run_with_config(
                     &strategy_instance,
                     symbol,
                     &config,
+                    &ws_state,
+                    &alert_manager,
                 )
                 .await
                 {
@@ -96,6 +110,8 @@ async fn process_strategy(
     strategy_instance: &db_strategies::StrategyInstance,
     symbol: &str,
     config: &EngineConfig,
+    ws_state: &Option<Arc<WsState>>,
+    alert_manager: &Option<Arc<AlertManager>>,
 ) -> Result<()> {
     // 获取市场数据
     let market_data = redis_reader::get_market_data(
@@ -169,13 +185,84 @@ async fn process_strategy(
         signal.reason
     );
 
-    // 如果启用了自动交易，可以在这里触发交易执行
-    if strategy_instance.auto_trade {
-        info!(
-            "Auto-trade enabled for strategy {}, signal {} would trigger trade",
-            strategy_instance.id, saved_signal.id
+    // 广播信号到 WebSocket
+    if let Some(ws) = ws_state {
+        let ws_msg = WsMessage {
+            msg_type: "signal".to_string(),
+            data: serde_json::json!({
+                "id": saved_signal.id,
+                "symbol": symbol,
+                "strategy": strategy_instance.strategy_type,
+                "direction": direction,
+                "entry_price": signal.entry_price,
+                "signal_strength": signal.signal_strength,
+                "confidence": signal.confidence,
+                "reason": signal.reason,
+                "stop_loss": signal.stop_loss,
+                "take_profit": signal.take_profit,
+                "auto_trade": strategy_instance.auto_trade,
+                "created_at": saved_signal.created_at,
+            }),
+        };
+        ws.broadcast_signal(ws_msg);
+    }
+
+    // 发送告警
+    if let Some(alert_mgr) = alert_manager {
+        let alert = create_signal_alert(
+            symbol,
+            &strategy_instance.strategy_type,
+            direction,
+            signal.entry_price,
+            signal.signal_strength,
+            &signal.reason,
         );
-        // TODO: 调用 trading-engine 执行交易
+        if let Err(e) = alert_mgr.send(&alert).await {
+            warn!("Failed to send alert: {}", e);
+        }
+    }
+
+    // 如果启用了自动交易，执行交易
+    if strategy_instance.auto_trade {
+        let exchange_config = ExchangeConfig::default();
+        let executor = TradeExecutor::new(pool.clone(), exchange_config);
+        match executor.execute_trade(
+            &saved_signal,
+            strategy_instance.id,
+            strategy_instance.position_size_pct,
+            &strategy_instance.exchange,
+            &strategy_instance.market_type,
+        ).await {
+            Ok(order_ids) => {
+                if order_ids.is_empty() {
+                    info!(
+                        "⏭️ Auto-trade skipped: signal={} (no actionable signal)",
+                        saved_signal.id
+                    );
+                } else {
+                    info!(
+                        "✅ Auto-trade executed: signal={}, orders={:?}",
+                        saved_signal.id, order_ids
+                    );
+                    // 发送交易执行告警
+                    if let Some(alert_mgr) = alert_manager {
+                        let trade_alert = create_trade_alert(
+                            symbol,
+                            direction,
+                            signal.entry_price,
+                            &order_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(","),
+                        );
+                        let _ = alert_mgr.send(&trade_alert).await;
+                    }
+                }
+            }
+            Err(e) => {
+                error!(
+                    "❌ Auto-trade failed for signal {}: {}",
+                    saved_signal.id, e
+                );
+            }
+        }
     }
 
     Ok(())

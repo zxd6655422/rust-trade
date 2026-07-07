@@ -5,7 +5,14 @@ mod strategies;
 mod engine;
 mod api;
 pub mod indicators;
+pub mod trade_executor;
+pub mod websocket;
+pub mod alert;
+pub mod exchange;
+pub mod order_sync;
+pub mod okx_client;
 
+use std::sync::Arc;
 use anyhow::Result;
 use tracing::{info, error};
 use tracing_subscriber::{fmt, EnvFilter};
@@ -48,25 +55,49 @@ async fn main() -> Result<()> {
     let redis_conn = redis_reader::create_connection(&config.redis).await?;
     info!("Redis connected");
 
+    // 初始化 WebSocket 状态
+    let ws_state = Arc::new(websocket::WsState::new());
+    info!("WebSocket state initialized");
+
+    // 初始化告警管理器
+    let alert_config = alert::AlertConfig::default();
+    let alert_manager = Arc::new(alert::AlertManager::new(alert_config));
+    info!("Alert manager initialized");
+
     // 启动策略执行引擎
     let engine_handle = {
         let pool = db_pool.clone();
         let redis = redis_conn.clone();
         let interval = config.engine.poll_interval_secs;
+        let ws = ws_state.clone();
+        let alert = alert_manager.clone();
         tokio::spawn(async move {
-            if let Err(e) = engine::run(pool, redis, interval).await {
+            if let Err(e) = engine::run(pool, redis, interval, Some(ws), Some(alert)).await {
                 error!("Strategy engine error: {}", e);
             }
         })
     };
 
-    // 启动 HTTP 服务
-    let app = api::create_router(db_pool.clone());
+    // 启动订单同步任务
+    let order_sync_handle = {
+        let pool = db_pool.clone();
+        let sync_interval = 10; // 每10秒同步一次
+        tokio::spawn(async move {
+            let sync = Arc::new(order_sync::OrderSync::new(pool, sync_interval));
+            sync.start().await;
+        })
+    };
+    info!("Order sync task started (interval: {}s)", 10);
+
+    // 启动 HTTP + WebSocket 服务
+    let ws_router = websocket::create_ws_router(ws_state.clone());
+    let app = api::create_router(db_pool.clone()).merge(ws_router);
 
     let listener = tokio::net::TcpListener::bind(&format!("{}:{}", config.server.host, config.server.port)).await?;
     info!("HTTP server listening on {}:{}", config.server.host, config.server.port);
+    info!("WebSocket available at ws://{}:{}/ws/signals", config.server.host, config.server.port);
 
-    // 并行运行 HTTP 服务和策略引擎
+    // 并行运行所有服务
     tokio::select! {
         result = axum::serve(listener, app) => {
             if let Err(e) = result {
@@ -77,6 +108,9 @@ async fn main() -> Result<()> {
             if let Err(e) = result {
                 error!("Engine task error: {}", e);
             }
+        }
+        _ = order_sync_handle => {
+            info!("Order sync task stopped");
         }
     }
 
