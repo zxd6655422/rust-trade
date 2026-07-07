@@ -556,6 +556,7 @@ pub struct StrategyAnalysisResult {
 
 /// 信号历史请求
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SignalHistoryRequest {
     pub symbol: Option<String>,
     pub strategy_id: Option<String>,
@@ -564,6 +565,7 @@ pub struct SignalHistoryRequest {
 
 /// 信号统计请求
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SignalStatsRequest {
     pub table: String,
     pub symbol: Option<String>,
@@ -586,13 +588,12 @@ pub struct SignalRecord {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SignalStats {
     pub total_signals: i64,
-    pub win_count: i64,
-    pub loss_count: i64,
+    pub confirmed: i64,
+    pub invalidated: i64,
+    pub expired: i64,
+    pub pending: i64,
     pub win_rate: String,
-    pub avg_win_pnl: String,
-    pub avg_loss_pnl: String,
-    pub best_signal_pnl: String,
-    pub worst_signal_pnl: String,
+    pub avg_return: String,
 }
 
 /// 信号历史结果

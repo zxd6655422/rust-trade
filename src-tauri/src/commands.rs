@@ -1687,13 +1687,12 @@ pub async fn get_signal_history(
         signals,
         stats: SignalStats {
             total_signals: stats_data.total_signals,
-            win_count: stats_data.confirmed,
-            loss_count: stats_data.invalidated,
-            win_rate: stats_data.confirmation_rate_pct.map(|v| v.to_string()).unwrap_or_else(|| "0".to_string()),
-            avg_win_pnl: stats_data.avg_return_pct.filter(|v| *v > Decimal::ZERO).map(|v| format!("+{:.2}%", v)).unwrap_or_else(|| "0".to_string()),
-            avg_loss_pnl: stats_data.avg_return_pct.filter(|v| *v < Decimal::ZERO).map(|v| format!("{:.2}%", v)).unwrap_or_else(|| "0".to_string()),
-            best_signal_pnl: stats_data.avg_return_pct.filter(|v| *v > Decimal::ZERO).map(|v| format!("+{:.2}%", v)).unwrap_or_else(|| "0".to_string()),
-            worst_signal_pnl: stats_data.avg_return_pct.filter(|v| *v < Decimal::ZERO).map(|v| format!("{:.2}%", v)).unwrap_or_else(|| "0".to_string()),
+            confirmed: stats_data.confirmed,
+            invalidated: stats_data.invalidated,
+            expired: stats_data.expired,
+            pending: stats_data.pending,
+            win_rate: stats_data.confirmation_rate_pct.map(|v| format!("{}%", v)).unwrap_or_else(|| "0%".to_string()),
+            avg_return: stats_data.avg_return_pct.map(|v| format!("{:.2}%", v)).unwrap_or_else(|| "0%".to_string()),
         },
     })
 }
@@ -1712,13 +1711,12 @@ pub async fn get_signal_stats(
 
     Ok(SignalStats {
         total_signals: stats_data.total_signals,
-        win_count: stats_data.confirmed,
-        loss_count: stats_data.invalidated,
-        win_rate: stats_data.confirmation_rate_pct.map(|v| v.to_string()).unwrap_or_else(|| "0".to_string()),
-        avg_win_pnl: stats_data.avg_return_pct.filter(|v| *v > Decimal::ZERO).map(|v| format!("+{:.2}%", v)).unwrap_or_else(|| "0".to_string()),
-        avg_loss_pnl: stats_data.avg_return_pct.filter(|v| *v < Decimal::ZERO).map(|v| format!("{:.2}%", v)).unwrap_or_else(|| "0".to_string()),
-        best_signal_pnl: stats_data.avg_return_pct.filter(|v| *v > Decimal::ZERO).map(|v| format!("+{:.2}%", v)).unwrap_or_else(|| "0".to_string()),
-        worst_signal_pnl: stats_data.avg_return_pct.filter(|v| *v < Decimal::ZERO).map(|v| format!("{:.2}%", v)).unwrap_or_else(|| "0".to_string()),
+        confirmed: stats_data.confirmed,
+        invalidated: stats_data.invalidated,
+        expired: stats_data.expired,
+        pending: stats_data.pending,
+        win_rate: stats_data.confirmation_rate_pct.map(|v| format!("{}%", v)).unwrap_or_else(|| "0%".to_string()),
+        avg_return: stats_data.avg_return_pct.map(|v| format!("{:.2}%", v)).unwrap_or_else(|| "0%".to_string()),
     })
 }
 

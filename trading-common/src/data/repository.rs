@@ -2190,7 +2190,7 @@ impl TickDataRepository {
                     ROUND(COUNT(*) FILTER (WHERE status='confirmed')::numeric / \
                           NULLIF(COUNT(*) FILTER (WHERE status IN ('confirmed','invalidated')),0)*100,2) as confirm_rate, \
                     AVG(actual_return_pct) FILTER (WHERE status IN ('confirmed','invalidated')) as avg_return, \
-                    AVG(EXTRACT(EPOCH FROM (closed_at-created_at))/3600) FILTER (WHERE closed_at IS NOT NULL) as avg_hours \
+                    AVG(EXTRACT(EPOCH FROM (closed_at-created_at))/3600) FILTER (WHERE closed_at IS NOT NULL)::float8 as avg_hours \
              FROM {} {}", table, where_clause
         );
 
