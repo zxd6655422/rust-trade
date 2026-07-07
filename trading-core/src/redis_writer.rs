@@ -236,11 +236,11 @@ fn write_kline_zset(
             .arg(&key)
             .arg(0)
             .arg((remove_count - 1) as isize)
-            .query(conn)?;
+            .query::<()>(conn)?;
     }
 
     // 设置 TTL
-    redis::cmd("EXPIRE").arg(&key).arg(ttl).query(conn)?;
+    redis::cmd("EXPIRE").arg(&key).arg(ttl).query::<()>(conn)?;
 
     Ok(())
 }
