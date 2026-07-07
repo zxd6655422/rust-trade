@@ -11,7 +11,9 @@
 | ExchangeClient (Binance) | ✅ | Binance API 客户端 |
 | OkxClient | ✅ | OKX API 客户端 |
 | OrderSync | ✅ | 订单状态同步模块 |
-| 多交易所支持 | ✅ | 支持 Binance/OKX |
+| MultiExchangeLoop | ✅ | 多交易所交易循环 |
+| SymbolMapping | ✅ | 交易对映射表 |
+| 多交易所支持 | ✅ | 支持 Binance/OKX 同时下单 |
 | 多市场支持 | ✅ | 支持现货/合约交易 |
 | 订单重复检查 | ✅ | 避免相同策略重复下单 |
 | 仓位阈值检查 | ✅ | 检查持仓数量和金额限制 |

@@ -23,6 +23,25 @@ pub enum RiskDecision {
     Modify(Decimal),
 }
 
+impl RiskDecision {
+    /// 是否接受订单
+    pub fn is_accepted(&self) -> bool {
+        match self {
+            RiskDecision::Allow => true,
+            RiskDecision::Modify(_) => true,
+            RiskDecision::Reject(_) => false,
+        }
+    }
+
+    /// 获取修改后的数量（如果有）
+    pub fn modified_quantity(&self) -> Option<Decimal> {
+        match self {
+            RiskDecision::Modify(qty) => Some(*qty),
+            _ => None,
+        }
+    }
+}
+
 /// 风控状态
 #[derive(Debug, Clone)]
 pub struct RiskState {
