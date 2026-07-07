@@ -214,8 +214,10 @@ pub enum Timeframe {
     FifteenMinutes,
     ThirtyMinutes,
     OneHour,
-    FourHours,
+    TwoHour,
+    FourHour,
     OneDay,
+    ThreeDay,
     OneWeek,
 }
 
@@ -227,8 +229,10 @@ impl Timeframe {
             Timeframe::FifteenMinutes => Duration::minutes(15),
             Timeframe::ThirtyMinutes => Duration::minutes(30),
             Timeframe::OneHour => Duration::hours(1),
-            Timeframe::FourHours => Duration::hours(4),
+            Timeframe::TwoHour => Duration::hours(2),
+            Timeframe::FourHour => Duration::hours(4),
             Timeframe::OneDay => Duration::days(1),
+            Timeframe::ThreeDay => Duration::days(3),
             Timeframe::OneWeek => Duration::weeks(1),
         }
     }
@@ -240,9 +244,28 @@ impl Timeframe {
             Timeframe::FifteenMinutes => "15m",
             Timeframe::ThirtyMinutes => "30m",
             Timeframe::OneHour => "1h",
-            Timeframe::FourHours => "4h",
+            Timeframe::TwoHour => "2h",
+            Timeframe::FourHour => "4h",
             Timeframe::OneDay => "1d",
+            Timeframe::ThreeDay => "3d",
             Timeframe::OneWeek => "1w",
+        }
+    }
+
+    /// 从字符串解析时间框架
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "1m" => Some(Timeframe::OneMinute),
+            "5m" => Some(Timeframe::FiveMinutes),
+            "15m" => Some(Timeframe::FifteenMinutes),
+            "30m" => Some(Timeframe::ThirtyMinutes),
+            "1h" => Some(Timeframe::OneHour),
+            "2h" => Some(Timeframe::TwoHour),
+            "4h" => Some(Timeframe::FourHour),
+            "1d" => Some(Timeframe::OneDay),
+            "3d" => Some(Timeframe::ThreeDay),
+            "1w" => Some(Timeframe::OneWeek),
+            _ => None,
         }
     }
 
@@ -291,7 +314,19 @@ impl Timeframe {
                 .unwrap()
                 .with_nanosecond(0)
                 .unwrap(),
-            Timeframe::FourHours => {
+            Timeframe::TwoHour => {
+                let aligned_hour = (timestamp.hour() / 2) * 2;
+                timestamp
+                    .with_hour(aligned_hour)
+                    .unwrap()
+                    .with_minute(0)
+                    .unwrap()
+                    .with_second(0)
+                    .unwrap()
+                    .with_nanosecond(0)
+                    .unwrap()
+            }
+            Timeframe::FourHour => {
                 let aligned_hour = (timestamp.hour() / 4) * 4;
                 timestamp
                     .with_hour(aligned_hour)
@@ -312,6 +347,23 @@ impl Timeframe {
                 .unwrap()
                 .with_nanosecond(0)
                 .unwrap(),
+            Timeframe::ThreeDay => {
+                // 对齐到每月的 1、4、7、10、13、16、19、22、25、28、31 日
+                let day = timestamp.day();
+                let aligned_day = ((day - 1) / 3) * 3 + 1;
+                let aligned_date = timestamp
+                    .with_day(aligned_day.min(28)) // 简化处理，避免月份天数问题
+                    .unwrap_or(timestamp);
+                aligned_date
+                    .with_hour(0)
+                    .unwrap()
+                    .with_minute(0)
+                    .unwrap()
+                    .with_second(0)
+                    .unwrap()
+                    .with_nanosecond(0)
+                    .unwrap()
+            }
             Timeframe::OneWeek => {
                 let days_from_monday = timestamp.weekday().num_days_from_monday();
                 let week_start = timestamp - Duration::days(days_from_monday as i64);

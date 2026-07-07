@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use super::{Signal, SignalType, Strategy};
+use crate::indicators;
 use crate::redis_reader::MarketData;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -22,7 +23,13 @@ impl Strategy for BollingerStrategy {
     }
 
     async fn analyze(&self, data: &MarketData) -> Option<Signal> {
-        let bollinger = data.bollinger.as_ref()?;
+        // 使用 indicators 模块计算布林带
+        let bollinger = indicators::calculate_bollinger(
+            &data.klines,
+            self.params.period,
+            self.params.std_dev,
+        )?;
+
         let current_price = data.current_price;
 
         // 检查是否在挤压状态（布林带收窄）
@@ -60,6 +67,10 @@ impl Strategy for BollingerStrategy {
         };
         let signal_strength = signal_strength.min(1.0).max(0.0);
 
+        // 计算其他指标用于上下文
+        let rsi = indicators::calculate_rsi(&data.klines, 14).map(|r| r.value);
+        let ma_fast = indicators::calculate_ma(&data.klines, 7).map(|r| r.value);
+
         let market_context = serde_json::json!({
             "upper": bollinger.upper,
             "middle": bollinger.middle,
@@ -69,7 +80,11 @@ impl Strategy for BollingerStrategy {
             "is_squeeze": is_squeeze,
             "period": self.params.period,
             "std_dev": self.params.std_dev,
+            "rsi": rsi,
+            "ma7": ma_fast,
             "current_price": current_price,
+            "kline_count": data.klines.len(),
+            "timeframe": data.timeframe.as_str(),
         });
 
         if at_lower_band {
@@ -80,7 +95,11 @@ impl Strategy for BollingerStrategy {
                 stop_loss,
                 take_profit,
                 confidence: 0.65,
-                reason: format!("布林带下轨触及: %B={:.2}, 价格接近下轨={:.2}", percent_b, bollinger.lower),
+                reason: format!(
+                    "布林带下轨触及: %B={:.2}, 价格接近下轨={:.2} ({}/{})",
+                    percent_b, bollinger.lower,
+                    self.params.period, self.params.std_dev,
+                ),
                 market_context,
             })
         } else {
@@ -91,7 +110,11 @@ impl Strategy for BollingerStrategy {
                 stop_loss,
                 take_profit,
                 confidence: 0.65,
-                reason: format!("布林带上轨触及: %B={:.2}, 价格接近上轨={:.2}", percent_b, bollinger.upper),
+                reason: format!(
+                    "布林带上轨触及: %B={:.2}, 价格接近上轨={:.2} ({}/{})",
+                    percent_b, bollinger.upper,
+                    self.params.period, self.params.std_dev,
+                ),
                 market_context,
             })
         }

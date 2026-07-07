@@ -1,6 +1,18 @@
 # rust-trade v1.0 开发计划
 
-## 当前进度 (2026-07-06 更新)
+## 当前进度 (2026-07-07 更新)
+
+### ✅ 大周期分析支持
+
+| 模块 | 状态 | 说明 |
+|------|------|------|
+| Redis 缓存优化 | ✅ 已完成 | 从 5000 增加到 20000 根，支持 2 年历史数据 |
+| 高时间框架 K 线表 | ✅ 已完成 | kline_4h/kline_1d/kline_3d/kline_1w |
+| 大周期分析策略 | ✅ 已完成 | macro_cycle 策略，支持周K/3日K分析 |
+| 历史高低点识别 | ✅ 已完成 | 自动识别支撑/阻力位 |
+| 定时聚合任务 | ✅ 已完成 | 每小时聚合高时间框架 K 线 |
+
+---
 
 ### ✅ 数据管理功能
 
@@ -46,7 +58,7 @@
 | OkxAdapter | ✅ 完成 | 6项修复已完成，可配置数据源 |
 | Exchange trait | ✅ 完成 | 统一接口，覆盖现货/合约，含 fetch_klines / fetch_klines_with_time |
 | 数据采集 (candle1m) | ✅ 完成 | REST 轮询拉取 + kline_1m 写入 + 历史数据回填 + 缺失补齐 |
-| K线聚合器 | ✅ 完成 | 1m → 5m/15m/30m/1h/4h/1d |
+| K线聚合器 | ✅ 完成 | 1m → 5m/15m/30m/1h/4h/1d/3d/1w |
 | 多时间框架策略框架 | ✅ 完成 | MultiTimeframeStrategy trait + TrendStrategy |
 | 数据库 Schema V2/V3 | ✅ 完成 | kline_1m, backtest_results, strategy_signals(引擎)/strategy_analysis_log(前端) |
 | trading-core 服务化 | ✅ 完成 | HTTP API + WebSocket + 数据采集 |
@@ -1770,20 +1782,22 @@ anyhow = "1"
 
 | 步骤 | 任务 | 状态 |
 |------|------|------|
-| Step 1 | 创建 `config/schema_v6.sql`，包含所有表结构变更 | ⬜ 待开发 |
-| Step 2 | 运行迁移验证 | ⬜ 待开发 |
-| Step 3 | 创建 strategy-service Cargo.toml 和 main.rs | ⬜ 待开发 |
-| Step 4 | 实现配置加载、PostgreSQL 和 Redis 连接 | ⬜ 待开发 |
-| Step 5 | 实现 strategy_instances 表的 CRUD | ⬜ 待开发 |
-| Step 6 | 实现 HTTP API endpoints（策略管理） | ⬜ 待开发 |
-| Step 7 | 实现从 Redis 读取 kline、MA、RSI、MACD 数据 | ⬜ 待开发 |
-| Step 8 | 定义 Strategy trait | ⬜ 待开发 |
-| Step 9 | 实现 6 个策略（RSI/MACD/布林/成交量/趋势/多时间框架） | ⬜ 待开发 |
-| Step 10 | 实现策略执行引擎（定时轮询 PostgreSQL + Redis） | ⬜ 待开发 |
-| Step 11 | 信号写入数据库（含完整上下文） | ⬜ 待开发 |
-| Step 12 | 信号触发后调用 trading-engine 执行 | ⬜ 待开发 |
-| Step 13 | 交易结果回调写入 trades 表（关联 signal_id） | ⬜ 待开发 |
-| Step 14 | 前端接口对接（策略/信号/交易查询） | ⬜ 待开发 |
+| Step 1 | 创建 `config/schema_v6.sql`，包含所有表结构变更 | ✅ 已完成 |
+| Step 2 | 运行迁移验证 | ✅ 已完成 |
+| Step 3 | 创建 strategy-service Cargo.toml 和 main.rs | ✅ 已完成 |
+| Step 4 | 实现配置加载、PostgreSQL 和 Redis 连接 | ✅ 已完成 |
+| Step 5 | 实现 strategy_instances 表的 CRUD | ✅ 已完成 |
+| Step 6 | 实现 HTTP API endpoints（策略管理） | ✅ 已完成 |
+| Step 7 | 实现从 Redis 读取 kline、MA、RSI、MACD 数据 | ✅ 已完成 |
+| Step 8 | 定义 Strategy trait | ✅ 已完成 |
+| Step 9 | 实现 6 个策略（RSI/MACD/布林/成交量/趋势/多时间框架） | ✅ 已完成 |
+| Step 10 | 实现策略执行引擎（定时轮询 PostgreSQL + Redis） | ✅ 已完成 |
+| Step 11 | 信号写入数据库（含完整上下文） | ✅ 已完成 |
+| Step 12 | 信号触发后调用 trading-engine 执行 | ✅ 已完成 |
+| Step 13 | 交易结果回调写入 trades 表（关联 signal_id） | ✅ 已完成 |
+| Step 14 | 前端接口对接（策略/信号/交易查询） | ✅ 已完成 |
+
+**完成进度：14/14 ✅ (2026-07-07)**
 
 ### 10.11 验证方式
 

@@ -255,7 +255,7 @@ fn build_timeframe_json(
 ) -> serde_json::Value {
     let mut map = serde_json::Map::new();
     let tf_labels = [
-        (Timeframe::FourHours, "4h"),
+        (Timeframe::FourHour, "4h"),
         (Timeframe::OneHour, "1h"),
         (Timeframe::FifteenMinutes, "15m"),
     ];

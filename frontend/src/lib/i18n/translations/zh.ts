@@ -473,4 +473,38 @@ export const zh: Translations = {
     status: '状态',
     noTrades: '暂无交易记录',
   },
+
+  // 自动交易状态
+  autoTrading: {
+    title: '自动交易状态',
+    running: '运行中',
+    paused: '已暂停',
+    pendingSignals: '个信号验证中',
+    pause: '暂停',
+    start: '启动',
+    totalSignals: '总信号',
+    confirmed: '已确认',
+    invalidated: '已止损',
+    pending: '验证中',
+    winRate: '胜率',
+    avgReturn: '平均收益',
+    recentSignals: '最近信号',
+    noSignals: '暂无信号记录',
+    loading: '加载中...',
+    // 状态标签
+    statusConfirmed: '已确认',
+    statusInvalidated: '已止损',
+    statusExpired: '已过期',
+    statusSuperseded: '已替代',
+    statusPending: '验证中',
+    // 原因标签
+    reasonTakeProfit: '止盈',
+    reasonStopLoss: '止损',
+    reasonPriceConfirmed: '价格确认',
+    reasonDirectionChanged: '方向反转',
+    reasonTimeout: '超时',
+    // 方向
+    directionLong: '多',
+    directionShort: '空',
+  },
 };

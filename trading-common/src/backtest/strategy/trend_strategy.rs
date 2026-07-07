@@ -180,7 +180,7 @@ impl TrendStrategy {
         analysis_15m: &TrendAnalysis,
     ) -> MultiTimeframeAnalysis {
         let mut timeframe_analyses = HashMap::new();
-        timeframe_analyses.insert(Timeframe::FourHours, analysis_4h.clone());
+        timeframe_analyses.insert(Timeframe::FourHour, analysis_4h.clone());
         timeframe_analyses.insert(Timeframe::OneHour, analysis_1h.clone());
         timeframe_analyses.insert(Timeframe::FifteenMinutes, analysis_15m.clone());
 
@@ -250,7 +250,7 @@ impl MultiTimeframeStrategy for TrendStrategy {
 
     fn required_timeframes(&self) -> Vec<Timeframe> {
         vec![
-            Timeframe::FourHours,
+            Timeframe::FourHour,
             Timeframe::OneHour,
             Timeframe::FifteenMinutes,
         ]
@@ -282,7 +282,7 @@ impl MultiTimeframeStrategy for TrendStrategy {
 
     fn analyze(&mut self, klines: &HashMap<Timeframe, Vec<OHLCData>>) -> MultiTimeframeAnalysis {
         // 获取各时间框架数据
-        let klines_4h = klines.get(&Timeframe::FourHours).cloned().unwrap_or_default();
+        let klines_4h = klines.get(&Timeframe::FourHour).cloned().unwrap_or_default();
         let klines_1h = klines.get(&Timeframe::OneHour).cloned().unwrap_or_default();
         let klines_15m = klines.get(&Timeframe::FifteenMinutes).cloned().unwrap_or_default();
 
@@ -361,7 +361,7 @@ mod tests {
         let mut strategy = TrendStrategy::new();
 
         let mut klines = HashMap::new();
-        klines.insert(Timeframe::FourHours, create_test_klines(60, Decimal::from(1000), "up"));
+        klines.insert(Timeframe::FourHour, create_test_klines(60, Decimal::from(1000), "up"));
         klines.insert(Timeframe::OneHour, create_test_klines(60, Decimal::from(1000), "up"));
         klines.insert(Timeframe::FifteenMinutes, create_test_klines(60, Decimal::from(1000), "up"));
 
@@ -382,7 +382,7 @@ mod tests {
         let strategy = TrendStrategy::new();
         let timeframes = strategy.required_timeframes();
         assert_eq!(timeframes.len(), 3);
-        assert!(timeframes.contains(&Timeframe::FourHours));
+        assert!(timeframes.contains(&Timeframe::FourHour));
         assert!(timeframes.contains(&Timeframe::OneHour));
         assert!(timeframes.contains(&Timeframe::FifteenMinutes));
     }

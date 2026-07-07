@@ -24,7 +24,7 @@ impl KlineAggregator {
         current_candles.insert(Timeframe::FifteenMinutes, None);
         current_candles.insert(Timeframe::ThirtyMinutes, None);
         current_candles.insert(Timeframe::OneHour, None);
-        current_candles.insert(Timeframe::FourHours, None);
+        current_candles.insert(Timeframe::FourHour, None);
         current_candles.insert(Timeframe::OneDay, None);
 
         Self {
@@ -44,7 +44,7 @@ impl KlineAggregator {
         self.update_timeframe(Timeframe::FifteenMinutes, &kline_1m);
         self.update_timeframe(Timeframe::ThirtyMinutes, &kline_1m);
         self.update_timeframe(Timeframe::OneHour, &kline_1m);
-        self.update_timeframe(Timeframe::FourHours, &kline_1m);
+        self.update_timeframe(Timeframe::FourHour, &kline_1m);
         self.update_timeframe(Timeframe::OneDay, &kline_1m);
     }
 
@@ -141,7 +141,7 @@ impl KlineAggregator {
             Timeframe::FifteenMinutes,
             Timeframe::ThirtyMinutes,
             Timeframe::OneHour,
-            Timeframe::FourHours,
+            Timeframe::FourHour,
             Timeframe::OneDay,
         ];
 
@@ -152,7 +152,7 @@ impl KlineAggregator {
                 Timeframe::FifteenMinutes => 50,
                 Timeframe::ThirtyMinutes => 50,
                 Timeframe::OneHour => 50,
-                Timeframe::FourHours => 50,
+                Timeframe::FourHour => 50,
                 Timeframe::OneDay => 30,
                 _ => 50,
             };

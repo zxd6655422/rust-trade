@@ -471,6 +471,40 @@ export const en = {
     status: 'Status',
     noTrades: 'No trades yet',
   },
+
+  // Auto Trading Status
+  autoTrading: {
+    title: 'Auto Trading Status',
+    running: 'Running',
+    paused: 'Paused',
+    pendingSignals: 'signals pending',
+    pause: 'Pause',
+    start: 'Start',
+    totalSignals: 'Total Signals',
+    confirmed: 'Confirmed',
+    invalidated: 'Invalidated',
+    pending: 'Pending',
+    winRate: 'Win Rate',
+    avgReturn: 'Avg Return',
+    recentSignals: 'Recent Signals',
+    noSignals: 'No signal records',
+    loading: 'Loading...',
+    // Status labels
+    statusConfirmed: 'Confirmed',
+    statusInvalidated: 'Invalidated',
+    statusExpired: 'Expired',
+    statusSuperseded: 'Superseded',
+    statusPending: 'Verifying',
+    // Reason labels
+    reasonTakeProfit: 'Take Profit',
+    reasonStopLoss: 'Stop Loss',
+    reasonPriceConfirmed: 'Price Confirmed',
+    reasonDirectionChanged: 'Direction Changed',
+    reasonTimeout: 'Timeout',
+    // Direction
+    directionLong: 'Long',
+    directionShort: 'Short',
+  },
 };
 
 export type Translations = typeof en;

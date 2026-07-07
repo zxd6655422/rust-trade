@@ -4,6 +4,7 @@ mod redis_reader;
 mod strategies;
 mod engine;
 mod api;
+pub mod indicators;
 
 use anyhow::Result;
 use tracing::{info, error};

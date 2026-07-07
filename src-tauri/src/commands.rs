@@ -354,7 +354,7 @@ pub async fn get_ohlc_preview(
         "15m" => Timeframe::FifteenMinutes,
         "30m" => Timeframe::ThirtyMinutes,
         "1h" => Timeframe::OneHour,
-        "4h" => Timeframe::FourHours,
+        "4h" => Timeframe::FourHour,
         "1d" => Timeframe::OneDay,
         "1w" => Timeframe::OneWeek,
         _ => return Err(format!("Invalid timeframe: {}", request.timeframe)),
@@ -367,7 +367,7 @@ pub async fn get_ohlc_preview(
         Timeframe::FifteenMinutes => (request.count as u32 * 15).max(1500),
         Timeframe::ThirtyMinutes => (request.count as u32 * 30).max(2500),
         Timeframe::OneHour => (request.count as u32 * 60).max(5000),
-        Timeframe::FourHours => (request.count as u32 * 240).max(5000),
+        Timeframe::FourHour => (request.count as u32 * 240).max(5000),
         Timeframe::OneDay => 5000,
         Timeframe::OneWeek => 5000,
     };
@@ -469,7 +469,7 @@ pub async fn get_kline_history(
         "15m" => Timeframe::FifteenMinutes,
         "30m" => Timeframe::ThirtyMinutes,
         "1h" => Timeframe::OneHour,
-        "4h" => Timeframe::FourHours,
+        "4h" => Timeframe::FourHour,
         "1d" => Timeframe::OneDay,
         _ => return Err(format!("Invalid timeframe: {}", request.timeframe)),
     };
@@ -485,7 +485,7 @@ pub async fn get_kline_history(
         Timeframe::FifteenMinutes => (count as u32 * 15).max(1500),
         Timeframe::ThirtyMinutes => (count as u32 * 30).max(2500),
         Timeframe::OneHour => (count as u32 * 60).max(5000),
-        Timeframe::FourHours => (count as u32 * 240).max(5000),
+        Timeframe::FourHour => (count as u32 * 240).max(5000),
         Timeframe::OneDay => 5000,
         Timeframe::OneWeek => 5000,
     };
@@ -1519,7 +1519,7 @@ pub async fn get_strategy_analysis(
     // 2. 构建 timeframe_details JSON
     let mut tf_details = serde_json::Map::new();
     let tf_map = [
-        (Timeframe::FourHours, "4h"),
+        (Timeframe::FourHour, "4h"),
         (Timeframe::OneHour, "1h"),
         (Timeframe::FifteenMinutes, "15m"),
     ];

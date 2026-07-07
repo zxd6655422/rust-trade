@@ -109,20 +109,20 @@ export default function AutoTradingStatus({ symbol }: AutoTradingStatusProps) {
 
   const getStatusLabel = (status: string, reason: string | null) => {
     const labels: Record<string, string> = {
-      confirmed: '已确认',
-      invalidated: '已止损',
-      expired: '已过期',
-      superseded: '已替代',
-      pending: '验证中',
+      confirmed: t.autoTrading.statusConfirmed,
+      invalidated: t.autoTrading.statusInvalidated,
+      expired: t.autoTrading.statusExpired,
+      superseded: t.autoTrading.statusSuperseded,
+      pending: t.autoTrading.statusPending,
     };
     const label = labels[status] || status;
     if (reason) {
       const reasonLabels: Record<string, string> = {
-        take_profit: '止盈',
-        stop_loss: '止损',
-        price_confirmed: '价格确认',
-        direction_changed: '方向反转',
-        timeout: '超时',
+        take_profit: t.autoTrading.reasonTakeProfit,
+        stop_loss: t.autoTrading.reasonStopLoss,
+        price_confirmed: t.autoTrading.reasonPriceConfirmed,
+        direction_changed: t.autoTrading.reasonDirectionChanged,
+        timeout: t.autoTrading.reasonTimeout,
       };
       return `${label} (${reasonLabels[reason] || reason})`;
     }
@@ -172,7 +172,7 @@ export default function AutoTradingStatus({ symbol }: AutoTradingStatusProps) {
         <CardContent className="py-8">
           <div className="flex items-center justify-center">
             <Loader2 className="w-5 h-5 animate-spin mr-2" />
-            <span className="text-sm text-muted-foreground">加载中...</span>
+            <span className="text-sm text-muted-foreground">{t.autoTrading.loading}</span>
           </div>
         </CardContent>
       </Card>
@@ -185,15 +185,15 @@ export default function AutoTradingStatus({ symbol }: AutoTradingStatusProps) {
         <div className="flex items-center justify-between">
           <CardTitle className="text-base flex items-center gap-2">
             <Zap className="w-4 h-4" />
-            自动交易状态
+            {t.autoTrading.title}
             <Badge variant={isRunning ? 'default' : 'secondary'} className="text-xs">
-              {isRunning ? '运行中' : '已暂停'}
+              {isRunning ? t.autoTrading.running : t.autoTrading.paused}
             </Badge>
           </CardTitle>
           <div className="flex items-center gap-2">
             {pendingCount > 0 && (
               <Badge variant="outline" className="text-xs text-blue-500">
-                {pendingCount} 个信号验证中
+                {pendingCount} {t.autoTrading.pendingSignals}
               </Badge>
             )}
             <Button
@@ -203,9 +203,9 @@ export default function AutoTradingStatus({ symbol }: AutoTradingStatusProps) {
               className="h-7"
             >
               {isRunning ? (
-                <><Pause className="w-3.5 h-3.5 mr-1" /> 暂停</>
+                <><Pause className="w-3.5 h-3.5 mr-1" /> {t.autoTrading.pause}</>
               ) : (
-                <><Play className="w-3.5 h-3.5 mr-1" /> 启动</>
+                <><Play className="w-3.5 h-3.5 mr-1" /> {t.autoTrading.start}</>
               )}
             </Button>
           </div>
@@ -217,19 +217,19 @@ export default function AutoTradingStatus({ symbol }: AutoTradingStatusProps) {
           <div className="grid grid-cols-4 gap-3">
             <div className="p-2 rounded-lg bg-muted/30 text-center">
               <div className="text-2xl font-bold">{stats.total_signals}</div>
-              <div className="text-[10px] text-muted-foreground">总信号</div>
+              <div className="text-[10px] text-muted-foreground">{t.autoTrading.totalSignals}</div>
             </div>
             <div className="p-2 rounded-lg bg-emerald-500/10 text-center">
               <div className="text-2xl font-bold text-emerald-500">{stats.confirmed}</div>
-              <div className="text-[10px] text-muted-foreground">已确认</div>
+              <div className="text-[10px] text-muted-foreground">{t.autoTrading.confirmed}</div>
             </div>
             <div className="p-2 rounded-lg bg-red-500/10 text-center">
               <div className="text-2xl font-bold text-red-500">{stats.invalidated}</div>
-              <div className="text-[10px] text-muted-foreground">已止损</div>
+              <div className="text-[10px] text-muted-foreground">{t.autoTrading.invalidated}</div>
             </div>
             <div className="p-2 rounded-lg bg-blue-500/10 text-center">
               <div className="text-2xl font-bold text-blue-500">{stats.pending}</div>
-              <div className="text-[10px] text-muted-foreground">验证中</div>
+              <div className="text-[10px] text-muted-foreground">{t.autoTrading.pending}</div>
             </div>
           </div>
         )}
@@ -238,7 +238,7 @@ export default function AutoTradingStatus({ symbol }: AutoTradingStatusProps) {
         {stats && (
           <div className="grid grid-cols-2 gap-3">
             <div className="flex items-center justify-between p-2 rounded-lg bg-muted/30">
-              <span className="text-xs text-muted-foreground">胜率</span>
+              <span className="text-xs text-muted-foreground">{t.autoTrading.winRate}</span>
               <span className={`font-bold ${
                 parseFloat(stats.win_rate) >= 50 ? 'text-emerald-500' : 'text-red-500'
               }`}>
@@ -246,7 +246,7 @@ export default function AutoTradingStatus({ symbol }: AutoTradingStatusProps) {
               </span>
             </div>
             <div className="flex items-center justify-between p-2 rounded-lg bg-muted/30">
-              <span className="text-xs text-muted-foreground">平均收益</span>
+              <span className="text-xs text-muted-foreground">{t.autoTrading.avgReturn}</span>
               <span className={`font-bold ${
                 parseFloat(stats.avg_return) >= 0 ? 'text-emerald-500' : 'text-red-500'
               }`}>
@@ -258,11 +258,11 @@ export default function AutoTradingStatus({ symbol }: AutoTradingStatusProps) {
 
         {/* 最近信号 */}
         <div>
-          <div className="text-xs font-medium text-muted-foreground mb-2">最近信号</div>
+          <div className="text-xs font-medium text-muted-foreground mb-2">{t.autoTrading.recentSignals}</div>
           <div className="space-y-1.5 max-h-[200px] overflow-y-auto">
             {signals.length === 0 ? (
               <div className="text-center py-4 text-sm text-muted-foreground">
-                暂无信号记录
+                {t.autoTrading.noSignals}
               </div>
             ) : (
               signals.map((signal) => (
@@ -283,7 +283,7 @@ export default function AutoTradingStatus({ symbol }: AutoTradingStatusProps) {
                               : 'border-red-500/30 text-red-500'
                           }`}
                         >
-                          {signal.direction === 'bullish' ? '多' : '空'}
+                          {signal.direction === 'bullish' ? t.autoTrading.directionLong : t.autoTrading.directionShort}
                         </Badge>
                       </div>
                       <div className="text-[10px] text-muted-foreground">

@@ -7,13 +7,48 @@ use sqlx::PgPool;
 use tracing::{error, info, warn};
 
 use crate::db::{signals, strategies as db_strategies};
-use crate::redis_reader;
+use crate::redis_reader::{self, Timeframe};
 use crate::strategies::{self, SignalType};
 
-pub async fn run(pool: PgPool, mut redis: ConnectionManager, interval_secs: u64) -> Result<()> {
-    info!("Strategy engine started, polling every {} seconds", interval_secs);
+/// 策略执行引擎配置
+pub struct EngineConfig {
+    pub poll_interval_secs: u64,
+    pub default_timeframe: Timeframe,
+    pub default_kline_limit: usize,
+}
 
-    let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
+impl Default for EngineConfig {
+    fn default() -> Self {
+        Self {
+            poll_interval_secs: 5,
+            default_timeframe: Timeframe::OneMinute,
+            default_kline_limit: 500, // 默认读取 500 根 K 线用于指标计算
+        }
+    }
+}
+
+pub async fn run(pool: PgPool, mut redis: ConnectionManager, interval_secs: u64) -> Result<()> {
+    let config = EngineConfig {
+        poll_interval_secs: interval_secs,
+        ..Default::default()
+    };
+
+    run_with_config(pool, redis, config).await
+}
+
+pub async fn run_with_config(
+    pool: PgPool,
+    mut redis: ConnectionManager,
+    config: EngineConfig,
+) -> Result<()> {
+    info!(
+        "Strategy engine started, polling every {} seconds, timeframe: {}, kline_limit: {}",
+        config.poll_interval_secs,
+        config.default_timeframe.as_str(),
+        config.default_kline_limit
+    );
+
+    let mut interval = tokio::time::interval(Duration::from_secs(config.poll_interval_secs));
 
     loop {
         interval.tick().await;
@@ -36,7 +71,15 @@ pub async fn run(pool: PgPool, mut redis: ConnectionManager, interval_secs: u64)
         for strategy_instance in active_strategies {
             // 遍历策略实例的每个交易对
             for symbol in &strategy_instance.symbols {
-                if let Err(e) = process_strategy(&pool, &mut redis, &strategy_instance, symbol).await {
+                if let Err(e) = process_strategy(
+                    &pool,
+                    &mut redis,
+                    &strategy_instance,
+                    symbol,
+                    &config,
+                )
+                .await
+                {
                     error!(
                         "Error processing strategy {} for {}: {}",
                         strategy_instance.id, symbol, e
@@ -52,9 +95,16 @@ async fn process_strategy(
     redis: &mut ConnectionManager,
     strategy_instance: &db_strategies::StrategyInstance,
     symbol: &str,
+    config: &EngineConfig,
 ) -> Result<()> {
     // 获取市场数据
-    let market_data = redis_reader::get_market_data(redis, symbol).await?;
+    let market_data = redis_reader::get_market_data(
+        redis,
+        symbol,
+        &config.default_timeframe,
+        config.default_kline_limit,
+    )
+    .await?;
 
     if market_data.klines.is_empty() {
         warn!("No kline data for {}", symbol);
@@ -62,10 +112,7 @@ async fn process_strategy(
     }
 
     // 创建策略实例
-    let strategy = strategies::create_strategy(
-        &strategy_instance.strategy_type,
-        &strategy_instance.params,
-    )?;
+    let strategy = strategies::create_strategy(&strategy_instance.strategy_type, &strategy_instance.params)?;
 
     // 分析市场数据
     let signal = match strategy.analyze(&market_data).await {

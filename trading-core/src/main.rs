@@ -510,6 +510,64 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
     info!("📊 Strategy analysis scheduler started (every {}s, stop_loss={}%, take_profit={}%)",
         settings.strategy.interval_secs, settings.strategy.stop_loss_pct, settings.strategy.take_profit_pct);
 
+    // Start high timeframe K线 aggregation scheduler
+    let agg_repo = repository.clone();
+    let agg_symbols = settings.symbols.clone();
+    let (agg_shutdown_tx, mut agg_shutdown_rx) = tokio::sync::broadcast::channel(1);
+    let agg_handle = tokio::spawn(async move {
+        // 每小时聚合一次高时间框架 K 线
+        let mut interval = tokio::time::interval(Duration::from_secs(3600));
+        interval.tick().await; // skip first immediate tick
+
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    info!("📊 Starting high timeframe K-line aggregation...");
+                    for symbol in &agg_symbols {
+                        // 从 1m K 线聚合生成高时间框架 K 线
+                        // 这里简化处理，实际应该调用 PostgreSQL 的聚合函数
+                        // 或者在 Rust 中实现聚合逻辑
+                        match agg_repo.get_klines(symbol, 20000).await {
+                            Ok(klines_1m) => {
+                                if klines_1m.is_empty() {
+                                    continue;
+                                }
+
+                                // 聚合为各时间框架
+                                let timeframes = [
+                                    Timeframe::FourHour,
+                                    Timeframe::OneDay,
+                                    Timeframe::ThreeDay,
+                                    Timeframe::OneWeek,
+                                ];
+
+                                for tf in &timeframes {
+                                    let aggregated = aggregate_klines(&klines_1m, tf);
+                                    if !aggregated.is_empty() {
+                                        if let Err(e) = agg_repo.batch_insert_high_tf_klines(&aggregated, tf).await {
+                                            error!("[{}] Failed to insert {} klines: {}", symbol, tf.as_str(), e);
+                                        } else {
+                                            debug!("[{}] Inserted {} {} klines", symbol, aggregated.len(), tf.as_str());
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                error!("[{}] Failed to get klines for aggregation: {}", symbol, e);
+                            }
+                        }
+                    }
+                    info!("✅ High timeframe K-line aggregation completed");
+                }
+                _ = agg_shutdown_rx.recv() => {
+                    info!("High TF aggregation scheduler shutting down...");
+                    break;
+                }
+            }
+        }
+    });
+    info!("📊 High timeframe aggregation scheduler started (every hour)");
+
     // Start API server
     let api_config = api::server::ApiServerConfig {
         host: "0.0.0.0".to_string(),
@@ -545,6 +603,8 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
     // 清理
     let _ = scheduler_shutdown_tx.send(());
     scheduler_handle.abort();
+    let _ = agg_shutdown_tx.send(());
+    agg_handle.abort();
     if let Some(handle) = collection_handle {
         handle.abort();
     }
@@ -1298,4 +1358,97 @@ async fn create_database_pool_for_service() -> Result<PgPool, Box<dyn std::error
 async fn create_cache_for_service() -> Result<TieredCache, Box<dyn std::error::Error>> {
     let settings = Settings::new()?;
     create_cache(&settings).await
+}
+
+/// 聚合 K 线数据到指定时间框架
+fn aggregate_klines(klines_1m: &[OHLCData], target_tf: &Timeframe) -> Vec<OHLCData> {
+    if klines_1m.is_empty() {
+        return vec![];
+    }
+
+    let interval_secs = match target_tf {
+        Timeframe::FourHour => 14400,
+        Timeframe::OneDay => 86400,
+        Timeframe::ThreeDay => 259200,
+        Timeframe::OneWeek => 604800,
+        _ => return vec![],
+    };
+
+    let mut aggregated: Vec<OHLCData> = Vec::new();
+    let mut current_window: Vec<&OHLCData> = Vec::new();
+    let mut window_start: Option<i64> = None;
+
+    for kline in klines_1m {
+        let ts = kline.timestamp.timestamp();
+        let bucket = (ts / interval_secs) * interval_secs;
+
+        if window_start.is_none() {
+            window_start = Some(bucket);
+        }
+
+        if Some(bucket) == window_start {
+            current_window.push(kline);
+        } else {
+            // 聚合当前窗口
+            if !current_window.is_empty() {
+                if let Some(agg) = aggregate_window(&current_window, target_tf) {
+                    aggregated.push(agg);
+                }
+            }
+            // 开始新窗口
+            current_window.clear();
+            window_start = Some(bucket);
+            current_window.push(kline);
+        }
+    }
+
+    // 处理最后一个窗口
+    if !current_window.is_empty() {
+        if let Some(agg) = aggregate_window(&current_window, target_tf) {
+            aggregated.push(agg);
+        }
+    }
+
+    aggregated
+}
+
+/// 聚合一个时间窗口内的 K 线
+fn aggregate_window(klines: &[&OHLCData], target_tf: &Timeframe) -> Option<OHLCData> {
+    if klines.is_empty() {
+        return None;
+    }
+
+    let first = klines[0];
+    let last = klines[klines.len() - 1];
+
+    let open = first.open;
+    let high = klines.iter().map(|k| k.high).max()?;
+    let low = klines.iter().map(|k| k.low).min()?;
+    let close = last.close;
+    let volume = klines.iter().map(|k| k.volume).sum();
+    let trade_count = klines.iter().map(|k| k.trade_count).sum();
+
+    // 使用窗口开始时间作为 K 线时间
+    let interval_secs = match target_tf {
+        Timeframe::FourHour => 14400i64,
+        Timeframe::OneDay => 86400,
+        Timeframe::ThreeDay => 259200,
+        Timeframe::OneWeek => 604800,
+        _ => return None,
+    };
+
+    let ts = first.timestamp.timestamp();
+    let window_start = (ts / interval_secs) * interval_secs;
+
+    Some(OHLCData {
+        timestamp: chrono::DateTime::from_timestamp(window_start, 0)?.with_timezone(&chrono::Utc),
+        symbol: first.symbol.clone(),
+        timeframe: *target_tf,
+        open,
+        high,
+        low,
+        close,
+        volume,
+        trade_count,
+    })
 }

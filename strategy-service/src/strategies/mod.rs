@@ -4,6 +4,7 @@ pub mod bollinger;
 pub mod volume;
 pub mod trend;
 pub mod multi_tf;
+pub mod macro_cycle;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -61,6 +62,7 @@ pub fn create_strategy(
         "volume" => Ok(Box::new(volume::VolumeStrategy::from_params(params)?)),
         "trend" => Ok(Box::new(trend::TrendStrategy::from_params(params)?)),
         "multi_tf" => Ok(Box::new(multi_tf::MultiTimeframeStrategy::from_params(params)?)),
+        "macro_cycle" => Ok(Box::new(macro_cycle::MacroCycleStrategy::from_params(params)?)),
         _ => Err(anyhow::anyhow!("Unknown strategy type: {}", strategy_type)),
     }
 }

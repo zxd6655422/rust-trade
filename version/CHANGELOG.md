@@ -1,5 +1,104 @@
 # Changelog
 
+## [2026-07-07] 大周期分析支持 + Redis 缓存优化
+
+### Redis 缓存优化
+
+| 模块 | 状态 | 说明 |
+|------|------|------|
+| 缓存数量 | ✅ | 从 5000 增加到 20000 根 |
+| 多时间框架 | ✅ | 新增 3d/1w 时间框架 |
+| 内存占用 | ✅ | 约 280MB（10 symbol × 7 TF） |
+
+### 高时间框架 K 线表
+
+| 表 | 说明 |
+|------|------|
+| `kline_4h` | 4小时K线，支持大周期分析 |
+| `kline_1d` | 日K线，支持中长期分析 |
+| `kline_3d` | 3日K线，支持周期分析 |
+| `kline_1w` | 周K线，支持长期趋势分析 |
+
+### 大周期分析策略
+
+| 模块 | 状态 | 说明 |
+|------|------|------|
+| macro_cycle 策略 | ✅ | 支持周K/3日K分析 |
+| 历史高低点识别 | ✅ | 自动识别支撑/阻力位 |
+| 趋势确认 | ✅ | ADX + 均线确认 |
+| 关键位置信号 | ✅ | 接近历史高点/低点时生成信号 |
+
+### 数据库脚本
+
+| 文件 | 说明 |
+|------|------|
+| `sql/kline_high_timeframe.sql` | 高时间框架K线表 + 聚合函数 |
+| `sql/strategy_performance.sql` | 策略性能统计表 |
+| `sql/migrate_missing_tables.sql` | 增量迁移脚本 |
+
+### 文件改动
+
+| 文件 | 改动 |
+|------|------|
+| `trading-core/src/redis_writer.rs` | 增加缓存数量，支持 3d/1w |
+| `trading-core/src/main.rs` | 添加高时间框架聚合任务 |
+| `trading-common/src/data/types.rs` | 添加 TwoHour/ThreeDay 时间框架 |
+| `trading-common/src/data/repository.rs` | 添加高时间框架K线写入 |
+| `strategy-service/src/redis_reader.rs` | 支持多时间框架查询 |
+| `strategy-service/src/indicators.rs` | 指标计算模块 |
+| `strategy-service/src/strategies/macro_cycle.rs` | 大周期分析策略 |
+
+---
+
+## [2026-07-07] Strategy-Service 策略服务
+
+### 新增 strategy-service 独立服务
+
+| 模块 | 状态 | 说明 |
+|------|------|------|
+| strategy-service 框架 | ✅ | 新建独立 Rust 服务 |
+| 6 个策略实现 | ✅ | RSI/MACD/布林带/成交量/趋势/多时间框架 |
+| 数据库操作层 | ✅ | 策略CRUD、信号、交易、性能统计 |
+| Redis 读取器 | ✅ | 从 Redis 读取 K线和指标数据 |
+| 策略执行引擎 | ✅ | 定时轮询 PostgreSQL + Redis |
+| HTTP API | ✅ | 策略管理/信号查询/交易记录/统计 |
+
+### 新增数据库 Schema
+
+| 文件 | 说明 |
+|------|------|
+| `config/schema_v5.sql` | 交易所/市场类型字段扩展 |
+| `config/schema_v6.sql` | 策略服务相关表 |
+
+### 前端优化
+
+| 组件 | 说明 |
+|------|------|
+| AutoTradingStatus | 新建自动交易状态组件 |
+| OrderPanel | 更新下单面板 |
+| SymbolSelect | 更新交易对选择器 |
+| i18n | 添加自动交易相关翻译 |
+
+### Redis 数据写入
+
+| 文件 | 说明 |
+|------|------|
+| `trading-core/src/redis_writer.rs` | 新建，从 trading-core 写入 K线和指标到 Redis |
+
+### 文件改动
+
+| 文件 | 改动 |
+|------|------|
+| `strategy-service/` | 新建完整服务目录 |
+| `trading-core/src/redis_writer.rs` | 新建 Redis 写入器 |
+| `trading-core/src/main.rs` | 集成 Redis 写入器 |
+| `frontend/src/components/trading/AutoTradingStatus.tsx` | 新建自动交易状态组件 |
+| `frontend/src/components/trading/OrderPanel.tsx` | 更新下单面板 |
+| `frontend/src/lib/i18n/translations/en.ts` | 添加翻译 |
+| `frontend/src/lib/i18n/translations/zh.ts` | 添加翻译 |
+
+---
+
 ## [2026-07-06] 交易对管理增强（合并 SymbolManager）
 
 ### 合并后的 DataManager 功能

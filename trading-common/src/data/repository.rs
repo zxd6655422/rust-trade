@@ -1391,6 +1391,60 @@ impl TickDataRepository {
         Ok(total_inserted)
     }
 
+    /// 批量写入高时间框架 K 线
+    pub async fn batch_insert_high_tf_klines(
+        &self,
+        klines: &[OHLCData],
+        timeframe: &Timeframe,
+    ) -> DataResult<usize> {
+        if klines.is_empty() {
+            return Ok(0);
+        }
+
+        let table_name = match timeframe {
+            Timeframe::FourHour => "kline_4h",
+            Timeframe::OneDay => "kline_1d",
+            Timeframe::ThreeDay => "kline_3d",
+            Timeframe::OneWeek => "kline_1w",
+            _ => return Err(DataError::Validation("Unsupported high timeframe".to_string())),
+        };
+
+        let total_count = klines.len();
+        let mut total_inserted = 0;
+
+        for chunk in klines.chunks(MAX_BATCH_SIZE) {
+            let mut query_builder = QueryBuilder::new(format!(
+                "INSERT INTO {} (symbol, open_time, open, high, low, close, volume, trade_count) ", table_name
+            ));
+
+            query_builder.push_values(chunk, |mut b, kline| {
+                b.push_bind(&kline.symbol)
+                    .push_bind(kline.timestamp)
+                    .push_bind(kline.open)
+                    .push_bind(kline.high)
+                    .push_bind(kline.low)
+                    .push_bind(kline.close)
+                    .push_bind(kline.volume)
+                    .push_bind(kline.trade_count as i32);
+            });
+
+            query_builder.push(format!(
+                " ON CONFLICT (symbol, open_time) DO UPDATE SET \
+                  high = GREATEST({0}.high, EXCLUDED.high), \
+                  low = LEAST({0}.low, EXCLUDED.low), \
+                  close = EXCLUDED.close, \
+                  volume = EXCLUDED.volume, \
+                  trade_count = EXCLUDED.trade_count", table_name
+            ));
+
+            let result = query_builder.build().execute(&self.pool).await?;
+            total_inserted += result.rows_affected() as usize;
+        }
+
+        debug!("[{}] Batch upserted {} records", table_name, total_inserted);
+        Ok(total_inserted)
+    }
+
     /// Get klines from kline_1m table
     /// Returns the latest `limit` records in ascending time order (oldest first, newest last)
     pub async fn get_klines(
@@ -1754,9 +1808,9 @@ impl TickDataRepository {
         let max_ticks = match timeframe {
             Timeframe::OneMinute | Timeframe::FiveMinutes => 50000,
             Timeframe::FifteenMinutes | Timeframe::ThirtyMinutes => 100000,
-            Timeframe::OneHour => 200000,
-            Timeframe::FourHours => 500000,
-            Timeframe::OneDay => 1000000,
+            Timeframe::OneHour | Timeframe::TwoHour => 200000,
+            Timeframe::FourHour => 500000,
+            Timeframe::OneDay | Timeframe::ThreeDay => 1000000,
             Timeframe::OneWeek => 2000000,
         };
 
@@ -2280,8 +2334,10 @@ fn calculate_required_duration_hours(timeframe: Timeframe, candle_count: u32) ->
         Timeframe::FifteenMinutes => 1,
         Timeframe::ThirtyMinutes => 1,
         Timeframe::OneHour => 1,
-        Timeframe::FourHours => 4,
+        Timeframe::TwoHour => 2,
+        Timeframe::FourHour => 4,
         Timeframe::OneDay => 24,
+        Timeframe::ThreeDay => 24 * 3,
         Timeframe::OneWeek => 24 * 7,
     };
 

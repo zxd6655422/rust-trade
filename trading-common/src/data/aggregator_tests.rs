@@ -188,7 +188,7 @@ mod tests {
         assert!(all_timeframes.contains_key(&Timeframe::FifteenMinutes));
         assert!(all_timeframes.contains_key(&Timeframe::ThirtyMinutes));
         assert!(all_timeframes.contains_key(&Timeframe::OneHour));
-        assert!(all_timeframes.contains_key(&Timeframe::FourHours));
+        assert!(all_timeframes.contains_key(&Timeframe::FourHour));
         assert!(all_timeframes.contains_key(&Timeframe::OneDay));
     }
 

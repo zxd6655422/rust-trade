@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use super::{Signal, SignalType, Strategy};
+use crate::indicators;
 use crate::redis_reader::MarketData;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,19 +24,26 @@ impl Strategy for RsiStrategy {
     }
 
     async fn analyze(&self, data: &MarketData) -> Option<Signal> {
-        let rsi = data.rsi?;
+        // 使用 indicators 模块计算 RSI
+        let rsi_result = indicators::calculate_rsi(&data.klines, self.params.period)?;
+        let rsi = rsi_result.value;
         let current_price = data.current_price;
+
+        // 计算 ATR 用于止损
+        let atr = indicators::calculate_atr(&data.klines, 14)
+            .map(|r| r.value)
+            .unwrap_or(current_price * 0.02);
 
         // 计算止损止盈
         let (stop_loss, take_profit) = if rsi < self.params.oversold {
             // 超卖区域，做多
-            let stop_loss = current_price * 0.98; // 2% 止损
-            let take_profit = current_price * 1.04; // 4% 止盈
+            let stop_loss = current_price - 2.0 * atr;
+            let take_profit = current_price + 3.0 * atr;
             (Some(stop_loss), Some(take_profit))
         } else if rsi > self.params.overbought {
             // 超买区域，做空
-            let stop_loss = current_price * 1.02; // 2% 止损
-            let take_profit = current_price * 0.96; // 4% 止盈
+            let stop_loss = current_price + 2.0 * atr;
+            let take_profit = current_price - 3.0 * atr;
             (Some(stop_loss), Some(take_profit))
         } else {
             (None, None)
@@ -53,13 +61,21 @@ impl Strategy for RsiStrategy {
         // 确认信号：检查最近 N 根 K 线是否确认
         let confirmed = self.confirm_signal(data, rsi);
 
+        // 计算其他指标用于上下文
+        let ma_fast = indicators::calculate_ma(&data.klines, 7).map(|r| r.value);
+        let ma_slow = indicators::calculate_ma(&data.klines, 25).map(|r| r.value);
+
         let market_context = serde_json::json!({
             "rsi": rsi,
-            "period": self.params.period,
+            "rsi_period": self.params.period,
             "overbought": self.params.overbought,
             "oversold": self.params.oversold,
+            "atr": atr,
+            "ma7": ma_fast,
+            "ma25": ma_slow,
             "current_price": current_price,
             "kline_count": data.klines.len(),
+            "timeframe": data.timeframe.as_str(),
         });
 
         if rsi < self.params.oversold && confirmed {
@@ -70,7 +86,10 @@ impl Strategy for RsiStrategy {
                 stop_loss,
                 take_profit,
                 confidence: 0.7,
-                reason: format!("RSI 超卖: {:.2} < {}", rsi, self.params.oversold),
+                reason: format!(
+                    "RSI 超卖: {:.2} < {} (period={})",
+                    rsi, self.params.oversold, self.params.period
+                ),
                 market_context,
             })
         } else if rsi > self.params.overbought && confirmed {
@@ -81,7 +100,10 @@ impl Strategy for RsiStrategy {
                 stop_loss,
                 take_profit,
                 confidence: 0.7,
-                reason: format!("RSI 超买: {:.2} > {}", rsi, self.params.overbought),
+                reason: format!(
+                    "RSI 超买: {:.2} > {} (period={})",
+                    rsi, self.params.overbought, self.params.period
+                ),
                 market_context,
             })
         } else {
@@ -103,7 +125,21 @@ impl RsiStrategy {
         }
 
         // 检查最近 N 根 K 线的 RSI 趋势
-        // 这里简化处理，实际应该从 Redis 读取历史 RSI
-        true
+        // 计算前一根 K 线的 RSI
+        if let Some(prev_rsi) = indicators::calculate_rsi(
+            &data.klines[..data.klines.len() - 1],
+            self.params.period,
+        ) {
+            // 如果 RSI 在超卖区域且继续下降，或者在超买区域且继续上升，则确认
+            if _current_rsi < self.params.oversold {
+                _current_rsi <= prev_rsi.value // RSI 继续下降或持平
+            } else if _current_rsi > self.params.overbought {
+                _current_rsi >= prev_rsi.value // RSI 继续上升或持平
+            } else {
+                true
+            }
+        } else {
+            true // 数据不足时默认确认
+        }
     }
 }
