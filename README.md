@@ -1,396 +1,182 @@
-# Rust Trade
+# Rust Trade - 高性能量化交易系统
 
-A comprehensive cryptocurrency trading system with real-time data collection, advanced backtesting capabilities, and a professional desktop interface.
+[English](README.md) | [中文](README_CN.md)
 
-[![Rust](https://img.shields.io/badge/rust-1.70+-orange.svg)](https://www.rust-lang.org/)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](https://tauri.app/)
+一个用 Rust 构建的高性能量化交易系统，支持多交易所、多策略、自动化交易。
 
-## 🎯 Overview
+## ✨ 核心特性
 
-Rust Trade combines high-performance market data processing with sophisticated backtesting tools, delivering a complete solution for cryptocurrency quantitative trading. The system features real-time data collection from exchanges, a powerful backtesting engine with multiple strategies, and an intuitive desktop interface.
+- 🚀 **高性能** - Rust 异步运行时，毫秒级响应
+- 📊 **多策略** - 内置 7 种策略（RSI/MACD/布林带/趋势/多时间框架/大周期/成交量）
+- 🔄 **自动化** - 信号触发自动下单，支持止损止盈
+- 📈 **大周期分析** - 支持周K/3日K 分析，识别历史支撑阻力位
+- 🌐 **多交易所** - 支持 Binance、OKX
+- 💹 **多市场** - 支持现货、合约交易
+- 📱 **桌面应用** - Tauri 桌面端，实时监控
+- 🌍 **国际化** - 支持中英文切换
 
-## 🏗️ Architecture
+## 🏗️ 系统架构
 
-### **Live Data Collection Mode**
 ```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Exchange      │───▶│    Service      │───▶│   Repository    │
-│   (WebSocket)   │    │  (Processing)   │    │   (Storage)     │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-         │                       │                       │
-         │                       ▼                       ▼
-    Binance API           ┌─────────────┐         ┌─────────────┐
-    - Real-time data      │ Multi-Level │         │ PostgreSQL  │
-    - Paper trading       │    Cache    │         │ Database    │
-                          │ (L1 + L2)   │         │             │
-                          └─────────────┘         └─────────────┘
-                                    │
-                                    ▼
-                          ┌─────────────────┐
-                          │ Paper Trading   │
-                          │    Engine       │
-                          └─────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│  Tauri 桌面应用 (src-tauri)                                       │
+│  ├── 实时行情展示                                                  │
+│  ├── 持仓/交易监控                                                │
+│  ├── 策略管理                                                    │
+│  └── 回测分析                                                    │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  trading-core (数据采集 + 指标计算)                                │
+│  ├── 连接交易所（Binance/OKX）                                    │
+│  ├── REST 轮询采集 K线数据                                       │
+│  ├── 计算技术指标                                                │
+│  ├── 写入 PostgreSQL                                             │
+│  └── 写入 Redis 缓存（20000根/时间框架）                          │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  strategy-service (策略分析 + 信号生成)                            │
+│  ├── 从 PostgreSQL 加载策略实例配置                               │
+│  ├── 从 Redis 读取指标数据                                       │
+│  ├── 运行策略逻辑产生信号                                        │
+│  ├── 信号写入 PostgreSQL                                         │
+│  ├── WebSocket 实时推送信号                                      │
+│  └── 自动交易执行                                                │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  trading-engine (交易执行)                                       │
+│  ├── 调用交易所 API 下单                                        │
+│  ├── 订单状态同步                                                │
+│  ├── 持仓管理                                                    │
+│  └── 风险控制                                                    │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-### **Desktop Application Mode**
-```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Next.js       │───▶│  Tauri Commands │───▶│ Trading Common  │
-│   Frontend      │    │   (src-tauri)   │    │    (Library)    │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-                                                       │
-                               ┌───────────────────────┴───────────────────────┐
-                               ▼                                               ▼
-                       ┌─────────────────┐                             ┌─────────────────┐
-                       │ Backtest Engine │                             │   Repository    │
-                       │  + Strategies   │                             │   + Database    │
-                       └─────────────────┘                             └─────────────────┘
-```
+## 📦 项目结构
 
-## 📁 Project Structure
 ```
 rust-trade/
-├── assets/                # Project assets and screenshots
-├── config/                # Global configuration files
-│   ├── development.toml   # Development environment config
-│   ├── production.toml    # Production environment config
-│   ├── schema.sql         # PostgreSQL table definitions
-│   └── test.toml          # Test environment config
-├── frontend/              # Next.js frontend application
-│   ├── src/               # Frontend source code
-│   │   ├── app/           # App router pages
-│   │   │   ├── page.tsx   # Dashboard homepage
-│   │   │   └── backtest/  # Backtesting interface
-│   │   ├── components/    # Reusable UI components
-│   │   │   ├── layout/    # Layout components
-│   │   │   └── ui/        # shadcn/ui components
-│   │   └── types/         # TypeScript type definitions
-│   ├── tailwind.config.js # Tailwind CSS configuration
-│   └── package.json       # Frontend dependencies
-├── src-tauri/             # Desktop application backend
-│   ├── src/               # Tauri command handlers and state management
-│   │   ├── commands.rs    # Tauri command implementations
-│   │   ├── main.rs        # Application entry point
-│   │   ├── state.rs       # Application state management
-│   │   └── types.rs       # Frontend interface types
-│   ├── Cargo.toml         # Tauri dependencies (uses trading-common)
-│   └── tauri.conf.json    # Tauri configuration
-├── trading-common/        # Shared library for all crates
-│   ├── src/
-│   │   ├── backtest/      # Backtesting engine and strategies
-│   │   │   ├── engine.rs  # Core backtesting logic
-│   │   │   ├── metrics.rs # Performance calculations
-│   │   │   ├── portfolio.rs # Portfolio management
-│   │   │   └── strategy/  # Trading strategies (RSI, SMA)
-│   │   ├── data/          # Data layer
-│   │   │   ├── cache.rs   # Multi-level caching system
-│   │   │   ├── repository.rs # Database operations
-│   │   │   └── types.rs   # Core data structures
-│   │   └── lib.rs         # Library entry point
-│   └── Cargo.toml         # Common dependencies
-├── trading-core/          # CLI trading system
-│   ├── src/
-│   │   ├── exchange/      # Exchange integrations
-│   │   │   └── binance.rs # Binance WebSocket client
-│   │   ├── live_trading/  # Paper trading system
-│   │   │   └── paper_trading.rs # Real-time strategy execution
-│   │   ├── service/       # Business logic layer
-│   │   │   └── market_data.rs # Data processing service
-│   │   ├── config.rs      # Configuration management
-│   │   ├── lib.rs         # Library entry point (re-exports trading-common)
-│   │   └── main.rs        # CLI application entry point
-│   ├── benches/           # Performance benchmarks
-│   ├── Cargo.toml         # Core dependencies
-│   └── README.md          # Core system documentation
-└── README.md              # This file
+├── trading-common/          # 共享库（数据类型、指标计算、回测引擎）
+├── trading-core/            # 数据采集服务
+├── trading-engine/          # 交易执行服务
+├── strategy-service/        # 策略分析服务
+├── src-tauri/               # Tauri 桌面应用
+├── frontend/                # Next.js 前端
+├── config/                  # 配置文件
+├── sql/                     # 数据库表结构
+├── deploy/                  # 部署脚本
+└── version/                 # 版本文档和SQL脚本
 ```
 
-## 🚀 Quick Start
+## 🚀 快速开始
 
-### Prerequisites
+### 环境要求
 
-- **Rust 1.70+** - [Install Rust](https://rustup.rs/)
-- **Node.js 18+** - [Install Node.js](https://nodejs.org/)
-- **PostgreSQL 12+** - [Install PostgreSQL](https://www.postgresql.org/download/)
-- **Redis 6+** - [Install Redis](https://redis.io/download/) (optional but recommended)
+- Rust 1.70+
+- Node.js 18+
+- PostgreSQL 14+
+- Redis 6+
 
-### 1. Clone the Repository
+### 安装
 
 ```bash
-git clone https://github.com/Erio-Harrison/rust-trade.git
+# 克隆项目
+git clone https://github.com/yourusername/rust-trade.git
 cd rust-trade
-```
 
-### 2. Database Setup
-
-```bash
-# Create database
-createdb trading_core
-
-# Set up schema
-Run the SQL commands found in the config folder to create the database tables.
-```
-
-### 3. Environment Configuration
-
-Create `.env` files in both root directory and `trading-core/`:
-
-```bash
-# .env
-DATABASE_URL=postgresql://username:password@localhost/trading_core
-REDIS_URL=redis://127.0.0.1:6379
-RUN_MODE=development
-```
-
-### 4. Install Dependencies
-
-```bash
-# Install Rust dependencies
-cd trading-core
+# 安装依赖
 cargo build
-cd ..
+cd frontend && npm install
 
-# Install frontend dependencies
-cd frontend
-npm install
-cd ..
+# 配置环境变量
+cp .env.example .env
+# 编辑 .env 文件，填入数据库和交易所配置
 
-# Install Tauri dependencies
-cd src-tauri
-cargo build
-cd ..
+# 初始化数据库
+psql -U postgres -d trading_core -f sql/schema_latest.sql
+
+# 启动服务
+cargo run -p trading-core service          # 数据采集
+cargo run -p strategy-service              # 策略分析
+cargo run -p trading-engine                # 交易执行
+
+# 启动前端
+cd frontend && npm run dev
 ```
 
-PS: 
-
-## 🎮 Running the Application
-
-### Option 1: Desktop Application (Recommended)
+### 环境变量
 
 ```bash
-# Development mode with hot reload
-cd frontend && npm run tauri dev
-# or alternatively
-cd frontend && cargo tauri dev
+# 数据库
+DATABASE_URL=postgresql://user:password@localhost/trading_core
+REDIS_URL=redis://localhost:6379
 
-# Production build
-cd frontend && npm run tauri build
-# or alternatively
-cd frontend && cargo tauri build
+# Binance
+BINANCE_API_KEY=your_api_key
+BINANCE_API_SECRET=your_api_secret
+BINANCE_TESTNET=false
+
+# OKX（可选）
+OKX_API_KEY=your_api_key
+OKX_API_SECRET=your_api_secret
+OKX_PASSPHRASE=your_passphrase
 ```
 
-### Option 2: Core Trading System (CLI)
+## 📊 内置策略
 
-```bash
-cd trading-core
+| 策略 | 说明 | 参数 |
+|------|------|------|
+| RSI | 相对强弱指数 | period, overbought, oversold |
+| MACD | 指数平滑异同移动平均线 | fast, slow, signal |
+| 布林带 | 波动率通道 | period, std_dev |
+| 趋势 | 多均线趋势跟踪 | fast_ma, slow_ma, trend_ma |
+| 多时间框架 | 多周期共振 | timeframes, min_agreement |
+| 大周期 | 历史支撑阻力分析 | lookback_periods, proximity_threshold |
+| 成交量 | 量价关系分析 | volume_ma_period, spike_threshold |
 
-# Start live data collection
-cargo run live
+## 🔧 API 端点
 
-# Start live data collection with paper trading
-cargo run live --paper-trading
+### trading-core (端口 8080)
 
-# Run backtesting interface
-cargo run backtest
+| 端点 | 方法 | 功能 |
+|------|------|------|
+| `/health` | GET | 健康检查 |
+| `/api/data/info` | GET | 数据信息 |
+| `/api/strategies` | GET | 策略列表 |
+| `/api/backtest` | POST | 回测执行 |
 
-# Show help
-cargo run -- --help
+### strategy-service (端口 8082)
+
+| 端点 | 方法 | 功能 |
+|------|------|------|
+| `/api/strategies` | GET/POST | 策略管理 |
+| `/api/signals` | GET | 信号查询 |
+| `/api/trades` | GET | 交易记录 |
+| `/ws/signals` | WebSocket | 实时信号推送 |
+
+## 📈 Redis 缓存
+
+```
+kline:{symbol}:1m    → 20000根 K线（约14天）
+kline:{symbol}:5m    → 20000根 K线（约69天）
+kline:{symbol}:1h    → 20000根 K线（约2.3年）
+kline:{symbol}:4h    → 20000根 K线（约9年）
+kline:{symbol}:1d    → 20000根 K线（约54年）
+kline:{symbol}:1w    → 20000根 K线（约384年）
 ```
 
-### Option 3: Web Interface Only
+## 📚 文档
 
-```bash
-cd frontend
-
-# Development server
-npm run dev
-
-# Production build
-npm run build
-npm start
-```
-
-## 📊 Features
-
-### **Live Data Collection**
-- Real-time WebSocket connections to cryptocurrency exchanges
-- High-performance data processing (~390µs single insert, ~13ms batch)
-- Multi-level caching with Redis and in-memory storage
-- Automatic retry mechanisms and error handling
-
-### **Advanced Backtesting**
-- Multiple trading strategies (SMA, RSI)
-- Professional performance metrics (Sharpe ratio, drawdown, win rate)
-- Portfolio management with P&L tracking
-- Interactive parameter configuration
-
-### **Desktop Interface**
-- Real-time data visualization
-- Intuitive strategy configuration
-- Comprehensive result analysis
-- Cross-platform support (Windows, macOS, Linux)
-
-## 🖼️ Screenshots
-
-### Backtest Configuration
-![Backtest Configuration](assets/backtestPage1.png)
-
-### Results Dashboard
-![Results Dashboard](assets/backtestPage2.png)
-
-### Trade Analysis
-![Trade Analysis](assets/backtestPage3.png)
-
-## ⚙️ Configuration
-
-### Trading Symbols
-
-Edit `config/development.toml`:
-
-```toml
-# Trading pairs to monitor
-symbols = ["BTCUSDT", "ETHUSDT", "ADAUSDT"]
-
-[server]
-host = "0.0.0.0"
-port = 8080
-
-[database]
-max_connections = 5
-min_connections = 1
-max_lifetime = 1800
-
-[cache]
-[cache.memory]
-max_ticks_per_symbol = 1000
-ttl_seconds = 300
-
-[cache.redis]
-pool_size = 10
-ttl_seconds = 3600
-max_ticks_per_symbol = 10000
-```
-
-### Logging
-
-Set log levels via environment variables:
-
-```bash
-# Application logs
-RUST_LOG=trading_core=info
-
-# Debug mode
-RUST_LOG=trading_core=debug,sqlx=info
-```
-
-## 📈 Performance
-
-Based on comprehensive benchmarks:
-
-| Operation | Performance | Use Case |
-|-----------|-------------|----------|
-| Single tick insert | ~390µs | Real-time data |
-| Batch insert (100) | ~13ms | Bulk processing |
-| Cache hit | ~10µs | Data retrieval |
-| Historical query | ~450µs | Backtesting |
-
-## 🔧 Development
-
-### Running Tests
-
-```bash
-# Core system tests
-cd trading-core
-cargo test
-
-# Benchmarks
-cargo bench
-
-# Frontend tests
-cd frontend
-npm test
-```
-
-### Building for Production
-
-```bash
-# Build trading core
-cd trading-core
-cargo build --release
-
-# Build desktop app
-cd ../frontend
-npm run tauri build
-
-# Build web interface
-npm run build
-```
-
-## 📚 Documentation
-
-- **Trading Core**: See `trading-core/README.md` for detailed backend documentation
-- **Desktop App**: See `src-tauri/README.md` for Tauri application details
-- **Server Deployment**: See `docs/DEPLOYMENT.md` for deployment guide
-
----
-
-## 🚢 Server Deployment
-
-### First Time Setup
-
-```bash
-# 1. Clone code on server
-git clone <repo_url> ~/rust-trade
-cd ~/rust-trade
-
-# 2. Install systemd services (recommended)
-sudo bash deploy/install-systemd.sh
-
-# 3. Configure environment variables
-nano ~/apps/trading-engine/.env
-
-# 4. Start services
-sudo systemctl start trading-collector
-sudo systemctl start trading-engine
-sudo systemctl enable trading-collector trading-engine
-```
-
-### Daily Release
-
-```bash
-cd ~/rust-trade
-bash deploy/publish.sh
-```
-
-Automatically: pull code → build → stop services → deploy → start services
-
-### View Logs
-
-```bash
-sudo journalctl -u trading-collector -f
-sudo journalctl -u trading-engine -f
-```
-
-> See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for detailed documentation
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+- [开发计划](version/v1.0/PLAN.md)
+- [更新日志](version/CHANGELOG.md)
+- [部署指南](deploy/README.md)
+- [API 文档](api-docs/)
 
 ## 📄 License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 👨‍💻 Author
-
-**Erio Harrison** - [GitHub](https://github.com/Erio-Harrison)
-
-
----
-
-Built with ❤️ using Rust, Tauri, and Next.js
+MIT License

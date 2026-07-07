@@ -1,122 +1,161 @@
-# Trading Desktop
+# src-tauri
 
-A Tauri-based desktop application for cryptocurrency backtesting, built on top of Trading Core.
+Tauri 桌面应用，提供实时行情监控、持仓管理、策略分析、回测功能。
 
-## 🏗️ Architecture
+## 功能特性
 
-### **Project Structure**
+- 📊 实时行情展示（WebSocket + 轮询）
+- 📈 K线图表（7种时间框架）
+- 💼 持仓监控（实时盈亏）
+- 📋 交易历史（分页查询）
+- 🎯 策略管理（创建/编辑/启停）
+- 🔬 回测分析（多时间框架/滚动前进/样本外）
+- 📱 模拟交易（Paper Trading）
+- 🌍 中英文切换
+- 🌙 深色/浅色主题
+
+## 模块结构
+
 ```
-src-tauri/
-├── src/
-│   ├── main.rs          # Application entry point and setup
-│   ├── state.rs         # Application state management and database initialization
-│   ├── types.rs         # Frontend interface types and serialization
-│   └── commands.rs      # Tauri command handlers for frontend communication
-├── Cargo.toml           # Dependencies and Tauri configuration
-└── .env                 # Environment configuration
+src/
+├── main.rs                # 入口文件
+├── commands.rs            # Tauri 命令
+├── types.rs               # 类型定义
+├── state.rs               # 状态管理
+└── lib.rs
 ```
 
-### **Core Components**
+## Tauri 命令
 
-#### **State Management (`state.rs`)**
-- **AppState**: Manages Trading Core repository instance
-- **Database Connection**: PostgreSQL connection pool management
-- **Cache Initialization**: Simplified caching for GUI applications
-- **Configuration Loading**: Environment-based settings with fallbacks
+### 数据查询
 
-#### **Command Handlers (`commands.rs`)**
-- **`get_data_info`**: Retrieve database statistics and available symbols
-- **`get_available_strategies`**: List all implemented trading strategies
-- **`validate_backtest_config`**: Validate backtest parameters before execution
-- **`get_historical_data`**: Preview historical data for selected symbols
-- **`run_backtest`**: Execute complete backtesting with strategy and parameters
+```rust
+// 获取数据统计
+get_data_info() -> DataInfo
 
-#### **Type Definitions (`types.rs`)**
-- **Request Types**: Structured input from frontend (BacktestRequest, HistoricalDataRequest)
-- **Response Types**: Formatted output to frontend (BacktestResponse, DataInfoResponse)
-- **Serde Integration**: JSON serialization for seamless frontend communication
+// 获取可用策略
+get_available_strategies() -> Vec<StrategyInfo>
 
-## 🚀 Features
+// 获取 OHLC 数据
+get_ohlc_preview(symbol, timeframe) -> Vec<OHLCData>
+```
 
-### **Backtesting Capabilities**
-- **Strategy Selection**: Choose from built-in SMA and RSI strategies
-- **Parameter Configuration**: Customizable strategy parameters via GUI
-- **Historical Data Access**: Direct access to Trading Core's tick data
-- **Performance Metrics**: Comprehensive analysis including Sharpe ratio, drawdown, win rate
-- **Trade Analysis**: Detailed trade-by-trade breakdown with P&L tracking
+### 回测功能
 
-### **Data Management**
-- **Real-time Validation**: Parameter validation before backtest execution
-- **Data Statistics**: Database overview with symbol information and date ranges
-- **Error Handling**: Robust error propagation from backend to frontend
+```rust
+// 运行回测
+run_backtest(config) -> BacktestResult
 
-## ⚙️ Configuration
+// 多时间框架回测
+run_multi_timeframe_backtest(config) -> BacktestResult
 
-### **Environment Variables**
+// 滚动前进测试
+run_walk_forward_test(config) -> WalkForwardResult
+
+// 样本外测试
+run_out_of_sample_test(config) -> OutOfSampleResult
+
+// 多交易对回测
+run_multi_symbol_backtest(config) -> MultiSymbolResult
+
+// 市场状态分析
+analyze_market_state(config) -> MarketStateResult
+```
+
+### 模拟交易
+
+```rust
+// 启动模拟交易
+start_paper_trading(config) -> bool
+
+// 停止模拟交易
+stop_paper_trading() -> bool
+
+// 获取模拟交易状态
+get_paper_status() -> PaperStatus
+
+// 下单
+place_paper_order(order) -> OrderResult
+
+// 获取交易记录
+get_paper_trades() -> Vec<Trade>
+```
+
+### 策略信号
+
+```rust
+// 获取信号历史
+get_signal_history(request) -> Vec<Signal>
+
+// 获取信号统计
+get_signal_stats(request) -> SignalStats
+
+// 获取调度器状态
+get_scheduler_status() -> SchedulerStatus
+```
+
+## 前端组件
+
+```
+frontend/src/
+├── app/
+│   ├── page.tsx                   # Dashboard
+│   ├── trading/
+│   │   ├── page.tsx               # Trading Center
+│   │   ├── BacktestContent.tsx    # 回测
+│   │   ├── AdvancedBacktestContent.tsx # 高级回测
+│   │   ├── PaperTradingContent.tsx # 模拟交易
+│   │   └── DataManager.tsx        # 数据管理
+│   └── settings/
+│       └── page.tsx               # 设置
+├── components/
+│   └── trading/
+│       ├── PriceTicker.tsx        # 价格行情
+│       ├── KlineChart.tsx         # K线图
+│       ├── PositionTable.tsx      # 持仓列表
+│       ├── TradeHistory.tsx       # 交易历史
+│       ├── OrderPanel.tsx         # 下单面板
+│       ├── AutoTradingStatus.tsx  # 自动交易状态
+│       └── SymbolSelect.tsx       # 交易对选择
+└── lib/
+    └── i18n/                      # 国际化
+        ├── context.tsx
+        └── translations/
+            ├── en.ts
+            └── zh.ts
+```
+
+## 开发
+
 ```bash
-DATABASE_URL=postgresql://username:password@localhost/trading_core
-REDIS_URL=redis://127.0.0.1:6379
+# 安装依赖
+cd frontend && npm install
+
+# 开发模式
+npm run tauri dev
+
+# 构建
+npm run tauri build
 ```
 
-### **Dependencies**
-- **Tauri 2.0**: Desktop application framework
-- **Trading Core**: Backend trading infrastructure
-- **SQLx**: Database connectivity
-- **Serde**: JSON serialization
-- **Tokio**: Async runtime
+## 依赖
 
-## 🔧 Development
-
-### **Setup**
-```bash
-# Install dependencies
-cargo build
-
-# Run in development mode
-cargo tauri dev
-
-# Build for production
-cargo tauri build
+```toml
+[dependencies]
+tauri = "2.0"
+serde = "1.0"
+serde_json = "1.0"
+tokio = "1.0"
 ```
 
-### **Requirements**
-- Trading Core project at `../trading-core`
-- PostgreSQL with `trading_core` database
-- Redis server (optional but recommended)
-- Rust 1.70+
-
-## 📊 API Interface
-
-### **Frontend Commands**
-```typescript
-// Get database information
-invoke<DataInfoResponse>('get_data_info')
-
-// Run backtest
-invoke<BacktestResponse>('run_backtest', { 
-  request: BacktestRequest 
-})
-
-// Validate configuration
-invoke<boolean>('validate_backtest_config', {
-  symbol: string,
-  data_count: number
-})
+```json
+// frontend/package.json
+{
+  "dependencies": {
+    "next": "15.0",
+    "react": "18.0",
+    "recharts": "2.0",
+    "tailwindcss": "3.0"
+  }
+}
 ```
-
-### **Data Flow**
-```
-Frontend → Tauri Commands → Trading Core Repository → PostgreSQL
-                     ↓
-Frontend ← JSON Response ← Backtest Engine ← Historical Data
-```
-
-## 🎯 Integration
-
-This Tauri application serves as the desktop GUI layer for Trading Core, providing:
-- **Seamless Integration**: Direct access to Trading Core's backtesting engine
-- **Type Safety**: Rust-based backend with TypeScript frontend compatibility
-- **Performance**: Native desktop performance with web-based UI flexibility
-- **Cross-Platform**: Windows, macOS, and Linux support through Tauri
-
-The application maintains full compatibility with Trading Core's CLI interface while offering an enhanced user experience through its graphical interface.

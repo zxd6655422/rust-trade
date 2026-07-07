@@ -1,187 +1,142 @@
-# Trading Engine - 自动化交易系统
+# trading-engine
 
-一个用 Rust 编写的高性能、多交易所自动化交易系统。
+交易执行服务，负责调用交易所 API 执行交易、订单管理、持仓管理、风险控制。
 
-## 特性
+## 功能特性
 
-- 🔄 **多交易所支持** - Binance, OKX
-- 🛡️ **高级风控** - Kelly 仓位、黑天鹅检测、熔断机制
-- 💾 **数据持久化** - PostgreSQL + Redis
-- 📊 **实时行情** - WebSocket 订阅
-- ⚡ **高性能** - 异步架构，低延迟
-- 🔒 **安全可靠** - 模拟盘优先，签名认证
+- 🔄 订单执行（市价单、限价单、止损单、止盈单）
+- 📊 持仓管理（实时同步、盈亏计算）
+- 🛡️ 风险控制（止损止盈、仓位限制）
+- 🔌 多交易所支持（Binance、OKX）
+- 📈 订单状态同步
+- 🔐 API 签名认证
 
-## 快速开始
+## 模块结构
 
-### 环境要求
-
-- Rust 1.75+
-- PostgreSQL 14+
-- Redis 7+
-
-### 安装
-
-```bash
-# 克隆项目
-git clone <repo_url>
-cd rust-trade
-
-# 编译
-cargo build -p trading-engine
+```
+src/
+├── main.rs                # 入口文件
+├── config.rs              # 配置加载
+├── exchange/              # 交易所适配器
+│   ├── traits.rs          # 交易所 trait
+│   ├── types.rs           # 类型定义
+│   ├── errors.rs          # 错误类型
+│   ├── factory.rs         # 交易所工厂
+│   └── adapters/          # 交易所实现
+│       ├── binance_adapter.rs     # Binance 合约
+│       ├── binance_spot_adapter.rs # Binance 现货
+│       ├── okx_adapter.rs         # OKX
+│       └── mock_exchange.rs       # Mock（测试用）
+├── engine/                # 交易引擎
+│   └── trading_loop.rs    # 交易循环
+├── order/                 # 订单管理
+│   ├── manager.rs         # 订单管理器
+│   └── types.rs           # 订单类型
+├── portfolio/             # 投资组合
+│   ├── manager.rs         # 持仓管理器
+│   └── reconciler.rs      # 对账器
+├── risk/                  # 风险控制
+│   ├── engine.rs          # 风控引擎
+│   └── stop_loss.rs       # 止损止盈
+├── storage/               # 存储层
+│   ├── database.rs        # 数据库连接
+│   ├── order_repo.rs      # 订单仓储
+│   ├── position_repo.rs   # 持仓仓储
+│   └── redis_cache.rs     # Redis 缓存
+└── lib.rs
 ```
 
-### 配置
+## 使用方法
+
+### 启动服务
 
 ```bash
-# 复制环境变量文件
-cp .env.example .env.development
+# 实盘模式
+cargo run -p trading-engine
 
-# 编辑环境变量
-vim .env.development
+# 测试网模式
+BINANCE_TESTNET=true cargo run -p trading-engine
 ```
 
-环境变量配置：
-```bash
-# 数据库
-DATABASE_URL=postgresql://user:pass@host:5432/db
-REDIS_URL=redis://:pass@host:6379
+### 环境变量
 
-# Binance API
+```bash
+# Binance
 BINANCE_API_KEY=your_api_key
 BINANCE_API_SECRET=your_api_secret
-BINANCE_TESTNET=true
+BINANCE_TESTNET=false
 
-# OKX API (可选)
+# OKX
 OKX_API_KEY=your_api_key
 OKX_API_SECRET=your_api_secret
 OKX_PASSPHRASE=your_passphrase
-OKX_SIMULATED=true
+
+# 数据库
+DATABASE_URL=postgresql://localhost/trading_core
+REDIS_URL=redis://localhost:6379
 ```
 
-### 运行
+### 配置文件
 
-```bash
-# 测试数据库连接
-cargo run --bin test_db
-
-# 运行交易引擎
-cargo run -p trading-engine
-```
-
-## 架构
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      Trading Engine                          │
-├─────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐ │
-│  │  Strategy    │  │    Risk     │  │   Order Manager     │ │
-│  │  Engine      │──│  Controller │──│  (下单/撤单/状态)     │ │
-│  └─────────────┘  └─────────────┘  └─────────────────────┘ │
-│         │                │                      │           │
-│         ▼                ▼                      ▼           │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │                Exchange Adapter Layer               │   │
-│  │  ┌─────────────┐  ┌─────────────┐                  │   │
-│  │  │  Binance    │  │    OKX      │                  │   │
-│  │  │  Adapter    │  │  Adapter    │                  │   │
-│  │  └─────────────┘  └─────────────┘                  │   │
-│  └─────────────────────────────────────────────────────┘   │
-│         │                │                      │           │
-│         ▼                ▼                      ▼           │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐ │
-│  │  PostgreSQL  │  │   Redis     │  │   Local State       │ │
-│  │  (持久化)    │  │  (缓存)     │  │  (内存状态)          │ │
-│  └─────────────┘  └─────────────┘  └─────────────────────┘ │
-└─────────────────────────────────────────────────────────────┘
-```
-
-## 模块说明
-
-### Exchange Adapter
-- 统一的交易所接口
-- 支持 Binance 和 OKX
-- REST API + WebSocket
-
-### Risk Engine
-- 单笔限额
-- 止损止盈
-- 日亏损限制
-- 最大回撤保护
-- Kelly 仓位管理
-- 黑天鹅检测
-- 熔断机制
-
-### Order Manager
-- 订单执行
-- 状态追踪
-- 持仓管理
-- 紧急停止
-
-### Storage
-- PostgreSQL 持久化
-- Redis 缓存
-- 订单/持仓仓储
-
-## 配置文件
-
-### 交易配置
 ```toml
-# config/engine-development.toml
+# config/production.toml
 [exchange]
 id = "binance"
-testnet = true
+testnet = false
 
 [trading]
-mode = "testnet"
-strategy = "rsi"
-symbols = ["BTCUSDT", "ETHUSDT"]
-poll_interval_ms = 100
-```
+strategy = "trend"
+symbol = "BTCUSDT"
 
-### 风控配置
-```toml
 [risk_control]
-max_position_size = 500.0
-max_order_size = 0.001
-stop_loss_pct = 0.02
-take_profit_pct = 0.04
-max_daily_loss = 100.0
-max_drawdown_pct = 0.10
-kelly_fraction = 0.25
-black_swan_threshold = 0.05
+max_position_pct = 20.0
+stop_loss_pct = 5.0
+take_profit_pct = 10.0
+max_daily_trades = 50
 ```
 
-## 开发
+## 交易所接口
 
-### 编译
-```bash
-cargo build -p trading-engine
+### MarketDataProvider（公开数据）
+
+```rust
+async fn get_ticker(&self, symbol: &str) -> Result<Ticker>;
+async fn get_klines(&self, symbol: &str, interval: &str, limit: u32) -> Result<Vec<Kline>>;
+async fn get_order_book(&self, symbol: &str, limit: u32) -> Result<OrderBook>;
+async fn get_symbol_precision(&self, symbol: &str) -> Result<SymbolPrecision>;
 ```
 
-### 测试
-```bash
-# 数据库测试
-cargo run --bin test_db
+### TradingOperations（交易操作）
 
-# 完整测试
-cargo run --bin test_full
+```rust
+async fn get_account(&self) -> Result<AccountInfo>;
+async fn get_futures_account(&self) -> Result<FuturesAccountInfo>;
+async fn get_positions(&self) -> Result<Vec<PositionInfo>>;
+async fn place_order(&self, order: OrderRequest) -> Result<OrderResult>;
+async fn cancel_order(&self, symbol: &str, order_id: &str) -> Result<()>;
+async fn get_open_orders(&self, symbol: Option<&str>) -> Result<Vec<OrderInfo>>;
 ```
 
-### 运行
-```bash
-cargo run -p trading-engine
+## 风险控制
+
+| 规则 | 说明 | 默认值 |
+|------|------|--------|
+| 最大持仓比例 | 单个持仓占总资金比例 | 20% |
+| 止损比例 | 最大亏损比例 | 5% |
+| 止盈比例 | 目标盈利比例 | 10% |
+| 最大每日交易次数 | 防止过度交易 | 50 |
+
+## 依赖
+
+```toml
+[dependencies]
+trading-common = { path = "../trading-common" }
+tokio = { version = "1", features = ["full"] }
+reqwest = "0.11"
+sqlx = "0.7"
+redis = "0.23"
+hmac = "0.12"
+sha2 = "0.10"
+serde = "1.0"
+tracing = "0.1"
 ```
-
-## 文档
-
-详细文档请查看 `version/v1.0/` 目录：
-
-- [README.md](version/v1.0/README.md) - 版本计划
-- [ARCHITECTURE.md](version/v1.0/ARCHITECTURE.md) - 架构设计
-- [QUICKSTART.md](version/v1.0/QUICKSTART.md) - 快速开始
-- [DEVELOPMENT_SUMMARY.md](version/v1.0/DEVELOPMENT_SUMMARY.md) - 开发总结
-
-## 许可证
-
-MIT License

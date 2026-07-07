@@ -1,85 +1,105 @@
-# Trading Common
+# trading-common
 
-Shared library providing core data structures, backtesting engine, and data access layer for the Rust Trade system.
+共享库，包含数据类型定义、指标计算、回测引擎等核心功能。
 
-## Overview
-
-`trading-common` is the foundation library used by both `trading-core` (CLI) and `src-tauri` (desktop app). It contains all shared functionality that doesn't depend on specific runtime environments.
-
-## Project Structure
+## 模块结构
 
 ```
-trading-common/
-├── src/
-│   ├── lib.rs                 # Library entry point
-│   ├── backtest/              # Backtesting system
-│   │   ├── mod.rs             # Module exports and public interface
-│   │   ├── engine.rs          # Core backtesting engine and execution logic
-│   │   ├── portfolio.rs       # Portfolio management, position tracking, P&L calculation
-│   │   ├── metrics.rs         # Performance metrics calculation (Sharpe, drawdown, etc.)
-│   │   └── strategy/          # Trading strategies
-│   │       ├── mod.rs         # Strategy factory and management
-│   │       ├── base.rs        # Strategy trait definition
-│   │       ├── sma.rs         # Simple Moving Average strategy
-│   │       └── rsi.rs         # RSI strategy
-│   └── data/                  # Data layer
-│       ├── mod.rs             # Module exports
-│       ├── types.rs           # Core data types (TickData, OHLC, errors)
-│       ├── repository.rs      # Database operations and query logic
-│       └── cache.rs           # Multi-level caching (L1 memory + L2 Redis)
-└── Cargo.toml
+src/
+├── data/
+│   ├── types.rs           # 核心数据类型（TickData, OHLCData, Timeframe）
+│   ├── repository.rs      # 数据库操作
+│   ├── cache.rs           # 缓存层
+│   ├── aggregator.rs      # K线聚合器
+│   ├── parquet_store.rs   # Parquet 存储
+│   └── polars_repository.rs # Polars 查询层
+├── backtest/
+│   ├── engine.rs          # 回测引擎
+│   ├── portfolio.rs       # 投资组合管理
+│   ├── metrics.rs         # 绩效指标计算
+│   ├── market_state.rs    # 市场状态分析
+│   ├── multi_symbol.rs    # 多交易对回测
+│   ├── walk_forward.rs    # 滚动前进测试
+│   └── strategy/          # 策略框架
+│       ├── base.rs        # 策略 trait
+│       ├── trend.rs       # 趋势策略
+│       └── multi_timeframe.rs # 多时间框架策略
+├── pricing/
+│   ├── options.rs         # 期权定价（Black-Scholes）
+│   └── greeks.rs          # Greeks 计算
+├── simulation/
+│   ├── brownian.rs        # 布朗运动
+│   └── monte_carlo.rs     # 蒙特卡洛模拟
+└── lib.rs
 ```
 
-## Modules
+## 核心功能
 
-### `backtest/` - Backtesting Engine
+### 数据类型
 
-Complete backtesting system for strategy evaluation:
+```rust
+// 时间框架
+pub enum Timeframe {
+    OneMinute, FiveMinutes, FifteenMinutes, ThirtyMinutes,
+    OneHour, TwoHour, FourHour, OneDay, ThreeDay, OneWeek,
+}
 
-- **`engine.rs`** - Core backtesting logic that processes historical data
-- **`metrics.rs`** - Performance metrics calculation (Sharpe ratio, max drawdown, win rate, etc.)
-- **`portfolio.rs`** - Portfolio management and P&L tracking
-- **`strategy/`** - Trading strategy implementations
-  - `sma.rs` - Simple Moving Average crossover strategy
-  - `rsi.rs` - Relative Strength Index strategy
+// OHLC 数据
+pub struct OHLCData {
+    pub timestamp: DateTime<Utc>,
+    pub symbol: String,
+    pub timeframe: Timeframe,
+    pub open: Decimal,
+    pub high: Decimal,
+    pub low: Decimal,
+    pub close: Decimal,
+    pub volume: Decimal,
+}
+```
 
-### `data/` - Data Layer
+### 指标计算
 
-Data access and caching infrastructure:
+```rust
+// Polars 查询层
+let polars = PolarsRepository::new(config);
+let sma = polars.calculate_sma(&df, 20)?;
+let ema = polars.calculate_ema(&df, 20)?;
+let rsi = polars.calculate_rsi(&df, 14)?;
+let (macd, signal, hist) = polars.calculate_macd(&df, 12, 26, 9)?;
+let (upper, middle, lower) = polars.calculate_bollinger_bands(&df, 20, 2.0)?;
+```
 
-- **`types.rs`** - Core data structures (`TickData`, `OHLC`, etc.)
-- **`repository.rs`** - PostgreSQL database operations
-- **`cache.rs`** - Multi-level caching (L1 memory + L2 Redis)
+### 回测引擎
 
-## Usage
+```rust
+let config = BacktestConfig::new(Decimal::from(10000));
+let strategy = create_strategy("trend")?;
+let mut engine = BacktestEngine::new(strategy, config)?;
+let result = engine.run(data);
 
-Add to your `Cargo.toml`:
+println!("收益率: {}%", result.return_pct);
+println!("胜率: {}%", result.win_rate);
+println!("夏普比率: {}", result.sharpe_ratio);
+```
+
+### 风险指标
+
+```rust
+let portfolio = Portfolio::new(capital);
+let sharpe = portfolio.sharpe_ratio(risk_free_rate);
+let max_dd = portfolio.max_drawdown();
+let sortino = portfolio.sortino_ratio(risk_free_rate);
+let var = portfolio.value_at_risk(confidence);
+```
+
+## 依赖
 
 ```toml
 [dependencies]
-trading-common = { path = "../trading-common" }
-```
-
-### Example: Running a Backtest
-
-```rust
-use trading_common::backtest::{BacktestEngine, BacktestConfig};
-use trading_common::backtest::strategy::SmaStrategy;
-use trading_common::data::repository::TickRepository;
-
-// Create repository and fetch data
-let repo = TickRepository::new(pool).await?;
-let ticks = repo.get_ticks_range("BTCUSDT", start, end).await?;
-
-// Configure and run backtest
-let config = BacktestConfig {
-    initial_capital: 10000.0,
-    commission_rate: 0.001,
-};
-
-let strategy = SmaStrategy::new(10, 20);
-let engine = BacktestEngine::new(config);
-let result = engine.run(&ticks, &strategy)?;
-
-println!("Total Return: {:.2}%", result.metrics.total_return * 100.0);
+chrono = "0.4"
+rust_decimal = "1.32"
+serde = "1.0"
+sqlx = "0.7"
+redis = "0.23"
+polars = "0.35"
 ```

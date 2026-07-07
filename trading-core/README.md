@@ -1,293 +1,116 @@
-# Trading Core
+# trading-core
 
-A professional-grade cryptocurrency data collection and backtesting system built in Rust, designed for real-time market data processing, storage, and quantitative strategy analysis.
+数据采集服务，负责连接交易所、采集K线数据、计算技术指标、写入数据库和缓存。
 
-## 🏗️ Architecture
+## 功能特性
 
-### **System Overview**
+- 🔄 REST 轮询采集 K线数据
+- 📊 多时间框架 K线聚合（1m → 5m/15m/30m/1h/2h/4h/1d/3d/1w）
+- 💾 PostgreSQL 存储
+- 🚀 Redis 缓存（20000根/时间框架）
+- 📈 技术指标计算
+- 🔌 HTTP API 服务
+- 📡 WebSocket 实时推送
+
+## 模块结构
+
 ```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Exchange      │───▶│    Service      │───▶│   Repository    │
-│   (WebSocket)   │    │  (Processing)   │    │   (Storage)     │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-         │                       │                       │
-         │                       ▼                       ▼
-    Binance API           ┌─────────────┐         ┌─────────────┐
-    - Real-time data      │   Cache     │         │ PostgreSQL  │
-    - Historical data     │ (L1 + L2)   │         │ Database    │
-                          └─────────────┘         └─────────────┘
-                                    │
-                                    ▼
-                          ┌─────────────────┐
-                          │   Backtest      │
-                          │   Engine        │
-                          └─────────────────┘
-```
-
-### **Dual-Mode Operation**
-
-#### **Live Trading Mode**
-```
-Exchange API → Service → Repository → Database + Cache
-```
-
-#### **Backtesting Mode**
-```
-Database → Repository → Backtest Engine → Strategy → Portfolio → Metrics
+src/
+├── main.rs                # 入口文件
+├── config.rs              # 配置加载
+├── exchange/              # 交易所适配器
+│   ├── traits.rs          # 交易所 trait
+│   ├── binance.rs         # Binance 适配器
+│   └── okx.rs             # OKX 适配器
+├── api/                   # HTTP API
+│   ├── server.rs          # Web 服务器
+│   ├── handlers.rs        # 请求处理
+│   └── websocket.rs       # WebSocket 处理
+├── service/               # 服务模块
+│   ├── market_data.rs     # 市场数据服务
+│   ├── backfill.rs        # 历史数据回填
+│   └── strategy_scheduler.rs # 策略调度器
+├── redis_writer.rs        # Redis 写入
+└── lib.rs
 ```
 
+## 使用方法
 
-## ✨ Features
+### 启动服务
 
-### 🚀 **High Performance**
-- **Asynchronous Architecture**: Built with Tokio for maximum concurrency
-- **Optimized Database Operations**: 
-  - Single tick insert: ~390µs
-  - Batch insert (100 ticks): ~13ms
-  - Batch insert (1000 ticks): ~116ms
-- **Multi-level Caching**: L1 (Memory) + L2 (Redis) with microsecond access times
-- **Smart Query Optimization**: Cache hit ~10µs vs cache miss ~11.6ms
-
-### 🛡️ **Reliability**
-- **Automatic Retry**: Database failures with exponential backoff
-- **Data Integrity**: Duplicate detection using unique constraints
-- **Graceful Shutdown**: Zero data loss during termination
-- **Error Isolation**: Cache failures don't impact main data flow
-
-### 📊 **Backtesting System**
-- **Multi-Strategy Framework**: Built-in SMA and RSI strategies
-- **Professional Metrics**: Sharpe ratio, max drawdown, win rate, profit factor
-- **Portfolio Management**: Real-time P&L tracking and position management
-- **Interactive CLI**: User-friendly backtesting interface
-- **Historical Data Processing**: ~450µs per query with optimized indexing
-
-### 🔧 **Flexible Configuration**
-- **Dual Mode Operation**: Live data collection and backtesting
-- **Multi-Environment Support**: Development, production configurations
-- **Environment Variable Overrides**: Secure configuration management
-- **Symbol Configuration**: Easily configure trading pairs to monitor
-
-## 🚀 Quick Start
-
-### **Prerequisites**
-- Rust 1.70+
-- PostgreSQL 12+
-- Redis 6+
-
-### **Installation**
-
-1. **Clone and setup**
-   ```bash
-   git clone https://github.com/Erio-Harrison/rust-trade.git
-   cd trading-core
-   ```
-
-2. **Database setup**
-   ```sql
-   CREATE DATABASE trading_core;
-   \i database/schema.sql
-   ```
-
-3. **Environment configuration**
-   ```bash
-   # .env file
-   DATABASE_URL=postgresql://user:password@localhost/trading_core
-   REDIS_URL=redis://127.0.0.1:6379
-   RUN_MODE=development
-   ```
-
-4. **Symbol configuration**
-   ```toml
-   # config/development.toml
-   symbols = ["BTCUSDT", "ETHUSDT", "ADAUSDT"]
-   ```
-
-### **Running the Application**
-
-#### **Service Mode (Recommended for 24/7)**
 ```bash
-# Start full service with data collection + API + WebSocket
-cargo run service
+# 完整服务（数据采集 + API + WebSocket）
+cargo run -p trading-core service
+
+# 仅数据采集
+cargo run -p trading-core collector
+
+# 回测模式
+cargo run -p trading-core backtest
 ```
 
-This will start:
-- Data collection (candle1m/tick based on config)
-- HTTP API server on port 8080
-- WebSocket for real-time data
+### 配置文件
 
-#### **API Endpoints**
-```bash
-# Health check
-curl http://localhost:8080/health
+```toml
+# config/development.toml
+[database]
+url = "postgresql://localhost/trading_core"
+max_connections = 10
 
-# Get strategies
-curl http://localhost:8080/api/strategies
+[redis]
+url = "redis://localhost:6379"
 
-# Get data info
-curl http://localhost:8080/api/data/info
+[collector]
+mode = "candle1m"
+poll_interval_secs = 30
+backfill_enabled = true
+backfill_start_date = "2024-01-01"
 
-# Run backtest
-curl -X POST http://localhost:8080/api/backtest \
-  -H "Content-Type: application/json" \
-  -d '{"strategy": "rsi", "symbol": "BTCUSDT", "capital": 10000, "data_count": 10000}'
-
-# WebSocket connection
-ws://localhost:8080/ws
+[symbols]
+spot = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+futures = ["BTCUSDT", "ETHUSDT"]
 ```
 
-#### **Collector Mode (Data Collection Only)**
-```bash
-# Start data collector only
-cargo run collector
-```
+### API 端点
 
-#### **Backtesting (CLI)**
-```bash
-# Start interactive backtesting
-cargo run backtest
-```
+| 端点 | 方法 | 功能 |
+|------|------|------|
+| `/health` | GET | 健康检查 |
+| `/api/data/info` | GET | 数据统计信息 |
+| `/api/strategies` | GET | 可用策略列表 |
+| `/api/backtest` | POST | 执行回测 |
+| `/api/backtest/multi-timeframe` | POST | 多时间框架回测 |
+| `/api/backtest/walk-forward` | POST | 滚动前进测试 |
+| `/api/backtest/out-of-sample` | POST | 样本外测试 |
+| `/api/backtest/multi-symbol` | POST | 多交易对回测 |
+| `/api/analysis/market-state` | POST | 市场状态分析 |
+| `/ws` | WebSocket | 实时数据推送 |
 
-#### **Live Mode (Legacy)**
-```bash
-# Start real-time data collection (legacy)
-cargo run live
-```
-
-#### **Help**
-```bash
-cargo run -- --help
-```
-
-## 📊 Performance Benchmarks
-
-Based on comprehensive benchmarking results:
-
-| Operation | Performance | Notes |
-|-----------|-------------|-------|
-| Single tick insert | ~390µs | Individual database writes |
-| Batch insert (100) | ~13ms | Optimized bulk operations |
-| Batch insert (1000) | ~116ms | Large batch processing |
-| Cache hit | ~10µs | Memory/Redis retrieval |
-| Cache miss | ~11.6ms | Database fallback |
-| Historical query | ~450µs | Backtest data retrieval |
-| Cache operations | ~17-104µs | Push/pull operations |
-
-## 🏗️ Project Structure
-
-This crate is part of a workspace with `trading-common` (shared library) and `src-tauri` (desktop app).
+### Redis 缓存结构
 
 ```
-trading-core/
-├── src/
-│   ├── main.rs                # CLI entry point with live/backtest modes
-│   ├── lib.rs                 # Library entry (re-exports trading-common)
-│   ├── config.rs              # Configuration management (Settings, env vars)
-│   ├── exchange/              # Exchange integrations
-│   │   ├── mod.rs             # Module exports
-│   │   ├── traits.rs          # Exchange interface definition
-│   │   ├── types.rs           # Exchange-specific data structures
-│   │   ├── errors.rs          # Exchange error types
-│   │   ├── utils.rs           # Conversion and validation utilities
-│   │   └── binance.rs         # Binance WebSocket implementation
-│   ├── service/               # Business logic layer (Live trading)
-│   │   ├── mod.rs             # Module exports
-│   │   ├── types.rs           # Service types (BatchConfig, stats)
-│   │   ├── errors.rs          # Service error types
-│   │   └── market_data.rs     # Main data processing service
-│   └── live_trading/          # Live trading system
-│       ├── mod.rs             # Module exports
-│       └── paper_trading.rs   # Paper trading implementation
-├── benches/                   # Performance benchmarks
-└── Cargo.toml
+# K线数据（ZSET）
+kline:{symbol}:{timeframe} → ZSET(score=timestamp, member=kline_json)
 
-trading-common/                # Shared library (separate crate)
-├── src/
-│   ├── lib.rs                 # Library entry point
-│   ├── data/                  # Data layer
-│   │   ├── types.rs           # Core data types (TickData, OHLC, errors)
-│   │   ├── repository.rs      # Database operations
-│   │   └── cache.rs           # Multi-level caching (L1 + L2)
-│   └── backtest/              # Backtesting system
-│       ├── engine.rs          # Core backtesting engine
-│       ├── portfolio.rs       # Portfolio management, P&L tracking
-│       ├── metrics.rs         # Performance metrics (Sharpe, drawdown)
-│       └── strategy/          # Trading strategies (SMA, RSI)
-└── Cargo.toml
+# 缓存数量
+每个 timeframe: 20000 根
+
+# TTL
+1m: 10分钟
+其他: 1小时
+1d/3d/1w: 1天
 ```
 
-## ⚙️ Configuration
+## 依赖
 
-### **Environment Variables**
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `DATABASE_URL` | PostgreSQL connection | `postgresql://user:pass@localhost/trading_core` |
-| `REDIS_URL` | Redis connection | `redis://127.0.0.1:6379` |
-| `RUN_MODE` | Environment mode | `development` / `production` |
-| `RUST_LOG` | Logging level | `trading_core=info` |
-
-### **Configuration Structure**
-```
-config/
-├── development.toml    # Development settings
-├── production.toml     # Production settings
-└── test.toml          # Test environment
-```
-
-## 🔧 Backtesting Usage
-
-### **Interactive Flow**
-1. **Data Analysis**: View available symbols and data ranges
-2. **Strategy Selection**: Choose from built-in strategies (SMA, RSI)
-3. **Parameter Configuration**: Set initial capital, commission rates, data range
-4. **Execution**: Real-time progress tracking and results
-5. **Analysis**: Comprehensive performance metrics and trade analysis
-
-### **Example Session**
-```bash
-$ cargo run backtest
-
-🎯 TRADING CORE BACKTESTING SYSTEM
-================================================
-📊 Loading data statistics...
-
-📈 Available Data:
-  Total Records: 1,245,678
-  Available Symbols: 15
-  Earliest Data: 2024-01-01 00:00:00 UTC
-  Latest Data: 2024-08-09 23:59:59 UTC
-
-🎯 Available Strategies:
-  1) Simple Moving Average - Trading strategy based on moving average crossover
-  2) RSI Strategy - Trading strategy based on Relative Strength Index (RSI)
-
-Select strategy (1-2): 1
-✅ Selected Strategy: Simple Moving Average
-
-📊 Symbol Selection:
-  1) BTCUSDT (456,789 records)
-  2) ETHUSDT (234,567 records)
-  ...
-
-Select symbol: 1
-✅ Selected Symbol: BTCUSDT
-
-Enter initial capital (default: $10000): $50000
-Enter commission rate % (default: 0.1%): 0.1
-
-🔍 Loading historical data: BTCUSDT latest 10000 records...
-✅ Loaded 10000 data points
-
-Starting backtest...
-Strategy: Simple Moving Average
-Initial capital: $50000
-Progress: 100% (10000/10000) | Portfolio Value: $52,450 | P&L: $2,450
-
-BACKTEST RESULTS SUMMARY
-============================================================
-Strategy: Simple Moving Average
-Initial Capital: $50000
-Final Value: $52450
-Total P&L: $2450
-Return: 4.90%
-...
+```toml
+[dependencies]
+trading-common = { path = "../trading-common" }
+tokio = { version = "1", features = ["full"] }
+actix-web = "4"
+sqlx = "0.7"
+redis = "0.23"
+reqwest = "0.11"
+serde = "1.0"
+tracing = "0.1"
 ```
