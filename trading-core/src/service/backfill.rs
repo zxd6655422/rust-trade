@@ -134,7 +134,7 @@ impl BackfillService {
                 }
 
                 // 检查最近 7 天的间隙
-                let gap_check_start = now - chrono::Duration::days(7);
+                let gap_check_start = now - chrono::Duration::days(30);
                 let check_start = if gap_check_start > latest_ts {
                     gap_check_start
                 } else {

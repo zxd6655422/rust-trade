@@ -475,8 +475,35 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
                 let mut poll_timer = tokio::time::interval(Duration::from_secs(poll_interval));
                 poll_timer.tick().await; // skip first immediate tick
 
+                // 高TF缓存刷新计数器（每60个周期 = 约30分钟刷新一次）
+                let mut poll_count: u64 = 0;
+                const HIGH_TF_REFRESH_INTERVAL: u64 = 60;
+
                 loop {
                     poll_timer.tick().await;
+                    poll_count += 1;
+
+                    // 定期从 DB 刷新高TF缓存到 Redis
+                    if poll_count % HIGH_TF_REFRESH_INTERVAL == 0 {
+                        for sym in &symbols {
+                            for tf in redis_writer::get_stored_timeframes() {
+                                if tf == Timeframe::OneMinute { continue; }
+                                let cache_size = redis_writer::get_cache_size(&tf) as u32;
+                                match repo.get_high_tf_klines(sym, tf.as_str(), cache_size).await {
+                                    Ok(klines) if !klines.is_empty() => {
+                                        if let Err(e) = redis_writer::load_cache_from_db(&redis_url, sym, &tf, &klines).await {
+                                            warn!("[{}] Failed to refresh {} cache: {}", sym, tf.as_str(), e);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        warn!("[{}] Failed to query {} klines: {}", sym, tf.as_str(), e);
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        debug!("High-TF Redis cache refresh completed for all symbols");
+                    }
 
                     // 分批获取 symbol 的 kline 数据
                     for chunk in symbols.chunks(POLL_BATCH_SIZE) {
@@ -484,7 +511,7 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
                             let ex = exchange.clone();
                             let sym = symbol.clone();
                             async move {
-                                match ex.fetch_klines(&sym, "1m", 100).await {
+                                match ex.fetch_klines(&sym, "1m", 1000).await {
                                     Ok(klines) => {
                                         debug!("[{}] 拉取到 {} 条 kline", sym, klines.len());
                                         let ohlc_list: Vec<OHLCData> = klines
@@ -533,16 +560,17 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
                                 let _ = price_tx.send(tick);
                             }
 
-                            // 写入 Redis（在 batch_insert_klines 之前克隆数据）
+                            // 写入 Redis（先完成 Redis 再写 DB，确保一致性）
                             let redis_ohlc = ohlc_list.clone();
                             let redis_url_clone = redis_url.clone();
                             let sym_clone = symbol.clone();
-                            tokio::task::spawn_blocking(move || {
+                            let redis_handle = tokio::task::spawn_blocking(move || {
                                 if let Err(e) = redis_writer::write_market_data(&redis_url_clone, &sym_clone, &redis_ohlc) {
                                     warn!("[{}] Redis 写入失败: {}", sym_clone, e);
                                 }
                             });
 
+                            // 写入 DB
                             match repo.batch_insert_klines(ohlc_list).await {
                                 Ok(inserted) => {
                                     debug!(
@@ -554,6 +582,9 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
                                     error!("[{}] kline_1m 插入失败: {}", symbol, e);
                                 }
                             }
+
+                            // 确保 Redis 写入完成
+                            let _ = redis_handle.await;
                         }
 
                         // 批次间延迟，避免短时间大量请求
@@ -1430,6 +1461,29 @@ async fn warm_up_redis_cache(
             }
             Err(e) => {
                 warn!("[{}] Failed to load {} klines: {}", symbol, tf_str, e);
+            }
+        }
+    }
+
+    // 按需聚合框架预热（3m/45m/6h/8h/12h）
+    // 从 1m 数据聚合生成，确保策略服务有足够数据计算指标
+    let on_demand_tfs = redis_writer::get_on_demand_timeframes();
+    let max_1m_for_agg = 1000u32; // 足够聚合所有按需框架
+    let klines_1m_for_agg = repo.get_klines(symbol, max_1m_for_agg).await?;
+    if !klines_1m_for_agg.is_empty() {
+        for tf in &on_demand_tfs {
+            let aggregated = redis_writer::aggregate_klines(&klines_1m_for_agg, tf);
+            if !aggregated.is_empty() {
+                let count = aggregated.len();
+                match load_cache_from_db(redis_url, symbol, tf, &aggregated).await {
+                    Ok(_) => {
+                        total_loaded += count;
+                        debug!("[{}] Loaded {} {} klines (on-demand aggregated) to Redis", symbol, count, tf.as_str());
+                    }
+                    Err(e) => {
+                        warn!("[{}] Failed to load {} klines: {}", symbol, tf.as_str(), e);
+                    }
+                }
             }
         }
     }

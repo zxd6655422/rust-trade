@@ -70,6 +70,8 @@ pub struct KlineZsetMember {
     pub l: f64,
     pub c: f64,
     pub v: f64,
+    #[serde(default)]
+    pub tc: u64,  // trade_count（旧数据中缺失时默认为0）
 }
 
 // =================================================================
@@ -295,6 +297,7 @@ pub fn write_single_timeframe(
             l: decimal_to_f64(k.low),
             c: decimal_to_f64(k.close),
             v: decimal_to_f64(k.volume),
+            tc: k.trade_count,
         })
         .collect();
 

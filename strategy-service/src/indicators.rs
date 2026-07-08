@@ -553,6 +553,7 @@ mod tests {
                     low: price - 0.5,
                     close: price,
                     volume: 1000.0 + i as f64,
+                    trade_count: 0,
                 }
             })
             .collect()

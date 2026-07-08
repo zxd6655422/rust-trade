@@ -1,5 +1,86 @@
 # Changelog
 
+## [2026-07-08] 多时间框架 K线重构 + 数据完整性修复
+
+### 统一 Timeframe 枚举
+
+| 变更 | 说明 |
+|------|------|
+| 新增变体 | `ThreeMinutes`/`FortyFiveMinutes`/`SixHour`/`EightHour`/`TwelveHour` |
+| 新增方法 | `level()` 排序级别、`is_on_demand()` 判断是否按需聚合 |
+| 统一来源 | `trading-common::Timeframe` 为唯一权威定义，`redis_writer` 和 `repository` 全部基于此 |
+
+### Redis 缓存分层架构
+
+| 时间框架 | 缓存条数 | 覆盖时间 | TTL | 存储方式 |
+|----------|----------|----------|-----|----------|
+| 1m | 20160 | 14天 | 1小时 | DB + Redis |
+| 3m | 2880 | 6天 | 1天 | 仅 Redis（按需聚合） |
+| 5m | 8640 | 30天 | 1天 | DB + Redis |
+| 15m | 2880 | 30天 | 1天 | DB + Redis |
+| 30m | 1440 | 30天 | 1天 | DB + Redis |
+| 45m | 1920 | 60天 | 1天 | 仅 Redis（按需聚合） |
+| 1h | 4320 | 180天 | 7天 | DB + Redis |
+| 2h | 2160 | 180天 | 7天 | DB + Redis |
+| 4h | 1080 | 180天 | 7天 | DB + Redis |
+| 6h | 720 | 180天 | 7天 | 仅 Redis（按需聚合） |
+| 8h | 540 | 180天 | 7天 | 仅 Redis（按需聚合） |
+| 12h | 365 | 180天 | 7天 | 仅 Redis（按需聚合） |
+| 1d | 1825 | 5年 | 7天 | DB + Redis |
+| 3d | 610 | 5年 | 7天 | DB + Redis |
+| 1w | 500 | ~10年 | 7天 | DB + Redis |
+
+### 多时间框架回填
+
+| 模块 | 状态 | 说明 |
+|------|------|------|
+| BackfillConfig | ✅ | 多TF回填配置（symbols/start_date/timeframes/incremental） |
+| run_multi_tf | ✅ | 多TF回填入口，顺序遍历 symbol × TF |
+| backfill_high_tf | ✅ | 高TF增量回填，查询DB最新时间后拉取 |
+| 定期增量更新 | ✅ | 后台每6小时自动执行一次多TF回填 |
+| Redis 预热 | ✅ | 启动时从DB加载所有TF到Redis，含按需聚合框架 |
+
+### 数据完整性修复
+
+| # | 问题 | 修复 |
+|---|------|------|
+| 1 | Poll loop 只拉 100 根 1m，按需聚合数据不足 | 改为 1000 根 |
+| 2 | warm-up 不加载按需聚合框架 | 追加从 1m 聚合 3m/45m/6h/8h/12h |
+| 3 | 高TF Redis 缓存启动后不更新 | 每 30 分钟从 DB 刷新一次 |
+| 4 | Redis/DB 写入竞态条件 | 先等 Redis 写完再写 DB |
+| 5 | 1m 间隙检测只覆盖 7 天 | 扩展到 30 天 |
+| 6 | Redis 缺少 trade_count | KlineZsetMember 加 `tc` 字段，`#[serde(default)]` 兼容旧数据 |
+
+### 代码简化
+
+| 变更 | 说明 |
+|------|------|
+| 删除 `write_on_demand_timeframe` | 统一用 `write_single_timeframe` |
+| 删除 `get_on_demand_cache_size(&str)` | 合并到 `get_cache_size(&Timeframe)` |
+| 删除 `get_on_demand_timeframes() -> Vec<&str>` | 改为返回 `Vec<Timeframe>` |
+| 删除 `KlineData` (redis_writer) | 未使用的结构体 |
+| `timeframe_key_suffix` | 直接委托给 `tf.as_str()` |
+| `aggregate_klines/aggregate_window` | 参数从 `&str` 改为 `&Timeframe` |
+
+### 文件改动
+
+| 文件 | 改动 |
+|------|------|
+| `trading-common/src/data/types.rs` | Timeframe 枚举扩展 +5 变体 +3 方法 |
+| `trading-common/src/data/repository.rs` | match 补全新 Timeframe 变体 |
+| `trading-core/src/redis_writer.rs` | 缓存分层重构、删除字符串匹配、统一 Timeframe |
+| `trading-core/src/main.rs` | 多TF回填集成、warm-up 增强、poll loop 修复 |
+| `trading-core/src/service/backfill.rs` | 多TF回填支持、间隙检测扩展 |
+| `trading-core/src/config.rs` | 新增 multi_tf_backfill 配置项 |
+| `strategy-service/src/redis_reader.rs` | Timeframe 扩展、KlineData 加 trade_count |
+| `strategy-service/src/indicators.rs` | KlineData 构造适配 |
+| `src-tauri/src/commands.rs` | match 补全新 Timeframe 变体 |
+| `src-tauri/src/types.rs` | SignalStats 字段重构 |
+| `sql/kline_multi_timeframe.sql` | 新增 5m/15m/30m/1h/2h 表 |
+| `sql/truncate_high_tf_klines.sql` | 新增高TF数据清理脚本 |
+
+---
+
 ## [2026-07-07] 自动交易 + WebSocket 实时推送 + 告警系统
 
 ### 自动交易功能（严谨版）

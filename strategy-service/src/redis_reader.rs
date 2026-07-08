@@ -36,6 +36,8 @@ pub struct KlineData {
     pub low: f64,
     pub close: f64,
     pub volume: f64,
+    #[serde(default)]
+    pub trade_count: u64,
 }
 
 /// ZSET member 格式（与 trading-core 一致）
@@ -47,6 +49,8 @@ struct KlineZsetMember {
     l: f64,
     c: f64,
     v: f64,
+    #[serde(default)]
+    tc: u64,  // trade_count（旧数据中缺失时默认为0）
 }
 
 impl From<KlineZsetMember> for KlineData {
@@ -58,6 +62,7 @@ impl From<KlineZsetMember> for KlineData {
             low: m.l,
             close: m.c,
             volume: m.v,
+            trade_count: m.tc,
         }
     }
 }
