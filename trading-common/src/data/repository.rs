@@ -2134,7 +2134,7 @@ impl TickDataRepository {
         let r = sqlx::query(
             "UPDATE strategy_signals SET status='expired',closed_reason='expired', \
              closed_at=NOW(),close_price=entry_price,actual_return_pct=0 \
-             WHERE status='pending' AND created_at < NOW()-make_interval(hours=>$1)"
+             WHERE status='pending' AND created_at < NOW() - INTERVAL '1 hour' * $1"
         ).bind(max_age_hours).execute(&self.pool).await?;
         let n = r.rows_affected();
         if n > 0 { info!("Closed {} expired engine signals ({}h)", n, max_age_hours); }
@@ -2252,7 +2252,7 @@ impl TickDataRepository {
         let r = sqlx::query(
             "UPDATE strategy_analysis_log SET status='expired',closed_reason='expired', \
              closed_at=NOW(),close_price=entry_price,actual_return_pct=0 \
-             WHERE status='pending' AND created_at < NOW()-make_interval(hours=>$1)"
+             WHERE status='pending' AND created_at < NOW() - INTERVAL '1 hour' * $1"
         ).bind(max_age_hours).execute(&self.pool).await?;
         let n = r.rows_affected();
         if n > 0 { info!("Closed {} expired analysis logs ({}h)", n, max_age_hours); }
