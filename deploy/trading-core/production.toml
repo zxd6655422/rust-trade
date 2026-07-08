@@ -117,11 +117,11 @@ multi_tf_backfill_interval_hours = 6
 
 # Backfill 每个请求间隔 (ms)
 # Binance: 20 req/s, OKX: 12 req/s
-# 300ms ≈ 3.3 req/s per symbol（安全）
+# 1000ms = 1 req/s per symbol（安全）
 backfill_interval_ms = 1000
 
 # 最大并发 backfill 数量
-# 3 并发 × 3.3 req/s ≈ 10 req/s（远低于限制）
+# 3 并发 × 1 req/s = 3 req/s（远低于限制）
 max_concurrent_backfills = 3
 
 # 轮询批次大小
