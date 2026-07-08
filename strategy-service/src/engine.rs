@@ -8,7 +8,7 @@ use sqlx::PgPool;
 use tracing::{error, info, warn};
 
 use crate::db::{signals, strategies as db_strategies};
-use crate::redis_reader::{self, Timeframe};
+use crate::redis_reader::{self, MultiTimeframeData, Timeframe};
 use crate::strategies::{self, SignalType};
 use crate::trade_executor::{TradeExecutor, ExchangeConfig};
 use crate::websocket::{WsMessage, WsState};
@@ -19,6 +19,8 @@ pub struct EngineConfig {
     pub poll_interval_secs: u64,
     pub default_timeframe: Timeframe,
     pub default_kline_limit: usize,
+    /// 是否启用多时间框架分析
+    pub enable_multi_tf: bool,
 }
 
 impl Default for EngineConfig {
@@ -27,6 +29,7 @@ impl Default for EngineConfig {
             poll_interval_secs: 5,
             default_timeframe: Timeframe::OneMinute,
             default_kline_limit: 500, // 默认读取 500 根 K 线用于指标计算
+            enable_multi_tf: true,
         }
     }
 }
@@ -113,25 +116,73 @@ async fn process_strategy(
     ws_state: &Option<Arc<WsState>>,
     alert_manager: &Option<Arc<AlertManager>>,
 ) -> Result<()> {
-    // 获取市场数据
-    let market_data = redis_reader::get_market_data(
-        redis,
-        symbol,
-        &config.default_timeframe,
-        config.default_kline_limit,
-    )
-    .await?;
-
-    if market_data.klines.is_empty() {
-        warn!("No kline data for {}", symbol);
-        return Ok(());
-    }
-
     // 创建策略实例
     let strategy = strategies::create_strategy(&strategy_instance.strategy_type, &strategy_instance.params)?;
 
-    // 分析市场数据
-    let signal = match strategy.analyze(&market_data).await {
+    // 判断是否使用多时间框架分析
+    let use_multi_tf = config.enable_multi_tf
+        && strategy_instance.strategy_type != "rsi"
+        && strategy_instance.strategy_type != "macd"
+        && strategy_instance.strategy_type != "bollinger"
+        && strategy_instance.strategy_type != "volume";
+
+    let signal = if use_multi_tf {
+        // 获取策略需要的时间框架
+        let timeframes = strategy.required_timeframes();
+
+        if timeframes.len() > 1 {
+            // 多时间框架分析
+            let multi_data = redis_reader::get_multi_timeframe_data(
+                redis,
+                symbol,
+                &timeframes,
+                config.default_kline_limit,
+            )
+            .await?;
+
+            if multi_data.primary.klines.is_empty() {
+                warn!("No kline data for {} (primary timeframe)", symbol);
+                return Ok(());
+            }
+
+            // 使用多时间框架分析
+            strategy.analyze_multi_tf(&multi_data).await
+        } else {
+            // 单时间框架
+            let market_data = redis_reader::get_market_data(
+                redis,
+                symbol,
+                &config.default_timeframe,
+                config.default_kline_limit,
+            )
+            .await?;
+
+            if market_data.klines.is_empty() {
+                warn!("No kline data for {}", symbol);
+                return Ok(());
+            }
+
+            strategy.analyze(&market_data).await
+        }
+    } else {
+        // 传统单时间框架分析
+        let market_data = redis_reader::get_market_data(
+            redis,
+            symbol,
+            &config.default_timeframe,
+            config.default_kline_limit,
+        )
+        .await?;
+
+        if market_data.klines.is_empty() {
+            warn!("No kline data for {}", symbol);
+            return Ok(());
+        }
+
+        strategy.analyze(&market_data).await
+    };
+
+    let signal = match signal {
         Some(signal) => signal,
         None => return Ok(()), // 没有信号
     };

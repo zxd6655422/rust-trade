@@ -328,21 +328,8 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
                 // 确保策略引擎重启后有足够数据计算指标
                 info!("Redis warm-up: loading historical klines from PostgreSQL...");
                 for symbol in &symbols {
-                    match repo.get_klines(symbol, 10000).await {
-                        Ok(klines) if !klines.is_empty() => {
-                            let count = klines.len();
-                            let redis_url_c = redis_url.clone();
-                            let sym_c = symbol.clone();
-                            tokio::task::spawn_blocking(move || {
-                                if let Err(e) = redis_writer::write_market_data(&redis_url_c, &sym_c, &klines) {
-                                    warn!("[{}] Redis warm-up failed: {}", sym_c, e);
-                                } else {
-                                    info!("[{}] Redis warm-up: loaded {} klines", sym_c, count);
-                                }
-                            });
-                        }
-                        Ok(_) => info!("[{}] No historical klines in DB for Redis warm-up", symbol),
-                        Err(e) => warn!("[{}] Redis warm-up failed: {}", symbol, e),
+                    if let Err(e) = warm_up_redis_cache(&repo, &redis_url, symbol).await {
+                        warn!("[{}] Redis warm-up failed: {}", symbol, e);
                     }
                 }
 
@@ -374,6 +361,7 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
                                 let sym = symbol.clone();
                                 let start = start_dt;
                                 let sem = semaphore.clone();
+                                let redis_url_clone = redis_url.clone();
 
                                 let handle = tokio::spawn(async move {
                                     // 获取许可，限制并发
@@ -389,6 +377,7 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
                                     let backfill = BackfillService::new(
                                         ex,
                                         repo_clone,
+                                        redis_url_clone,
                                         vec![sym.clone()],
                                         start,
                                     );
@@ -532,64 +521,6 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
     info!("📊 Strategy analysis scheduler started (every {}s, stop_loss={}%, take_profit={}%)",
         settings.strategy.interval_secs, settings.strategy.stop_loss_pct, settings.strategy.take_profit_pct);
 
-    // Start high timeframe K线 aggregation scheduler
-    let agg_repo = repository.clone();
-    let agg_symbols = settings.symbols.clone();
-    let (agg_shutdown_tx, mut agg_shutdown_rx) = tokio::sync::broadcast::channel(1);
-    let agg_handle = tokio::spawn(async move {
-        // 每小时聚合一次高时间框架 K 线
-        let mut interval = tokio::time::interval(Duration::from_secs(3600));
-        interval.tick().await; // skip first immediate tick
-
-        loop {
-            tokio::select! {
-                _ = interval.tick() => {
-                    info!("📊 Starting high timeframe K-line aggregation...");
-                    for symbol in &agg_symbols {
-                        // 从 1m K 线聚合生成高时间框架 K 线
-                        // 这里简化处理，实际应该调用 PostgreSQL 的聚合函数
-                        // 或者在 Rust 中实现聚合逻辑
-                        match agg_repo.get_klines(symbol, 20000).await {
-                            Ok(klines_1m) => {
-                                if klines_1m.is_empty() {
-                                    continue;
-                                }
-
-                                // 聚合为各时间框架
-                                let timeframes = [
-                                    Timeframe::FourHour,
-                                    Timeframe::OneDay,
-                                    Timeframe::ThreeDay,
-                                    Timeframe::OneWeek,
-                                ];
-
-                                for tf in &timeframes {
-                                    let aggregated = aggregate_klines(&klines_1m, tf);
-                                    if !aggregated.is_empty() {
-                                        if let Err(e) = agg_repo.batch_insert_high_tf_klines(&aggregated, tf).await {
-                                            error!("[{}] Failed to insert {} klines: {}", symbol, tf.as_str(), e);
-                                        } else {
-                                            debug!("[{}] Inserted {} {} klines", symbol, aggregated.len(), tf.as_str());
-                                        }
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                error!("[{}] Failed to get klines for aggregation: {}", symbol, e);
-                            }
-                        }
-                    }
-                    info!("✅ High timeframe K-line aggregation completed");
-                }
-                _ = agg_shutdown_rx.recv() => {
-                    info!("High TF aggregation scheduler shutting down...");
-                    break;
-                }
-            }
-        }
-    });
-    info!("📊 High timeframe aggregation scheduler started (every hour)");
-
     // Start API server
     let api_config = api::server::ApiServerConfig {
         host: "0.0.0.0".to_string(),
@@ -625,8 +556,6 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
     // 清理
     let _ = scheduler_shutdown_tx.send(());
     scheduler_handle.abort();
-    let _ = agg_shutdown_tx.send(());
-    agg_handle.abort();
     if let Some(handle) = collection_handle {
         handle.abort();
     }
@@ -1382,95 +1311,67 @@ async fn create_cache_for_service() -> Result<TieredCache, Box<dyn std::error::E
     create_cache(&settings).await
 }
 
-/// 聚合 K 线数据到指定时间框架
-fn aggregate_klines(klines_1m: &[OHLCData], target_tf: &Timeframe) -> Vec<OHLCData> {
-    if klines_1m.is_empty() {
-        return vec![];
-    }
+/// Redis 缓存预热 - 从数据库加载多时间框架 K 线数据
+///
+/// 加载策略：
+/// - 1m: 20160 条（2周）
+/// - 5m: 8640 条（1个月）
+/// - 15m: 2880 条（1个月）
+/// - 30m: 1440 条（1个月）
+/// - 1h: 4320 条（6个月）
+/// - 2h: 2160 条（6个月）
+/// - 4h: 1080 条（6个月）
+/// - 1d: 1825 条（5年）
+/// - 3d: 610 条（5年）
+/// - 1w: 500 条（~10年）
+async fn warm_up_redis_cache(
+    repo: &Arc<TickDataRepository>,
+    redis_url: &str,
+    symbol: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use redis_writer::{get_cache_size, get_stored_timeframes, load_cache_from_db};
 
-    let interval_secs = match target_tf {
-        Timeframe::FourHour => 14400,
-        Timeframe::OneDay => 86400,
-        Timeframe::ThreeDay => 259200,
-        Timeframe::OneWeek => 604800,
-        _ => return vec![],
-    };
+    info!("[{}] Starting Redis cache warm-up...", symbol);
 
-    let mut aggregated: Vec<OHLCData> = Vec::new();
-    let mut current_window: Vec<&OHLCData> = Vec::new();
-    let mut window_start: Option<i64> = None;
+    let timeframes = get_stored_timeframes();
+    let mut total_loaded = 0;
 
-    for kline in klines_1m {
-        let ts = kline.timestamp.timestamp();
-        let bucket = (ts / interval_secs) * interval_secs;
+    for tf in timeframes {
+        let cache_size = get_cache_size(&tf);
+        let tf_str = tf.as_str();
 
-        if window_start.is_none() {
-            window_start = Some(bucket);
-        }
-
-        if Some(bucket) == window_start {
-            current_window.push(kline);
+        // 从数据库查询数据
+        let klines = if tf_str == "1m" {
+            // 1m 数据从 kline_1m 表查询
+            repo.get_klines(symbol, cache_size as u32).await?
         } else {
-            // 聚合当前窗口
-            if !current_window.is_empty() {
-                if let Some(agg) = aggregate_window(&current_window, target_tf) {
-                    aggregated.push(agg);
-                }
+            // 高时间框架数据从对应表查询
+            repo.get_high_tf_klines(symbol, tf_str, cache_size as u32).await?
+        };
+
+        if klines.is_empty() {
+            debug!("[{}] No {} klines in DB, skipping", symbol, tf_str);
+            continue;
+        }
+
+        let count = klines.len();
+
+        // 写入 Redis
+        match load_cache_from_db(redis_url, symbol, &tf, &klines).await {
+            Ok(_) => {
+                total_loaded += count;
+                debug!("[{}] Loaded {} {} klines to Redis", symbol, count, tf_str);
             }
-            // 开始新窗口
-            current_window.clear();
-            window_start = Some(bucket);
-            current_window.push(kline);
+            Err(e) => {
+                warn!("[{}] Failed to load {} klines: {}", symbol, tf_str, e);
+            }
         }
     }
 
-    // 处理最后一个窗口
-    if !current_window.is_empty() {
-        if let Some(agg) = aggregate_window(&current_window, target_tf) {
-            aggregated.push(agg);
-        }
-    }
+    info!(
+        "[{}] Redis cache warm-up completed: {} total klines loaded",
+        symbol, total_loaded
+    );
 
-    aggregated
-}
-
-/// 聚合一个时间窗口内的 K 线
-fn aggregate_window(klines: &[&OHLCData], target_tf: &Timeframe) -> Option<OHLCData> {
-    if klines.is_empty() {
-        return None;
-    }
-
-    let first = klines[0];
-    let last = klines[klines.len() - 1];
-
-    let open = first.open;
-    let high = klines.iter().map(|k| k.high).max()?;
-    let low = klines.iter().map(|k| k.low).min()?;
-    let close = last.close;
-    let volume = klines.iter().map(|k| k.volume).sum();
-    let trade_count = klines.iter().map(|k| k.trade_count).sum();
-
-    // 使用窗口开始时间作为 K 线时间
-    let interval_secs = match target_tf {
-        Timeframe::FourHour => 14400i64,
-        Timeframe::OneDay => 86400,
-        Timeframe::ThreeDay => 259200,
-        Timeframe::OneWeek => 604800,
-        _ => return None,
-    };
-
-    let ts = first.timestamp.timestamp();
-    let window_start = (ts / interval_secs) * interval_secs;
-
-    Some(OHLCData {
-        timestamp: chrono::DateTime::from_timestamp(window_start, 0)?.with_timezone(&chrono::Utc),
-        symbol: first.symbol.clone(),
-        timeframe: *target_tf,
-        open,
-        high,
-        low,
-        close,
-        volume,
-        trade_count,
-    })
+    Ok(())
 }

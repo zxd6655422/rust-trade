@@ -386,6 +386,54 @@ impl Exchange for BinanceExchange {
         );
         self.do_fetch_klines(&url, symbol).await
     }
+
+    /// Fetch K-line data for multiple timeframes with rate limiting
+    ///
+    /// Binance API limit: 20 requests/second
+    /// We use 300ms delay between requests for safety
+    async fn fetch_klines_multi_tf(
+        &self,
+        symbol: &str,
+        timeframes: &[&str],
+        start_time: DateTime<Utc>,
+        end_time: DateTime<Utc>,
+        limit: u32,
+    ) -> Result<std::collections::HashMap<String, Vec<KlineData>>, ExchangeError> {
+        use std::collections::HashMap;
+
+        let mut result = HashMap::new();
+        const RATE_LIMIT_MS: u64 = 300; // 300ms between requests
+
+        for (i, &tf) in timeframes.iter().enumerate() {
+            // Rate limiting (skip delay for first request)
+            if i > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(RATE_LIMIT_MS)).await;
+            }
+
+            match self.fetch_klines_with_time(symbol, tf, start_time, end_time, limit).await {
+                Ok(klines) => {
+                    tracing::debug!(
+                        "[{}] Fetched {} {} klines",
+                        symbol,
+                        klines.len(),
+                        tf
+                    );
+                    result.insert(tf.to_string(), klines);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "[{}] Failed to fetch {} klines: {}",
+                        symbol,
+                        tf,
+                        e
+                    );
+                    // Continue with other timeframes even if one fails
+                }
+            }
+        }
+
+        Ok(result)
+    }
 }
 
 impl Default for BinanceExchange {

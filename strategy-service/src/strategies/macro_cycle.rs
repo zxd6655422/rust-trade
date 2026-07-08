@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{Signal, SignalType, Strategy};
 use crate::indicators;
-use crate::redis_reader::{KlineData, MarketData, Timeframe};
+use crate::redis_reader::{KlineData, MarketData, MultiTimeframeData, Timeframe};
 
 /// 大周期分析策略参数
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -22,13 +22,30 @@ pub struct MacroCycleParams {
     pub lookback_periods: usize,
 }
 
+/// 单个时间框架的分析结果
+#[derive(Debug, Clone)]
+struct TimeframeAnalysis {
+    timeframe: String,
+    historical_high: f64,
+    historical_low: f64,
+    price_position: f64,
+    adx: f64,
+    ma_short: f64,
+    ma_long: f64,
+    is_uptrend: bool,
+    is_downtrend: bool,
+    near_high: bool,
+    near_low: bool,
+}
+
 /// 大周期分析策略
 ///
 /// 分析逻辑：
 /// 1. 识别历史高点/低点（支撑/阻力位）
 /// 2. 判断当前价格相对于历史位置
 /// 3. 结合均线和 ADX 确认趋势
-/// 4. 生成买入/卖出信号
+/// 4. 多时间框架综合判断
+/// 5. 生成买入/卖出信号
 pub struct MacroCycleStrategy {
     params: MacroCycleParams,
 }
@@ -101,6 +118,173 @@ impl MacroCycleStrategy {
         levels.dedup_by(|a, b| (a.0 - b.0).abs() < 0.001);
 
         levels
+    }
+
+    /// 分析单个时间框架
+    fn analyze_single_tf(&self, klines: &[KlineData], tf: &str, current_price: f64) -> Option<TimeframeAnalysis> {
+        if klines.is_empty() {
+            return None;
+        }
+
+        // 计算均线
+        let multi_ma = indicators::calculate_multi_ma(klines, &self.params.ma_periods);
+        let ma_values: Vec<(usize, f64)> = multi_ma.values.clone();
+        let ma_short = ma_values.first().map(|(_, v)| *v)?;
+        let ma_long = ma_values.last().map(|(_, v)| *v)?;
+
+        // 计算 ADX
+        let adx = indicators::calculate_adx(klines, 14).map(|r| r.adx).unwrap_or(0.0);
+
+        // 查找历史高低点
+        let lookback = self.params.lookback_periods.min(klines.len());
+        let historical_high = self.find_highest_high(klines, lookback)?;
+        let historical_low = self.find_lowest_low(klines, lookback)?;
+
+        // 计算价格位置
+        let position = self.price_position(current_price, historical_high, historical_low);
+
+        // 计算距离历史高点/低点的百分比
+        let distance_to_high = (current_price - historical_high) / historical_high;
+        let distance_to_low = (current_price - historical_low) / historical_low;
+
+        // 趋势判断
+        let is_uptrend = ma_short > ma_long && adx > self.params.adx_threshold;
+        let is_downtrend = ma_short < ma_long && adx > self.params.adx_threshold;
+
+        // 接近关键位置
+        let near_high = distance_to_high.abs() < self.params.proximity_threshold / 100.0;
+        let near_low = distance_to_low.abs() < self.params.proximity_threshold / 100.0;
+
+        Some(TimeframeAnalysis {
+            timeframe: tf.to_string(),
+            historical_high,
+            historical_low,
+            price_position: position,
+            adx,
+            ma_short,
+            ma_long,
+            is_uptrend,
+            is_downtrend,
+            near_high,
+            near_low,
+        })
+    }
+
+    /// 从多时间框架分析生成信号
+    fn generate_signal_from_multi_tf(
+        &self,
+        analyses: &[TimeframeAnalysis],
+        current_price: f64,
+    ) -> Option<Signal> {
+        if analyses.is_empty() {
+            return None;
+        }
+
+        // 统计各时间框架的信号
+        let mut bullish_count = 0;
+        let mut bearish_count = 0;
+        let mut total_confidence = 0.0;
+
+        for analysis in analyses {
+            // 检查是否接近关键位置
+            if analysis.near_low && analysis.is_uptrend {
+                bullish_count += 1;
+                total_confidence += 0.8;
+            } else if analysis.near_high && analysis.is_downtrend {
+                bearish_count += 1;
+                total_confidence += 0.8;
+            } else if analysis.is_uptrend && analysis.price_position < 0.3 {
+                bullish_count += 1;
+                total_confidence += 0.6;
+            } else if analysis.is_downtrend && analysis.price_position > 0.7 {
+                bearish_count += 1;
+                total_confidence += 0.6;
+            }
+        }
+
+        // 需要至少2个时间框架达成一致
+        let min_agreement = 2;
+        if bullish_count < min_agreement && bearish_count < min_agreement {
+            return None;
+        }
+
+        // 使用主时间框架的ATR计算止损止盈
+        let primary_klines = &analyses[0]; // 假设第一个是主时间框架
+        let atr = current_price * 0.02; // 简化处理
+
+        let (signal_type, signal_strength, reason) = if bullish_count >= min_agreement {
+            let avg_position = analyses.iter().map(|a| a.price_position).sum::<f64>() / analyses.len() as f64;
+            (
+                SignalType::Buy,
+                avg_position * 0.8,
+                format!(
+                    "多时间框架看多: {}/{}一致上涨, 价格位置={:.1}%, ADX={:.1}",
+                    bullish_count,
+                    analyses.len(),
+                    avg_position * 100.0,
+                    analyses[0].adx,
+                ),
+            )
+        } else {
+            let avg_position = analyses.iter().map(|a| a.price_position).sum::<f64>() / analyses.len() as f64;
+            (
+                SignalType::Sell,
+                (1.0 - avg_position) * 0.8,
+                format!(
+                    "多时间框架看空: {}/{}一致下跌, 价格位置={:.1}%, ADX={:.1}",
+                    bearish_count,
+                    analyses.len(),
+                    avg_position * 100.0,
+                    analyses[0].adx,
+                ),
+            )
+        };
+
+        let (stop_loss, take_profit) = match signal_type {
+            SignalType::Buy => (Some(current_price - 2.0 * atr), Some(current_price + 3.0 * atr)),
+            SignalType::Sell => (Some(current_price + 2.0 * atr), Some(current_price - 3.0 * atr)),
+            _ => (None, None),
+        };
+
+        // 构建详细信息
+        let tf_details: Vec<serde_json::Value> = analyses
+            .iter()
+            .map(|a| {
+                serde_json::json!({
+                    "timeframe": a.timeframe,
+                    "historical_high": a.historical_high,
+                    "historical_low": a.historical_low,
+                    "price_position": a.price_position,
+                    "adx": a.adx,
+                    "is_uptrend": a.is_uptrend,
+                    "is_downtrend": a.is_downtrend,
+                    "near_high": a.near_high,
+                    "near_low": a.near_low,
+                })
+            })
+            .collect();
+
+        let market_context = serde_json::json!({
+            "timeframe_analyses": tf_details,
+            "bullish_count": bullish_count,
+            "bearish_count": bearish_count,
+            "total_timeframes": analyses.len(),
+            "current_price": current_price,
+            "adx": analyses[0].adx,
+            "atr": atr,
+            "mode": "multi_tf",
+        });
+
+        Some(Signal {
+            signal_type,
+            signal_strength,
+            entry_price: current_price,
+            stop_loss,
+            take_profit,
+            confidence: total_confidence / analyses.len() as f64,
+            reason,
+            market_context,
+        })
     }
 }
 
@@ -187,6 +371,7 @@ impl Strategy for MacroCycleStrategy {
                     "is_downtrend": is_downtrend,
                     "support_resistance_levels": levels.len(),
                     "timeframe": data.timeframe.as_str(),
+                    "mode": "single_tf",
                 }),
             })
         } else if near_low && is_uptrend {
@@ -223,6 +408,7 @@ impl Strategy for MacroCycleStrategy {
                     "is_downtrend": is_downtrend,
                     "support_resistance_levels": levels.len(),
                     "timeframe": data.timeframe.as_str(),
+                    "mode": "single_tf",
                 }),
             })
         } else if is_uptrend && position < 0.3 {
@@ -251,6 +437,7 @@ impl Strategy for MacroCycleStrategy {
                     "adx": adx,
                     "atr": atr,
                     "timeframe": data.timeframe.as_str(),
+                    "mode": "single_tf",
                 }),
             })
         } else if is_downtrend && position > 0.7 {
@@ -279,6 +466,7 @@ impl Strategy for MacroCycleStrategy {
                     "adx": adx,
                     "atr": atr,
                     "timeframe": data.timeframe.as_str(),
+                    "mode": "single_tf",
                 }),
             })
         } else {
@@ -286,6 +474,41 @@ impl Strategy for MacroCycleStrategy {
         };
 
         signal
+    }
+
+    /// 多时间框架分析
+    async fn analyze_multi_tf(&self, data: &MultiTimeframeData) -> Option<Signal> {
+        let current_price = data.primary.current_price;
+
+        // 分析每个时间框架
+        let mut analyses: Vec<TimeframeAnalysis> = Vec::new();
+
+        for market_data in &data.all {
+            if let Some(analysis) = self.analyze_single_tf(
+                &market_data.klines,
+                market_data.timeframe.as_str(),
+                current_price,
+            ) {
+                analyses.push(analysis);
+            }
+        }
+
+        if analyses.is_empty() {
+            return None;
+        }
+
+        // 从多时间框架分析生成信号
+        self.generate_signal_from_multi_tf(&analyses, current_price)
+    }
+
+    fn required_timeframes(&self) -> Vec<Timeframe> {
+        let primary = Timeframe::from_str(&self.params.primary_timeframe).unwrap_or(Timeframe::OneDay);
+        let secondary = Timeframe::from_str(&self.params.secondary_timeframe).unwrap_or(Timeframe::OneWeek);
+
+        let mut timeframes = vec![primary, secondary];
+        timeframes.sort_by_key(|tf| tf.level());
+        timeframes.dedup();
+        timeframes
     }
 
     fn from_params(params: &serde_json::Value) -> anyhow::Result<Self> {

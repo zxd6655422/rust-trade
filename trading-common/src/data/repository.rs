@@ -1391,23 +1391,27 @@ impl TickDataRepository {
         Ok(total_inserted)
     }
 
-    /// 批量写入高时间框架 K 线
+    /// 批量写入高时间框架 K 线（接受 Timeframe 枚举）
     pub async fn batch_insert_high_tf_klines(
         &self,
         klines: &[OHLCData],
         timeframe: &Timeframe,
     ) -> DataResult<usize> {
+        let tf_str = timeframe.as_str();
+        self.batch_insert_high_tf_klines_by_str(klines, tf_str).await
+    }
+
+    /// 批量写入高时间框架 K 线（接受字符串）
+    pub async fn batch_insert_high_tf_klines_by_str(
+        &self,
+        klines: &[OHLCData],
+        timeframe: &str,
+    ) -> DataResult<usize> {
         if klines.is_empty() {
             return Ok(0);
         }
 
-        let table_name = match timeframe {
-            Timeframe::FourHour => "kline_4h",
-            Timeframe::OneDay => "kline_1d",
-            Timeframe::ThreeDay => "kline_3d",
-            Timeframe::OneWeek => "kline_1w",
-            _ => return Err(DataError::Validation("Unsupported high timeframe".to_string())),
-        };
+        let table_name = get_high_tf_table_name(timeframe)?;
 
         let total_count = klines.len();
         let mut total_inserted = 0;
@@ -1443,6 +1447,129 @@ impl TickDataRepository {
 
         debug!("[{}] Batch upserted {} records", table_name, total_inserted);
         Ok(total_inserted)
+    }
+
+    // =================================================================
+    // High Timeframe Query Operations
+    // =================================================================
+
+    /// 获取高时间框架 K 线数据
+    ///
+    /// 返回最新的 `limit` 条记录，按时间升序排列
+    pub async fn get_high_tf_klines(
+        &self,
+        symbol: &str,
+        timeframe: &str,
+        limit: u32,
+    ) -> DataResult<Vec<OHLCData>> {
+        let table_name = get_high_tf_table_name(timeframe)?;
+        let limit = limit.min(MAX_QUERY_LIMIT);
+        let tf = Timeframe::from_str(timeframe).unwrap_or(Timeframe::FourHour);
+
+        let sql = format!(
+            "SELECT * FROM (\
+             SELECT symbol, open_time as timestamp, open, high, low, close, volume, trade_count \
+             FROM {} WHERE symbol = $1 \
+             ORDER BY open_time DESC LIMIT $2\
+             ) sub ORDER BY timestamp ASC",
+            table_name
+        );
+
+        let rows = sqlx::query(&sql)
+            .bind(symbol)
+            .bind(limit as i64)
+            .fetch_all(&self.pool)
+            .await?;
+
+        let klines: Vec<OHLCData> = rows
+            .iter()
+            .map(|row| OHLCData {
+                timestamp: row.get("timestamp"),
+                symbol: row.get("symbol"),
+                timeframe: tf,
+                open: row.get("open"),
+                high: row.get("high"),
+                low: row.get("low"),
+                close: row.get("close"),
+                volume: row.get("volume"),
+                trade_count: row.get::<i32, _>("trade_count") as u64,
+            })
+            .collect();
+
+        debug!("[{}] Retrieved {} {} klines", symbol, klines.len(), timeframe);
+        Ok(klines)
+    }
+
+    /// 获取高时间框架的最新数据时间
+    pub async fn get_high_tf_latest(
+        &self,
+        symbol: &str,
+        timeframe: &str,
+    ) -> DataResult<Option<DateTime<Utc>>> {
+        let table_name = get_high_tf_table_name(timeframe)?;
+
+        let sql = format!(
+            "SELECT MAX(open_time) AS latest FROM {} WHERE symbol = $1",
+            table_name
+        );
+
+        let row = sqlx::query(&sql)
+            .bind(symbol)
+            .fetch_optional(&self.pool)
+            .await?;
+
+        let latest = row.and_then(|r| r.get::<Option<DateTime<Utc>>, _>("latest"));
+        debug!("[{}] Latest {} kline: {:?}", symbol, timeframe, latest);
+        Ok(latest)
+    }
+
+    /// 获取高时间框架的最早数据时间
+    pub async fn get_high_tf_earliest(
+        &self,
+        symbol: &str,
+        timeframe: &str,
+    ) -> DataResult<Option<DateTime<Utc>>> {
+        let table_name = get_high_tf_table_name(timeframe)?;
+
+        let sql = format!(
+            "SELECT MIN(open_time) AS earliest FROM {} WHERE symbol = $1",
+            table_name
+        );
+
+        let row = sqlx::query(&sql)
+            .bind(symbol)
+            .fetch_optional(&self.pool)
+            .await?;
+
+        let earliest = row.and_then(|r| r.get::<Option<DateTime<Utc>>, _>("earliest"));
+        debug!("[{}] Earliest {} kline: {:?}", symbol, timeframe, earliest);
+        Ok(earliest)
+    }
+
+    /// 获取高时间框架数据统计
+    pub async fn get_high_tf_stats(
+        &self,
+        symbol: &str,
+        timeframe: &str,
+    ) -> DataResult<(u64, Option<DateTime<Utc>>, Option<DateTime<Utc>>)> {
+        let table_name = get_high_tf_table_name(timeframe)?;
+
+        let sql = format!(
+            "SELECT COUNT(*) as total, MIN(open_time) as earliest, MAX(open_time) as latest \
+             FROM {} WHERE symbol = $1",
+            table_name
+        );
+
+        let row = sqlx::query(&sql)
+            .bind(symbol)
+            .fetch_one(&self.pool)
+            .await?;
+
+        Ok((
+            row.get::<Option<i64>, _>("total").unwrap_or(0) as u64,
+            row.get("earliest"),
+            row.get("latest"),
+        ))
     }
 
     /// Get klines from kline_1m table
@@ -2344,6 +2471,27 @@ fn calculate_required_duration_hours(timeframe: Timeframe, candle_count: u32) ->
     // Add 20% buffer for data gaps
     let total_hours = (base_hours * candle_count as i64) as f64 * 1.2;
     total_hours.ceil() as i64
+}
+
+/// 获取高时间框架对应的表名
+///
+/// 支持的时间框架：5m, 15m, 30m, 1h, 2h, 4h, 1d, 3d, 1w
+fn get_high_tf_table_name(timeframe: &str) -> DataResult<String> {
+    match timeframe {
+        "5m" => Ok("kline_5m".to_string()),
+        "15m" => Ok("kline_15m".to_string()),
+        "30m" => Ok("kline_30m".to_string()),
+        "1h" => Ok("kline_1h".to_string()),
+        "2h" => Ok("kline_2h".to_string()),
+        "4h" => Ok("kline_4h".to_string()),
+        "1d" => Ok("kline_1d".to_string()),
+        "3d" => Ok("kline_3d".to_string()),
+        "1w" => Ok("kline_1w".to_string()),
+        _ => Err(DataError::Validation(format!(
+            "Unsupported high timeframe: {}. Supported: 5m, 15m, 30m, 1h, 2h, 4h, 1d, 3d, 1w",
+            timeframe
+        ))),
+    }
 }
 
 #[cfg(test)]

@@ -1,5 +1,7 @@
 // exchange/traits.rs
 
+use std::collections::HashMap;
+
 use super::{types::KlineData, ExchangeError};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -33,4 +35,40 @@ pub trait Exchange: Send + Sync {
         end_time: DateTime<Utc>,
         limit: u32,
     ) -> Result<Vec<KlineData>, ExchangeError>;
+
+    /// Fetch K-line data for multiple timeframes (for multi-TF backfill)
+    ///
+    /// # Arguments
+    /// * `symbol` - Trading pair
+    /// * `timeframes` - List of timeframe strings (e.g., ["4h", "1d", "1w"])
+    /// * `start_time` - Start time for data range
+    /// * `end_time` - End time for data range
+    /// * `limit` - Max records per request
+    ///
+    /// # Returns
+    /// HashMap with timeframe as key and kline data as value
+    async fn fetch_klines_multi_tf(
+        &self,
+        symbol: &str,
+        timeframes: &[&str],
+        start_time: DateTime<Utc>,
+        end_time: DateTime<Utc>,
+        limit: u32,
+    ) -> Result<HashMap<String, Vec<KlineData>>, ExchangeError> {
+        // Default implementation: fetch sequentially
+        let mut result = HashMap::new();
+
+        for &tf in timeframes {
+            match self.fetch_klines_with_time(symbol, tf, start_time, end_time, limit).await {
+                Ok(klines) => {
+                    result.insert(tf.to_string(), klines);
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to fetch {} klines for {}: {}", tf, symbol, e);
+                }
+            }
+        }
+
+        Ok(result)
+    }
 }

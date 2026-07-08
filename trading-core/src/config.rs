@@ -47,6 +47,15 @@ pub struct CollectorConfig {
     /// 回填起始日期，格式 "YYYY-MM-DD"
     #[serde(default = "default_backfill_start_date")]
     pub backfill_start_date: String,
+    /// 需要回填和存储的时间框架列表
+    #[serde(default = "default_stored_timeframes")]
+    pub stored_timeframes: Vec<String>,
+    /// 是否启用多时间框架回填
+    #[serde(default)]
+    pub multi_tf_backfill_enabled: bool,
+    /// 多时间框架回填间隔（小时），增量更新用
+    #[serde(default = "default_multi_tf_backfill_interval_hours")]
+    pub multi_tf_backfill_interval_hours: u64,
 }
 
 fn default_poll_interval() -> u64 {
@@ -57,6 +66,25 @@ fn default_backfill_start_date() -> String {
     "2020-01-01".to_string()
 }
 
+fn default_stored_timeframes() -> Vec<String> {
+    vec![
+        "1m".to_string(),
+        "5m".to_string(),
+        "15m".to_string(),
+        "30m".to_string(),
+        "1h".to_string(),
+        "2h".to_string(),
+        "4h".to_string(),
+        "1d".to_string(),
+        "3d".to_string(),
+        "1w".to_string(),
+    ]
+}
+
+fn default_multi_tf_backfill_interval_hours() -> u64 {
+    6 // 每6小时执行一次增量回填
+}
+
 impl Default for CollectorConfig {
     fn default() -> Self {
         Self {
@@ -65,6 +93,9 @@ impl Default for CollectorConfig {
             poll_interval_secs: 10,
             backfill_enabled: false,
             backfill_start_date: "2020-01-01".to_string(),
+            stored_timeframes: default_stored_timeframes(),
+            multi_tf_backfill_enabled: false,
+            multi_tf_backfill_interval_hours: 6,
         }
     }
 }

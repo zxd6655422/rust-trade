@@ -1,6 +1,7 @@
 use anyhow::Result;
 use redis::aio::ConnectionManager;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 use crate::config::RedisConfig;
 
@@ -12,6 +13,19 @@ pub struct MarketData {
     pub current_price: f64,
     pub symbol: String,
     pub timeframe: Timeframe,
+}
+
+/// 多时间框架市场数据
+#[derive(Debug, Clone)]
+pub struct MultiTimeframeData {
+    /// 主时间框架数据（最低级别）
+    pub primary: MarketData,
+    /// 辅助时间框架数据
+    pub secondary: Option<MarketData>,
+    /// 更高时间框架数据
+    pub higher: Option<MarketData>,
+    /// 所有时间框架数据（按级别排序）
+    pub all: Vec<MarketData>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,15 +63,20 @@ impl From<KlineZsetMember> for KlineData {
 }
 
 /// 时间框架枚举
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Timeframe {
     OneMinute,
+    ThreeMinutes,
     FiveMinutes,
     FifteenMinutes,
     ThirtyMinutes,
+    FortyFiveMinutes,
     OneHour,
     TwoHour,
     FourHour,
+    SixHour,
+    EightHour,
+    TwelveHour,
     OneDay,
     ThreeDay,
     OneWeek,
@@ -67,12 +86,17 @@ impl Timeframe {
     pub fn as_str(&self) -> &'static str {
         match self {
             Timeframe::OneMinute => "1m",
+            Timeframe::ThreeMinutes => "3m",
             Timeframe::FiveMinutes => "5m",
             Timeframe::FifteenMinutes => "15m",
             Timeframe::ThirtyMinutes => "30m",
+            Timeframe::FortyFiveMinutes => "45m",
             Timeframe::OneHour => "1h",
             Timeframe::TwoHour => "2h",
             Timeframe::FourHour => "4h",
+            Timeframe::SixHour => "6h",
+            Timeframe::EightHour => "8h",
+            Timeframe::TwelveHour => "12h",
             Timeframe::OneDay => "1d",
             Timeframe::ThreeDay => "3d",
             Timeframe::OneWeek => "1w",
@@ -82,12 +106,17 @@ impl Timeframe {
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "1m" => Some(Timeframe::OneMinute),
+            "3m" => Some(Timeframe::ThreeMinutes),
             "5m" => Some(Timeframe::FiveMinutes),
             "15m" => Some(Timeframe::FifteenMinutes),
             "30m" => Some(Timeframe::ThirtyMinutes),
+            "45m" => Some(Timeframe::FortyFiveMinutes),
             "1h" => Some(Timeframe::OneHour),
             "2h" => Some(Timeframe::TwoHour),
             "4h" => Some(Timeframe::FourHour),
+            "6h" => Some(Timeframe::SixHour),
+            "8h" => Some(Timeframe::EightHour),
+            "12h" => Some(Timeframe::TwelveHour),
             "1d" => Some(Timeframe::OneDay),
             "3d" => Some(Timeframe::ThreeDay),
             "1w" => Some(Timeframe::OneWeek),
@@ -99,15 +128,41 @@ impl Timeframe {
     pub fn min_warmup_bars(&self) -> usize {
         match self {
             Timeframe::OneMinute => 500,
+            Timeframe::ThreeMinutes => 300,
             Timeframe::FiveMinutes => 500,
             Timeframe::FifteenMinutes => 300,
             Timeframe::ThirtyMinutes => 200,
+            Timeframe::FortyFiveMinutes => 150,
             Timeframe::OneHour => 200,
             Timeframe::TwoHour => 150,
             Timeframe::FourHour => 150,
+            Timeframe::SixHour => 100,
+            Timeframe::EightHour => 100,
+            Timeframe::TwelveHour => 80,
             Timeframe::OneDay => 100,
             Timeframe::ThreeDay => 50,
             Timeframe::OneWeek => 50,
+        }
+    }
+
+    /// 获取时间框架的级别（用于排序）
+    pub fn level(&self) -> u8 {
+        match self {
+            Timeframe::OneMinute => 1,
+            Timeframe::ThreeMinutes => 2,
+            Timeframe::FiveMinutes => 3,
+            Timeframe::FifteenMinutes => 4,
+            Timeframe::ThirtyMinutes => 5,
+            Timeframe::FortyFiveMinutes => 6,
+            Timeframe::OneHour => 7,
+            Timeframe::TwoHour => 8,
+            Timeframe::FourHour => 9,
+            Timeframe::SixHour => 10,
+            Timeframe::EightHour => 11,
+            Timeframe::TwelveHour => 12,
+            Timeframe::OneDay => 13,
+            Timeframe::ThreeDay => 14,
+            Timeframe::OneWeek => 15,
         }
     }
 }
@@ -232,8 +287,8 @@ pub async fn get_multi_timeframe_klines(
     symbol: &str,
     timeframes: &[Timeframe],
     limit: usize,
-) -> Result<std::collections::HashMap<String, Vec<KlineData>>> {
-    let mut result = std::collections::HashMap::new();
+) -> Result<HashMap<String, Vec<KlineData>>> {
+    let mut result = HashMap::new();
 
     for tf in timeframes {
         let klines = get_klines(conn, symbol, tf, limit).await?;
@@ -324,4 +379,109 @@ pub async fn get_market_data_default(
     symbol: &str,
 ) -> Result<MarketData> {
     get_market_data(conn, symbol, &Timeframe::OneMinute, 100).await
+}
+
+/// 获取多时间框架市场数据
+///
+/// # 参数
+/// - `conn`: Redis 连接
+/// - `symbol`: 交易对
+/// - `timeframes`: 时间框架列表（按级别从低到高排序）
+/// - `limit`: 每个时间框架的 K 线数量
+///
+/// # 返回
+/// MultiTimeframeData 包含所有时间框架的数据
+pub async fn get_multi_timeframe_data(
+    conn: &mut ConnectionManager,
+    symbol: &str,
+    timeframes: &[Timeframe],
+    limit: usize,
+) -> Result<MultiTimeframeData> {
+    let mut all_data: Vec<MarketData> = Vec::new();
+
+    for tf in timeframes {
+        let klines = get_klines(conn, symbol, tf, limit).await?;
+        let current_price = klines.last().map(|k| k.close).unwrap_or(0.0);
+
+        all_data.push(MarketData {
+            klines,
+            current_price,
+            symbol: symbol.to_string(),
+            timeframe: *tf,
+        });
+    }
+
+    // 按时间框架级别排序
+    all_data.sort_by_key(|d| d.timeframe.level());
+
+    // 拆分为主/辅/高
+    let primary = all_data.first().cloned();
+    let secondary = if all_data.len() > 1 {
+        Some(all_data[1].clone())
+    } else {
+        None
+    };
+    let higher = if all_data.len() > 2 {
+        Some(all_data[2].clone())
+    } else {
+        None
+    };
+
+    Ok(MultiTimeframeData {
+        primary: primary.unwrap_or_else(|| MarketData {
+            klines: vec![],
+            current_price: 0.0,
+            symbol: symbol.to_string(),
+            timeframe: Timeframe::OneMinute,
+        }),
+        secondary,
+        higher,
+        all: all_data,
+    })
+}
+
+/// 获取策略所需的多时间框架数据
+///
+/// 根据策略类型自动选择时间框架
+pub async fn get_strategy_data(
+    conn: &mut ConnectionManager,
+    symbol: &str,
+    strategy_type: &str,
+    params: &serde_json::Value,
+) -> Result<MultiTimeframeData> {
+    // 根据策略类型确定需要的时间框架
+    let timeframes = get_strategy_timeframes(strategy_type, params);
+
+    // 获取数据
+    let limit = 500; // 默认每个时间框架500根
+    get_multi_timeframe_data(conn, symbol, &timeframes, limit).await
+}
+
+/// 获取策略需要的时间框架列表
+fn get_strategy_timeframes(strategy_type: &str, params: &serde_json::Value) -> Vec<Timeframe> {
+    match strategy_type {
+        "multi_tf" => {
+            // 多时间框架策略：从参数中读取
+            if let Some(tfs) = params.get("timeframes").and_then(|v| v.as_array()) {
+                tfs.iter()
+                    .filter_map(|v| v.as_str().and_then(Timeframe::from_str))
+                    .collect()
+            } else {
+                // 默认：1h + 4h + 1d
+                vec![Timeframe::OneHour, Timeframe::FourHour, Timeframe::OneDay]
+            }
+        }
+        "macro_cycle" => {
+            // 大周期策略：使用周K和日K
+            vec![Timeframe::OneDay, Timeframe::ThreeDay, Timeframe::OneWeek]
+        }
+        "trend" => {
+            // 趋势策略：1h + 4h
+            vec![Timeframe::OneHour, Timeframe::FourHour]
+        }
+        _ => {
+            // 其他策略：默认使用单一时间框架
+            vec![Timeframe::OneMinute]
+        }
+    }
 }
