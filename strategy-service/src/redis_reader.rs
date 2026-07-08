@@ -71,17 +71,12 @@ impl From<KlineZsetMember> for KlineData {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Timeframe {
     OneMinute,
-    ThreeMinutes,
     FiveMinutes,
     FifteenMinutes,
     ThirtyMinutes,
-    FortyFiveMinutes,
     OneHour,
     TwoHour,
     FourHour,
-    SixHour,
-    EightHour,
-    TwelveHour,
     OneDay,
     ThreeDay,
     OneWeek,
@@ -91,17 +86,12 @@ impl Timeframe {
     pub fn as_str(&self) -> &'static str {
         match self {
             Timeframe::OneMinute => "1m",
-            Timeframe::ThreeMinutes => "3m",
             Timeframe::FiveMinutes => "5m",
             Timeframe::FifteenMinutes => "15m",
             Timeframe::ThirtyMinutes => "30m",
-            Timeframe::FortyFiveMinutes => "45m",
             Timeframe::OneHour => "1h",
             Timeframe::TwoHour => "2h",
             Timeframe::FourHour => "4h",
-            Timeframe::SixHour => "6h",
-            Timeframe::EightHour => "8h",
-            Timeframe::TwelveHour => "12h",
             Timeframe::OneDay => "1d",
             Timeframe::ThreeDay => "3d",
             Timeframe::OneWeek => "1w",
@@ -111,17 +101,12 @@ impl Timeframe {
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "1m" => Some(Timeframe::OneMinute),
-            "3m" => Some(Timeframe::ThreeMinutes),
             "5m" => Some(Timeframe::FiveMinutes),
             "15m" => Some(Timeframe::FifteenMinutes),
             "30m" => Some(Timeframe::ThirtyMinutes),
-            "45m" => Some(Timeframe::FortyFiveMinutes),
             "1h" => Some(Timeframe::OneHour),
             "2h" => Some(Timeframe::TwoHour),
             "4h" => Some(Timeframe::FourHour),
-            "6h" => Some(Timeframe::SixHour),
-            "8h" => Some(Timeframe::EightHour),
-            "12h" => Some(Timeframe::TwelveHour),
             "1d" => Some(Timeframe::OneDay),
             "3d" => Some(Timeframe::ThreeDay),
             "1w" => Some(Timeframe::OneWeek),
@@ -129,21 +114,32 @@ impl Timeframe {
         }
     }
 
+    /// 获取时间框架的 Duration
+    pub fn as_duration(&self) -> chrono::Duration {
+        match self {
+            Timeframe::OneMinute => chrono::Duration::minutes(1),
+            Timeframe::FiveMinutes => chrono::Duration::minutes(5),
+            Timeframe::FifteenMinutes => chrono::Duration::minutes(15),
+            Timeframe::ThirtyMinutes => chrono::Duration::minutes(30),
+            Timeframe::OneHour => chrono::Duration::hours(1),
+            Timeframe::TwoHour => chrono::Duration::hours(2),
+            Timeframe::FourHour => chrono::Duration::hours(4),
+            Timeframe::OneDay => chrono::Duration::days(1),
+            Timeframe::ThreeDay => chrono::Duration::days(3),
+            Timeframe::OneWeek => chrono::Duration::weeks(1),
+        }
+    }
+
     /// 获取该时间框架需要的最小 K 线数量（用于指标预热）
     pub fn min_warmup_bars(&self) -> usize {
         match self {
             Timeframe::OneMinute => 500,
-            Timeframe::ThreeMinutes => 300,
             Timeframe::FiveMinutes => 500,
             Timeframe::FifteenMinutes => 300,
             Timeframe::ThirtyMinutes => 200,
-            Timeframe::FortyFiveMinutes => 150,
             Timeframe::OneHour => 200,
             Timeframe::TwoHour => 150,
             Timeframe::FourHour => 150,
-            Timeframe::SixHour => 100,
-            Timeframe::EightHour => 100,
-            Timeframe::TwelveHour => 80,
             Timeframe::OneDay => 100,
             Timeframe::ThreeDay => 50,
             Timeframe::OneWeek => 50,
@@ -154,20 +150,15 @@ impl Timeframe {
     pub fn level(&self) -> u8 {
         match self {
             Timeframe::OneMinute => 1,
-            Timeframe::ThreeMinutes => 2,
-            Timeframe::FiveMinutes => 3,
-            Timeframe::FifteenMinutes => 4,
-            Timeframe::ThirtyMinutes => 5,
-            Timeframe::FortyFiveMinutes => 6,
-            Timeframe::OneHour => 7,
-            Timeframe::TwoHour => 8,
-            Timeframe::FourHour => 9,
-            Timeframe::SixHour => 10,
-            Timeframe::EightHour => 11,
-            Timeframe::TwelveHour => 12,
-            Timeframe::OneDay => 13,
-            Timeframe::ThreeDay => 14,
-            Timeframe::OneWeek => 15,
+            Timeframe::FiveMinutes => 2,
+            Timeframe::FifteenMinutes => 3,
+            Timeframe::ThirtyMinutes => 4,
+            Timeframe::OneHour => 5,
+            Timeframe::TwoHour => 6,
+            Timeframe::FourHour => 7,
+            Timeframe::OneDay => 8,
+            Timeframe::ThreeDay => 9,
+            Timeframe::OneWeek => 10,
         }
     }
 }

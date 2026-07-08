@@ -324,11 +324,20 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
                 };
                 let repo = Arc::new(TickDataRepository::new(pool, cache));
 
+                // 创建 Redis 连接池（ConnectionManager，Clone-safe，自动重连）
+                let redis_conn = match redis_writer::create_connection_manager(&redis_url).await {
+                    Ok(conn) => conn,
+                    Err(e) => {
+                        error!("Failed to create Redis connection manager: {}", e);
+                        return;
+                    }
+                };
+
                 // Step 0: Redis 预热 - 从 PostgreSQL 加载历史 K 线到 Redis
                 // 确保策略引擎重启后有足够数据计算指标
                 info!("Redis warm-up: loading historical klines from PostgreSQL...");
                 for symbol in &symbols {
-                    if let Err(e) = warm_up_redis_cache(&repo, &redis_url, symbol).await {
+                    if let Err(e) = warm_up_redis_cache(&repo, &mut redis_conn.clone(), symbol).await {
                         warn!("[{}] Redis warm-up failed: {}", symbol, e);
                     }
                 }
@@ -478,20 +487,28 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
                 // 高TF缓存刷新计数器（每60个周期 = 约30分钟刷新一次）
                 let mut poll_count: u64 = 0;
                 const HIGH_TF_REFRESH_INTERVAL: u64 = 60;
+                // Redis 重连检测：上次 Redis 写入是否失败
+                let mut redis_was_down = false;
 
                 loop {
                     poll_timer.tick().await;
                     poll_count += 1;
 
-                    // 定期从 DB 刷新高TF缓存到 Redis
-                    if poll_count % HIGH_TF_REFRESH_INTERVAL == 0 {
+                    // 检测 Redis 重连：之前失败 + 本次成功 → 立即刷新高TF缓存
+                    // 在 poll 结束后更新 redis_was_down 状态
+                    let mut redis_write_failed_this_cycle = false;
+
+                    // 定期从 DB 刷新高TF缓存到 Redis（或 Redis 刚重连时立即刷新）
+                    let should_refresh = poll_count % HIGH_TF_REFRESH_INTERVAL == 0 || redis_was_down;
+                    if should_refresh {
                         for sym in &symbols {
                             for tf in redis_writer::get_stored_timeframes() {
                                 if tf == Timeframe::OneMinute { continue; }
                                 let cache_size = redis_writer::get_cache_size(&tf) as u32;
                                 match repo.get_high_tf_klines(sym, tf.as_str(), cache_size).await {
                                     Ok(klines) if !klines.is_empty() => {
-                                        if let Err(e) = redis_writer::load_cache_from_db(&redis_url, sym, &tf, &klines).await {
+                                        let mut refresh_conn = redis_conn.clone();
+                                        if let Err(e) = redis_writer::load_cache_from_db(&mut refresh_conn, sym, &tf, &klines).await {
                                             warn!("[{}] Failed to refresh {} cache: {}", sym, tf.as_str(), e);
                                         }
                                     }
@@ -502,7 +519,11 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             }
                         }
-                        debug!("High-TF Redis cache refresh completed for all symbols");
+                        if redis_was_down {
+                            info!("Redis reconnection detected - high-TF cache refreshed immediately");
+                        } else {
+                            debug!("High-TF Redis cache refresh completed for all symbols");
+                        }
                     }
 
                     // 分批获取 symbol 的 kline 数据
@@ -560,15 +581,20 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
                                 let _ = price_tx.send(tick);
                             }
 
-                            // 写入 Redis（先完成 Redis 再写 DB，确保一致性）
-                            let redis_ohlc = ohlc_list.clone();
-                            let redis_url_clone = redis_url.clone();
-                            let sym_clone = symbol.clone();
-                            let redis_handle = tokio::task::spawn_blocking(move || {
-                                if let Err(e) = redis_writer::write_market_data(&redis_url_clone, &sym_clone, &redis_ohlc) {
-                                    warn!("[{}] Redis 写入失败: {}", sym_clone, e);
+                            // 数据完整性验证（采集层）
+                            if let Err(diag) = redis_writer::validate_kline_integrity(&ohlc_list, &Timeframe::OneMinute) {
+                                warn!("[{}] 数据完整性警告: {}", symbol, diag);
+                            }
+
+                            // 写入 Redis（使用连接池，先写 Redis 再写 DB）
+                            let mut redis_conn_clone = redis_conn.clone();
+                            match redis_writer::write_market_data(&mut redis_conn_clone, &symbol, &ohlc_list).await {
+                                Ok(_) => {}
+                                Err(e) => {
+                                    warn!("[{}] Redis 写入失败: {}", symbol, e);
+                                    redis_write_failed_this_cycle = true;
                                 }
-                            });
+                            }
 
                             // 写入 DB
                             match repo.batch_insert_klines(ohlc_list).await {
@@ -582,14 +608,14 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
                                     error!("[{}] kline_1m 插入失败: {}", symbol, e);
                                 }
                             }
-
-                            // 确保 Redis 写入完成
-                            let _ = redis_handle.await;
                         }
 
                         // 批次间延迟，避免短时间大量请求
                         tokio::time::sleep(Duration::from_millis(POLL_BATCH_DELAY_MS)).await;
                     }
+
+                    // 更新 Redis 状态（用于下一轮重连检测）
+                    redis_was_down = redis_write_failed_this_cycle;
                 }
             }))
         }
@@ -1423,7 +1449,7 @@ async fn create_cache_for_service() -> Result<TieredCache, Box<dyn std::error::E
 /// - 1w: 500 条（~10年）
 async fn warm_up_redis_cache(
     repo: &Arc<TickDataRepository>,
-    redis_url: &str,
+    redis_conn: &mut redis::aio::ConnectionManager,
     symbol: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use redis_writer::{get_cache_size, get_stored_timeframes, load_cache_from_db};
@@ -1454,36 +1480,13 @@ async fn warm_up_redis_cache(
         let count = klines.len();
 
         // 写入 Redis
-        match load_cache_from_db(redis_url, symbol, &tf, &klines).await {
+        match load_cache_from_db(redis_conn, symbol, &tf, &klines).await {
             Ok(_) => {
                 total_loaded += count;
                 debug!("[{}] Loaded {} {} klines to Redis", symbol, count, tf_str);
             }
             Err(e) => {
                 warn!("[{}] Failed to load {} klines: {}", symbol, tf_str, e);
-            }
-        }
-    }
-
-    // 按需聚合框架预热（3m/45m/6h/8h/12h）
-    // 从 1m 数据聚合生成，确保策略服务有足够数据计算指标
-    let on_demand_tfs = redis_writer::get_on_demand_timeframes();
-    let max_1m_for_agg = 1000u32; // 足够聚合所有按需框架
-    let klines_1m_for_agg = repo.get_klines(symbol, max_1m_for_agg).await?;
-    if !klines_1m_for_agg.is_empty() {
-        for tf in &on_demand_tfs {
-            let aggregated = redis_writer::aggregate_klines(&klines_1m_for_agg, tf);
-            if !aggregated.is_empty() {
-                let count = aggregated.len();
-                match load_cache_from_db(redis_url, symbol, tf, &aggregated).await {
-                    Ok(_) => {
-                        total_loaded += count;
-                        debug!("[{}] Loaded {} {} klines (on-demand aggregated) to Redis", symbol, count, tf.as_str());
-                    }
-                    Err(e) => {
-                        warn!("[{}] Failed to load {} klines: {}", symbol, tf.as_str(), e);
-                    }
-                }
             }
         }
     }

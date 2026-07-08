@@ -1,5 +1,51 @@
 # Changelog
 
+## [2026-07-08] 多时间框架 K线重构 + 数据完整性修复 + Redis 连接池改造
+
+### 移除按需聚合框架
+
+移除非标准量化时间框架（3m/45m/6h/8h/12h），只保留业界通用框架：
+
+| 保留 | 说明 |
+|------|------|
+| 1m/5m/15m/30m | 标准短线框架 |
+| 1h/2h/4h | 标准中线框架 |
+| 1d/3d/1w | 标准长线框架 |
+
+### Redis 连接池改造
+
+| 变更 | 说明 |
+|------|------|
+| ConnectionManager | 启动时创建一次，Clone-safe，内部使用 Arc 共享连接池 |
+| 自动重连 | ConnectionManager 内置重连机制，无需手动处理 |
+| 全异步 | 所有 redis_writer 函数改为 async，移除 spawn_blocking |
+| 性能 | 消除每次调用新建 TCP 连接的开销 |
+
+### 数据完整性两层验证
+
+**采集层（trading-core）**
+- 写入 Redis 前验证最新 K 线时间戳是否在合理范围内
+- 数据过旧时输出警告日志
+
+**策略层（strategy-service）**
+- 执行策略前验证数据条数是否满足 `min_warmup_bars()` 要求
+- 验证最新数据是否过旧（超过 2 个周期）
+- 数据不足时跳过策略执行，避免无效信号
+
+### 文件改动
+
+| 文件 | 改动 |
+|------|------|
+| `trading-common/src/data/types.rs` | 移除 5 个按需 Timeframe 变体 |
+| `trading-common/src/data/repository.rs` | match 补全移除按需变体 |
+| `trading-core/src/redis_writer.rs` | 全部函数改为 async + ConnectionManager，添加验证函数 |
+| `trading-core/src/main.rs` | 创建 ConnectionManager，移除 spawn_blocking，集成验证 |
+| `strategy-service/src/redis_reader.rs` | 移除按需 Timeframe 变体，添加 as_duration 方法 |
+| `strategy-service/src/engine.rs` | 添加 validate_strategy_data 策略层验证 |
+| `src-tauri/src/commands.rs` | match 移除按需变体 |
+
+---
+
 ## [2026-07-08] 多时间框架 K线重构 + 数据完整性修复
 
 ### 统一 Timeframe 枚举

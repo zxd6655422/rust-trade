@@ -140,8 +140,9 @@ async fn process_strategy(
             )
             .await?;
 
-            if multi_data.primary.klines.is_empty() {
-                warn!("No kline data for {} (primary timeframe)", symbol);
+            // 数据完整性验证（策略层）
+            if let Err(reason) = validate_strategy_data(&multi_data.primary, symbol) {
+                warn!("[{}] 跳过策略执行: {}", symbol, reason);
                 return Ok(());
             }
 
@@ -157,8 +158,9 @@ async fn process_strategy(
             )
             .await?;
 
-            if market_data.klines.is_empty() {
-                warn!("No kline data for {}", symbol);
+            // 数据完整性验证（策略层）
+            if let Err(reason) = validate_strategy_data(&market_data, symbol) {
+                warn!("[{}] 跳过策略执行: {}", symbol, reason);
                 return Ok(());
             }
 
@@ -174,8 +176,9 @@ async fn process_strategy(
         )
         .await?;
 
-        if market_data.klines.is_empty() {
-            warn!("No kline data for {}", symbol);
+        // 数据完整性验证（策略层）
+        if let Err(reason) = validate_strategy_data(&market_data, symbol) {
+            warn!("[{}] 跳过策略执行: {}", symbol, reason);
             return Ok(());
         }
 
@@ -313,6 +316,57 @@ async fn process_strategy(
                     saved_signal.id, e
                 );
             }
+        }
+    }
+
+    Ok(())
+}
+
+/// 验证策略数据完整性（策略层）
+///
+/// 检查项：
+/// 1. K线数据是否为空
+/// 2. 数据条数是否满足最低预热要求
+/// 3. 最新数据是否过旧（超过2个周期）
+///
+/// 返回 Ok(()) 表示数据可用，Err 包含跳过原因
+fn validate_strategy_data(
+    market_data: &redis_reader::MarketData,
+    symbol: &str,
+) -> Result<(), String> {
+    let tf = &market_data.timeframe;
+
+    // 1. 检查数据是否为空
+    if market_data.klines.is_empty() {
+        return Err(format!("[{}:{}] K线数据为空", symbol, tf.as_str()));
+    }
+
+    // 2. 检查数据条数是否满足最低预热要求
+    let min_bars = tf.min_warmup_bars();
+    if market_data.klines.len() < min_bars {
+        return Err(format!(
+            "[{}:{}] 数据不足: 需要 {} 条，实际 {} 条",
+            symbol,
+            tf.as_str(),
+            min_bars,
+            market_data.klines.len()
+        ));
+    }
+
+    // 3. 检查最新数据是否过旧
+    if let Some(latest) = market_data.klines.last() {
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let age_ms = now_ms - latest.timestamp;
+        let max_age_ms = tf.as_duration().num_milliseconds() * 2;
+
+        if age_ms > max_age_ms {
+            let age_minutes = age_ms / 60000;
+            return Err(format!(
+                "[{}:{}] 数据过旧: 最新时间戳延迟 {} 分钟",
+                symbol,
+                tf.as_str(),
+                age_minutes
+            ));
         }
     }
 
