@@ -13,7 +13,11 @@ use tracing::{debug, error, info, warn};
 use super::{
     errors::ExchangeError,
     traits::Exchange,
-    types::{BinanceStreamMessage, BinanceSubscribeMessage, BinanceTradeMessage, KlineData},
+    types::{
+        BinanceStreamMessage, BinanceSubscribeMessage, BinanceTradeMessage,
+        FundingRateData, KlineData, LargeTradeData, LongShortRatioData,
+        OpenInterestData, OrderBookData,
+    },
     utils::{build_binance_trade_streams, convert_binance_to_tick_data},
 };
 use trading_common::data::types::TickData;
@@ -430,6 +434,290 @@ impl Exchange for BinanceExchange {
                     // Continue with other timeframes even if one fails
                 }
             }
+        }
+
+        Ok(result)
+    }
+
+    async fn fetch_funding_rate(
+        &self,
+        symbol: &str,
+    ) -> Result<FundingRateData, ExchangeError> {
+        let base_url = self.rest_url(symbol);
+        let url = format!("{}/fapi/v1/fundingRate?symbol={}&limit=1", base_url, symbol);
+
+        let client = reqwest::Client::new();
+        let response = client.get(&url).send().await
+            .map_err(|e| ExchangeError::NetworkError(format!("[{}] HTTP failed: {}", symbol, e)))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(ExchangeError::NetworkError(format!("[{}] HTTP {}: {}", symbol, status, body)));
+        }
+
+        let raw: Vec<serde_json::Value> = response.json().await
+            .map_err(|e| ExchangeError::ParseError(format!("Parse funding rate: {}", e)))?;
+
+        let item = raw.first()
+            .ok_or_else(|| ExchangeError::ParseError(format!("[{}] No funding rate data", symbol)))?;
+
+        let funding_rate = item["fundingRate"].as_str()
+            .ok_or_else(|| ExchangeError::ParseError("Missing fundingRate".to_string()))?
+            .parse::<Decimal>()
+            .map_err(|e| ExchangeError::ParseError(format!("Invalid fundingRate: {}", e)))?;
+
+        let funding_time_ms = item["fundingTime"].as_i64()
+            .ok_or_else(|| ExchangeError::ParseError("Missing fundingTime".to_string()))?;
+
+        let funding_time = DateTime::from_timestamp_millis(funding_time_ms)
+            .ok_or_else(|| ExchangeError::ParseError("Invalid fundingTime".to_string()))?;
+
+        let mark_price = item["markPrice"].as_str()
+            .and_then(|s| s.parse::<Decimal>().ok());
+
+        Ok(FundingRateData {
+            symbol: symbol.to_string(),
+            funding_rate,
+            funding_time,
+            mark_price,
+        })
+    }
+
+    async fn fetch_funding_rate_history(
+        &self,
+        symbol: &str,
+        start_time: Option<DateTime<Utc>>,
+        end_time: Option<DateTime<Utc>>,
+        limit: u32,
+    ) -> Result<Vec<FundingRateData>, ExchangeError> {
+        let base_url = self.rest_url(symbol);
+        let mut url = format!("{}/fapi/v1/fundingRate?symbol={}&limit={}", base_url, symbol, limit);
+
+        if let Some(start) = start_time {
+            url.push_str(&format!("&startTime={}", start.timestamp_millis()));
+        }
+        if let Some(end) = end_time {
+            url.push_str(&format!("&endTime={}", end.timestamp_millis()));
+        }
+
+        let client = reqwest::Client::new();
+        let response = client.get(&url).send().await
+            .map_err(|e| ExchangeError::NetworkError(format!("[{}] HTTP failed: {}", symbol, e)))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(ExchangeError::NetworkError(format!("[{}] HTTP {}: {}", symbol, status, body)));
+        }
+
+        let raw: Vec<serde_json::Value> = response.json().await
+            .map_err(|e| ExchangeError::ParseError(format!("Parse funding rate history: {}", e)))?;
+
+        let mut result = Vec::new();
+        for item in &raw {
+            let funding_rate = item["fundingRate"].as_str()
+                .and_then(|s| s.parse::<Decimal>().ok())
+                .unwrap_or_default();
+            let funding_time_ms = item["fundingTime"].as_i64().unwrap_or(0);
+            let funding_time = DateTime::from_timestamp_millis(funding_time_ms)
+                .unwrap_or_default();
+            let mark_price = item["markPrice"].as_str()
+                .and_then(|s| s.parse::<Decimal>().ok());
+
+            result.push(FundingRateData {
+                symbol: symbol.to_string(),
+                funding_rate,
+                funding_time,
+                mark_price,
+            });
+        }
+
+        Ok(result)
+    }
+
+    async fn fetch_open_interest(
+        &self,
+        symbol: &str,
+    ) -> Result<OpenInterestData, ExchangeError> {
+        let base_url = self.rest_url(symbol);
+        let url = format!("{}/fapi/v1/openInterest?symbol={}", base_url, symbol);
+
+        let client = reqwest::Client::new();
+        let response = client.get(&url).send().await
+            .map_err(|e| ExchangeError::NetworkError(format!("[{}] HTTP failed: {}", symbol, e)))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(ExchangeError::NetworkError(format!("[{}] HTTP {}: {}", symbol, status, body)));
+        }
+
+        let raw: serde_json::Value = response.json().await
+            .map_err(|e| ExchangeError::ParseError(format!("Parse open interest: {}", e)))?;
+
+        let open_interest = raw["openInterest"].as_str()
+            .ok_or_else(|| ExchangeError::ParseError("Missing openInterest".to_string()))?
+            .parse::<Decimal>()
+            .map_err(|e| ExchangeError::ParseError(format!("Invalid openInterest: {}", e)))?;
+
+        // 计算持仓价值 (openInterest * markPrice)
+        let open_value = raw["sumOpenInterestValue"].as_str()
+            .and_then(|s| s.parse::<Decimal>().ok());
+
+        Ok(OpenInterestData {
+            symbol: symbol.to_string(),
+            open_interest,
+            open_value,
+            timestamp: Utc::now(),
+        })
+    }
+
+    async fn fetch_long_short_ratio(
+        &self,
+        symbol: &str,
+        period: &str,
+        limit: u32,
+    ) -> Result<Vec<LongShortRatioData>, ExchangeError> {
+        let base_url = self.rest_url(symbol);
+        let url = format!(
+            "{}/futures/data/topLongShortAccountRatio?symbol={}&period={}&limit={}",
+            base_url, symbol, period, limit
+        );
+
+        let client = reqwest::Client::new();
+        let response = client.get(&url).send().await
+            .map_err(|e| ExchangeError::NetworkError(format!("[{}] HTTP failed: {}", symbol, e)))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(ExchangeError::NetworkError(format!("[{}] HTTP {}: {}", symbol, status, body)));
+        }
+
+        let raw: Vec<serde_json::Value> = response.json().await
+            .map_err(|e| ExchangeError::ParseError(format!("Parse long short ratio: {}", e)))?;
+
+        let mut result = Vec::new();
+        for item in &raw {
+            let long_ratio = item["longAccount"].as_str()
+                .and_then(|s| s.parse::<Decimal>().ok())
+                .unwrap_or_default();
+            let short_ratio = item["shortAccount"].as_str()
+                .and_then(|s| s.parse::<Decimal>().ok())
+                .unwrap_or_default();
+            let ratio = item["longShortRatio"].as_str()
+                .and_then(|s| s.parse::<Decimal>().ok())
+                .unwrap_or_default();
+            let timestamp_ms = item["timestamp"].as_i64().unwrap_or(0);
+            let timestamp = DateTime::from_timestamp_millis(timestamp_ms)
+                .unwrap_or_default();
+
+            result.push(LongShortRatioData {
+                symbol: symbol.to_string(),
+                long_ratio,
+                short_ratio,
+                ratio,
+                timestamp,
+            });
+        }
+
+        Ok(result)
+    }
+
+    async fn fetch_order_book(
+        &self,
+        symbol: &str,
+        limit: u32,
+    ) -> Result<OrderBookData, ExchangeError> {
+        let base_url = self.rest_url(symbol);
+        let url = format!("{}/fapi/v1/depth?symbol={}&limit={}", base_url, symbol, limit);
+
+        let client = reqwest::Client::new();
+        let response = client.get(&url).send().await
+            .map_err(|e| ExchangeError::NetworkError(format!("[{}] HTTP failed: {}", symbol, e)))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(ExchangeError::NetworkError(format!("[{}] HTTP {}: {}", symbol, status, body)));
+        }
+
+        let raw: serde_json::Value = response.json().await
+            .map_err(|e| ExchangeError::ParseError(format!("Parse order book: {}", e)))?;
+
+        let parse_levels = |key: &str| -> Vec<(Decimal, Decimal)> {
+            raw[key].as_array()
+                .map(|levels| {
+                    levels.iter()
+                        .filter_map(|level| {
+                            let price = level[0].as_str()?.parse::<Decimal>().ok()?;
+                            let qty = level[1].as_str()?.parse::<Decimal>().ok()?;
+                            Some((price, qty))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+
+        Ok(OrderBookData {
+            symbol: symbol.to_string(),
+            bids: parse_levels("bids"),
+            asks: parse_levels("asks"),
+            timestamp: Utc::now(),
+        })
+    }
+
+    async fn fetch_large_trades(
+        &self,
+        symbol: &str,
+        min_quote_qty: Decimal,
+        limit: u32,
+    ) -> Result<Vec<LargeTradeData>, ExchangeError> {
+        let base_url = self.rest_url(symbol);
+        let url = format!("{}/fapi/v1/aggTrades?symbol={}&limit={}", base_url, symbol, limit);
+
+        let client = reqwest::Client::new();
+        let response = client.get(&url).send().await
+            .map_err(|e| ExchangeError::NetworkError(format!("[{}] HTTP failed: {}", symbol, e)))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(ExchangeError::NetworkError(format!("[{}] HTTP {}: {}", symbol, status, body)));
+        }
+
+        let raw: Vec<serde_json::Value> = response.json().await
+            .map_err(|e| ExchangeError::ParseError(format!("Parse agg trades: {}", e)))?;
+
+        let mut result = Vec::new();
+        for item in &raw {
+            let price = item["p"].as_str()
+                .and_then(|s| s.parse::<Decimal>().ok())
+                .unwrap_or_default();
+            let quantity = item["q"].as_str()
+                .and_then(|s| s.parse::<Decimal>().ok())
+                .unwrap_or_default();
+            let quote_qty = price * quantity;
+
+            // 过滤大单
+            if quote_qty < min_quote_qty {
+                continue;
+            }
+
+            let side = if item["m"].as_bool().unwrap_or(false) { "SELL" } else { "BUY" };
+            let timestamp_ms = item["T"].as_i64().unwrap_or(0);
+            let timestamp = DateTime::from_timestamp_millis(timestamp_ms)
+                .unwrap_or_default();
+
+            result.push(LargeTradeData {
+                symbol: symbol.to_string(),
+                price,
+                quantity,
+                quote_qty,
+                side: side.to_string(),
+                timestamp,
+            });
         }
 
         Ok(result)

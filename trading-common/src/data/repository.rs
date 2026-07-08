@@ -2451,6 +2451,129 @@ impl TickDataRepository {
         info!("Scheduler paused={}", paused);
         Ok(())
     }
+
+    // =================================================================
+    // Market Sentiment Data (资金费率/持仓量/多空比)
+    // =================================================================
+
+    /// 插入资金费率数据
+    pub async fn insert_funding_rate(
+        &self,
+        symbol: &str,
+        funding_rate: Decimal,
+        funding_time: DateTime<Utc>,
+        mark_price: Option<Decimal>,
+    ) -> DataResult<()> {
+        sqlx::query(
+            "INSERT INTO funding_rate (symbol, funding_rate, funding_time, mark_price) \
+             VALUES ($1, $2, $3, $4) \
+             ON CONFLICT (symbol, funding_time) DO UPDATE SET \
+             funding_rate = EXCLUDED.funding_rate, mark_price = EXCLUDED.mark_price"
+        )
+        .bind(symbol)
+        .bind(funding_rate)
+        .bind(funding_time)
+        .bind(mark_price)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// 获取最新资金费率
+    pub async fn get_latest_funding_rate(
+        &self,
+        symbol: &str,
+    ) -> DataResult<Option<(Decimal, DateTime<Utc>)>> {
+        let row = sqlx::query(
+            "SELECT funding_rate, funding_time FROM funding_rate \
+             WHERE symbol = $1 ORDER BY funding_time DESC LIMIT 1"
+        )
+        .bind(symbol)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|r| (r.get("funding_rate"), r.get("funding_time"))))
+    }
+
+    /// 插入持仓量数据
+    pub async fn insert_open_interest(
+        &self,
+        symbol: &str,
+        open_interest: Decimal,
+        open_value: Option<Decimal>,
+        timestamp: DateTime<Utc>,
+    ) -> DataResult<()> {
+        sqlx::query(
+            "INSERT INTO open_interest (symbol, open_interest, open_value, timestamp) \
+             VALUES ($1, $2, $3, $4) \
+             ON CONFLICT (symbol, timestamp) DO UPDATE SET \
+             open_interest = EXCLUDED.open_interest, open_value = EXCLUDED.open_value"
+        )
+        .bind(symbol)
+        .bind(open_interest)
+        .bind(open_value)
+        .bind(timestamp)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// 获取最新持仓量
+    pub async fn get_latest_open_interest(
+        &self,
+        symbol: &str,
+    ) -> DataResult<Option<(Decimal, Option<Decimal>, DateTime<Utc>)>> {
+        let row = sqlx::query(
+            "SELECT open_interest, open_value, timestamp FROM open_interest \
+             WHERE symbol = $1 ORDER BY timestamp DESC LIMIT 1"
+        )
+        .bind(symbol)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|r| (r.get("open_interest"), r.get("open_value"), r.get("timestamp"))))
+    }
+
+    /// 插入多空比数据
+    pub async fn insert_long_short_ratio(
+        &self,
+        symbol: &str,
+        long_ratio: Decimal,
+        short_ratio: Decimal,
+        ratio: Decimal,
+        timestamp: DateTime<Utc>,
+    ) -> DataResult<()> {
+        sqlx::query(
+            "INSERT INTO long_short_ratio (symbol, long_ratio, short_ratio, ratio, timestamp) \
+             VALUES ($1, $2, $3, $4, $5) \
+             ON CONFLICT (symbol, timestamp) DO UPDATE SET \
+             long_ratio = EXCLUDED.long_ratio, short_ratio = EXCLUDED.short_ratio, ratio = EXCLUDED.ratio"
+        )
+        .bind(symbol)
+        .bind(long_ratio)
+        .bind(short_ratio)
+        .bind(ratio)
+        .bind(timestamp)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// 获取最新多空比
+    pub async fn get_latest_long_short_ratio(
+        &self,
+        symbol: &str,
+    ) -> DataResult<Option<(Decimal, Decimal, Decimal, DateTime<Utc>)>> {
+        let row = sqlx::query(
+            "SELECT long_ratio, short_ratio, ratio, timestamp FROM long_short_ratio \
+             WHERE symbol = $1 ORDER BY timestamp DESC LIMIT 1"
+        )
+        .bind(symbol)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|r| (r.get("long_ratio"), r.get("short_ratio"), r.get("ratio"), r.get("timestamp"))))
+    }
 }
 
 /// Calculate required time duration based on timeframe and candle count

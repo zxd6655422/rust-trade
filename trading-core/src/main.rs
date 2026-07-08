@@ -342,6 +342,22 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
 
+                // Step 0.5: 启动市场情绪数据采集（资金费率/持仓量/多空比）
+                let sentiment_conn = redis_conn.clone();
+                let sentiment_repo = repo.clone();
+                let sentiment_symbols = symbols.clone();
+                let sentiment_exchange = exchange.clone();
+                tokio::spawn(async move {
+                    let sentiment_collector = service::MarketSentimentCollector::new(
+                        sentiment_exchange,
+                        sentiment_repo,
+                        sentiment_conn,
+                        sentiment_symbols,
+                    );
+                    sentiment_collector.run().await;
+                });
+                info!("📊 Market sentiment collector started");
+
                 // Step 1: Backfill historical data (if enabled)
                 // API 限制: Binance 20 req/s, OKX 12 req/s
                 // 使用信号量限制并发数，避免超出限制

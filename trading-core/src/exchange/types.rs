@@ -81,3 +81,55 @@ impl BinanceSubscribeMessage {
         }
     }
 }
+
+// =================================================================
+// 市场情绪数据结构
+// =================================================================
+
+/// 资金费率数据
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FundingRateData {
+    pub symbol: String,
+    pub funding_rate: Decimal,
+    pub funding_time: DateTime<Utc>,
+    pub mark_price: Option<Decimal>,
+}
+
+/// 持仓量数据
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenInterestData {
+    pub symbol: String,
+    pub open_interest: Decimal,
+    pub open_value: Option<Decimal>,
+    pub timestamp: DateTime<Utc>,
+}
+
+/// 多空比数据
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LongShortRatioData {
+    pub symbol: String,
+    pub long_ratio: Decimal,
+    pub short_ratio: Decimal,
+    pub ratio: Decimal,
+    pub timestamp: DateTime<Utc>,
+}
+
+/// 订单簿深度数据
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrderBookData {
+    pub symbol: String,
+    pub bids: Vec<(Decimal, Decimal)>,  // (价格, 数量)
+    pub asks: Vec<(Decimal, Decimal)>,  // (价格, 数量)
+    pub timestamp: DateTime<Utc>,
+}
+
+/// 大单成交数据
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LargeTradeData {
+    pub symbol: String,
+    pub price: Decimal,
+    pub quantity: Decimal,
+    pub quote_qty: Decimal,  // price * quantity (USDT)
+    pub side: String,        // "BUY" or "SELL"
+    pub timestamp: DateTime<Utc>,
+}

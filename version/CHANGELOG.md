@@ -1,5 +1,38 @@
 # Changelog
 
+## [2026-07-08] 市场情绪数据采集（资金费率/持仓量/多空比/订单簿/大单）
+
+### 新增数据采集
+
+| 数据 | 存储方式 | 采集频率 | 说明 |
+|------|----------|----------|------|
+| 资金费率 | PostgreSQL + Redis | 每1小时 | 合约多空成本，判断情绪过热 |
+| 持仓量 | PostgreSQL + Redis | 每1分钟 | 未平仓合约数，确认趋势强度 |
+| 多空比 | PostgreSQL + Redis | 每5分钟 | 散户情绪反向指标 |
+| 订单簿深度 | 实时获取 | 策略执行时 | 支撑阻力识别，市场冲击估算 |
+| 大单成交 | 实时获取 | 策略执行时 | 鲸鱼动向追踪 |
+
+### 新增文件
+
+| 文件 | 说明 |
+|------|------|
+| `sql/market_sentiment.sql` | 资金费率/持仓量/多空比建表语句 |
+| `trading-core/src/service/market_sentiment.rs` | 市场情绪采集服务模块 |
+
+### 修改文件
+
+| 文件 | 改动 |
+|------|------|
+| `trading-core/src/exchange/traits.rs` | 新增5个API接口方法 |
+| `trading-core/src/exchange/types.rs` | 新增5个数据结构体 |
+| `trading-core/src/exchange/binance.rs` | 实现5个Binance API调用 |
+| `trading-core/src/service/mod.rs` | 注册 market_sentiment 模块 |
+| `trading-core/src/main.rs` | 启动市场情绪采集服务 |
+| `trading-common/src/data/repository.rs` | 新增6个DB操作方法 |
+| `trading-core/Cargo.toml` | redis 添加 tokio-comp 特性 |
+
+---
+
 ## [2026-07-08] 多时间框架 K线重构 + 数据完整性修复 + Redis 连接池改造
 
 ### 移除按需聚合框架
