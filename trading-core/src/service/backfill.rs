@@ -32,7 +32,7 @@ const STORED_TIMEFRAMES: &[&str] = &["1m", "5m", "15m", "30m", "1h", "2h", "4h",
 pub struct BackfillService {
     exchange: Arc<dyn Exchange>,
     repository: Arc<crate::data::repository::TickDataRepository>,
-    redis_url: String,
+    _redis_url: String, // 保留用于未来回填后刷新 Redis 缓存
     symbols: Vec<String>,
     start_date: DateTime<Utc>,
 }
@@ -57,7 +57,7 @@ impl BackfillService {
         Self {
             exchange,
             repository,
-            redis_url,
+            _redis_url: redis_url,
             symbols,
             start_date,
         }

@@ -1,4 +1,4 @@
-use chrono::NaiveDate;
+use chrono::{NaiveDate, Utc};
 use rust_decimal::Decimal;
 use sqlx::PgPool;
 use std::str::FromStr;
@@ -398,6 +398,72 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
                         Err(e) => {
                             error!("Invalid backfill_start_date '{}': {}", backfill_start, e);
                         }
+                    }
+                }
+
+                // Step 1.5: Multi-timeframe backfill (if enabled)
+                // 在 1m 回填完成后，回填高时间框架数据（5m/15m/30m/1h/2h/4h/1d/3d/1w）
+                let multi_tf_enabled = settings.collector.multi_tf_backfill_enabled;
+                let multi_tf_interval_hours = settings.collector.multi_tf_backfill_interval_hours;
+                if multi_tf_enabled && backfill_enabled {
+                    let stored_tfs: Vec<String> = settings.collector.stored_timeframes.iter()
+                        .filter(|tf| *tf != "1m")
+                        .cloned()
+                        .collect();
+
+                    if !stored_tfs.is_empty() {
+                        info!("🔄 Starting multi-timeframe backfill for timeframes: {:?}", stored_tfs);
+                        let multi_tf_config = service::backfill::BackfillConfig {
+                            symbols: symbols.clone(),
+                            start_date: match NaiveDate::parse_from_str(&backfill_start, "%Y-%m-%d") {
+                                Ok(d) => d.and_hms_opt(0,0,0).unwrap().and_utc(),
+                                Err(_) => Utc::now() - chrono::Duration::days(365),
+                            },
+                            timeframes: stored_tfs.clone(),
+                            incremental: true,
+                        };
+
+                        let multi_tf_backfill = service::backfill::BackfillService::new(
+                            exchange.clone(),
+                            repo.clone(),
+                            redis_url.clone(),
+                            symbols.clone(),
+                            multi_tf_config.start_date,
+                        );
+
+                        // 初始回填在后台运行，不阻塞 polling 启动
+                        let mt_symbols = symbols.clone();
+                        let mt_exchange = exchange.clone();
+                        let mt_repo = repo.clone();
+                        let mt_redis_url = redis_url.clone();
+                        let mt_start = multi_tf_config.start_date;
+                        let mt_tfs = stored_tfs.clone();
+                        tokio::spawn(async move {
+                            multi_tf_backfill.run_multi_tf(&multi_tf_config).await;
+
+                            // 定期增量更新
+                            let mut interval = tokio::time::interval(
+                                Duration::from_secs(multi_tf_interval_hours * 3600)
+                            );
+                            loop {
+                                interval.tick().await;
+                                info!("🔄 Periodic multi-TF backfill starting...");
+                                let periodic_backfill = service::backfill::BackfillService::new(
+                                    mt_exchange.clone(),
+                                    mt_repo.clone(),
+                                    mt_redis_url.clone(),
+                                    mt_symbols.clone(),
+                                    mt_start,
+                                );
+                                let periodic_config = service::backfill::BackfillConfig {
+                                    symbols: mt_symbols.clone(),
+                                    start_date: mt_start,
+                                    timeframes: mt_tfs.clone(),
+                                    incremental: true,
+                                };
+                                periodic_backfill.run_multi_tf(&periodic_config).await;
+                            }
+                        });
                     }
                 }
 

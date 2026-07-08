@@ -1933,10 +1933,10 @@ impl TickDataRepository {
 
         // Set reasonable limits for different timeframes
         let max_ticks = match timeframe {
-            Timeframe::OneMinute | Timeframe::FiveMinutes => 50000,
-            Timeframe::FifteenMinutes | Timeframe::ThirtyMinutes => 100000,
+            Timeframe::OneMinute | Timeframe::ThreeMinutes | Timeframe::FiveMinutes => 50000,
+            Timeframe::FifteenMinutes | Timeframe::ThirtyMinutes | Timeframe::FortyFiveMinutes => 100000,
             Timeframe::OneHour | Timeframe::TwoHour => 200000,
-            Timeframe::FourHour => 500000,
+            Timeframe::FourHour | Timeframe::SixHour | Timeframe::EightHour | Timeframe::TwelveHour => 500000,
             Timeframe::OneDay | Timeframe::ThreeDay => 1000000,
             Timeframe::OneWeek => 2000000,
         };
@@ -2457,12 +2457,17 @@ impl TickDataRepository {
 fn calculate_required_duration_hours(timeframe: Timeframe, candle_count: u32) -> i64 {
     let base_hours = match timeframe {
         Timeframe::OneMinute => 1,
+        Timeframe::ThreeMinutes => 1,
         Timeframe::FiveMinutes => 1,
         Timeframe::FifteenMinutes => 1,
         Timeframe::ThirtyMinutes => 1,
+        Timeframe::FortyFiveMinutes => 1,
         Timeframe::OneHour => 1,
         Timeframe::TwoHour => 2,
         Timeframe::FourHour => 4,
+        Timeframe::SixHour => 6,
+        Timeframe::EightHour => 8,
+        Timeframe::TwelveHour => 12,
         Timeframe::OneDay => 24,
         Timeframe::ThreeDay => 24 * 3,
         Timeframe::OneWeek => 24 * 7,

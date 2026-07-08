@@ -363,12 +363,15 @@ pub async fn get_ohlc_preview(
     // 根据时间框架计算需要多少 1m K 线
     let needed_1m = match timeframe {
         Timeframe::OneMinute => (request.count as u32).max(200),
+        Timeframe::ThreeMinutes => (request.count as u32 * 3).max(300),
         Timeframe::FiveMinutes => (request.count as u32 * 5).max(500),
         Timeframe::FifteenMinutes => (request.count as u32 * 15).max(1500),
         Timeframe::ThirtyMinutes => (request.count as u32 * 30).max(2500),
+        Timeframe::FortyFiveMinutes => (request.count as u32 * 45).max(3000),
         Timeframe::OneHour => (request.count as u32 * 60).max(5000),
         Timeframe::TwoHour => (request.count as u32 * 120).max(5000),
         Timeframe::FourHour => (request.count as u32 * 240).max(5000),
+        Timeframe::SixHour | Timeframe::EightHour | Timeframe::TwelveHour => 5000,
         Timeframe::ThreeDay => 5000,
         Timeframe::OneDay => 5000,
         Timeframe::OneWeek => 5000,
@@ -483,12 +486,15 @@ pub async fn get_kline_history(
     // 根据时间框架计算需要多少 1m K 线
     let needed_1m = match timeframe {
         Timeframe::OneMinute => (count as u32).max(200),
+        Timeframe::ThreeMinutes => (count as u32 * 3).max(300),
         Timeframe::FiveMinutes => (count as u32 * 5).max(500),
         Timeframe::FifteenMinutes => (count as u32 * 15).max(1500),
         Timeframe::ThirtyMinutes => (count as u32 * 30).max(2500),
+        Timeframe::FortyFiveMinutes => (count as u32 * 45).max(3000),
         Timeframe::OneHour => (count as u32 * 60).max(5000),
         Timeframe::TwoHour => (count as u32 * 120).max(5000),
         Timeframe::FourHour => (count as u32 * 240).max(5000),
+        Timeframe::SixHour | Timeframe::EightHour | Timeframe::TwelveHour => 5000,
         Timeframe::ThreeDay => 5000,
         Timeframe::OneDay => 5000,
         Timeframe::OneWeek => 5000,

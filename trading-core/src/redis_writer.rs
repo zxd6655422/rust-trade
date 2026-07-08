@@ -61,16 +61,6 @@ const KLINE_TTL_LONG: usize = 604800;      // 7天（小时级及以上）
 // Data structures
 // =================================================================
 
-#[derive(Debug, Clone, Serialize)]
-struct KlineData {
-    timestamp: i64,
-    open: f64,
-    high: f64,
-    low: f64,
-    close: f64,
-    volume: f64,
-}
-
 /// ZSET member 格式：timestamp 作为 score，kline JSON 作为 member
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KlineZsetMember {
@@ -95,56 +85,42 @@ fn decimal_to_f64(d: Decimal) -> f64 {
 pub fn get_cache_size(tf: &Timeframe) -> usize {
     match tf {
         Timeframe::OneMinute => KLINE_1M_CACHE_SIZE,
+        Timeframe::ThreeMinutes => KLINE_3M_CACHE_SIZE,
         Timeframe::FiveMinutes => KLINE_5M_CACHE_SIZE,
         Timeframe::FifteenMinutes => KLINE_15M_CACHE_SIZE,
         Timeframe::ThirtyMinutes => KLINE_30M_CACHE_SIZE,
+        Timeframe::FortyFiveMinutes => KLINE_45M_CACHE_SIZE,
         Timeframe::OneHour => KLINE_1H_CACHE_SIZE,
         Timeframe::TwoHour => KLINE_2H_CACHE_SIZE,
         Timeframe::FourHour => KLINE_4H_CACHE_SIZE,
+        Timeframe::SixHour => KLINE_6H_CACHE_SIZE,
+        Timeframe::EightHour => KLINE_8H_CACHE_SIZE,
+        Timeframe::TwelveHour => KLINE_12H_CACHE_SIZE,
         Timeframe::OneDay => KLINE_1D_CACHE_SIZE,
         Timeframe::ThreeDay => KLINE_3D_CACHE_SIZE,
         Timeframe::OneWeek => KLINE_1W_CACHE_SIZE,
     }
 }
 
-/// 获取时间框架的 Redis key 后缀
+/// 获取时间框架的 Redis key 后缀（直接委托给 Timeframe::as_str）
 pub fn timeframe_key_suffix(tf: &Timeframe) -> &'static str {
-    match tf {
-        Timeframe::OneMinute => "1m",
-        Timeframe::FiveMinutes => "5m",
-        Timeframe::FifteenMinutes => "15m",
-        Timeframe::ThirtyMinutes => "30m",
-        Timeframe::OneHour => "1h",
-        Timeframe::TwoHour => "2h",
-        Timeframe::FourHour => "4h",
-        Timeframe::OneDay => "1d",
-        Timeframe::ThreeDay => "3d",
-        Timeframe::OneWeek => "1w",
-    }
+    tf.as_str()
 }
 
 /// 获取时间框架的 TTL
 pub fn timeframe_ttl(tf: &Timeframe) -> usize {
     match tf {
         Timeframe::OneMinute => KLINE_TTL_SHORT,
-        Timeframe::FiveMinutes | Timeframe::FifteenMinutes | Timeframe::ThirtyMinutes => KLINE_TTL_MEDIUM,
+        Timeframe::ThreeMinutes
+        | Timeframe::FiveMinutes
+        | Timeframe::FifteenMinutes
+        | Timeframe::ThirtyMinutes
+        | Timeframe::FortyFiveMinutes => KLINE_TTL_MEDIUM,
         _ => KLINE_TTL_LONG,
     }
 }
 
-/// 获取按需聚合框架的缓存大小（字符串版本）
-pub fn get_on_demand_cache_size(tf: &str) -> usize {
-    match tf {
-        "3m" => KLINE_3M_CACHE_SIZE,
-        "6h" => KLINE_6H_CACHE_SIZE,
-        "8h" => KLINE_8H_CACHE_SIZE,
-        "12h" => KLINE_12H_CACHE_SIZE,
-        "45m" => KLINE_45M_CACHE_SIZE,
-        _ => 1000, // 默认
-    }
-}
-
-/// 获取所有需要存储的时间框架
+/// 获取所有需要存储的时间框架（写入数据库的）
 pub fn get_stored_timeframes() -> Vec<Timeframe> {
     vec![
         Timeframe::OneMinute,
@@ -160,9 +136,15 @@ pub fn get_stored_timeframes() -> Vec<Timeframe> {
     ]
 }
 
-/// 获取所有按需聚合的时间框架（字符串）
-pub fn get_on_demand_timeframes() -> Vec<&'static str> {
-    vec!["3m", "6h", "8h", "12h", "45m"]
+/// 获取所有按需聚合的时间框架（不存数据库，只在 Redis 中聚合）
+pub fn get_on_demand_timeframes() -> Vec<Timeframe> {
+    vec![
+        Timeframe::ThreeMinutes,
+        Timeframe::FortyFiveMinutes,
+        Timeframe::SixHour,
+        Timeframe::EightHour,
+        Timeframe::TwelveHour,
+    ]
 }
 
 // =================================================================
@@ -171,20 +153,16 @@ pub fn get_on_demand_timeframes() -> Vec<&'static str> {
 
 /// 从 1m K 线聚合生成指定时间框架的 K 线
 ///
-/// 用于按需聚合的框架：3m, 6h, 8h, 12h, 45m
-pub fn aggregate_klines(klines_1m: &[OHLCData], target_tf: &str) -> Vec<OHLCData> {
-    if target_tf == "1m" {
+/// 用于按需聚合的框架：3m, 45m, 6h, 8h, 12h
+pub fn aggregate_klines(klines_1m: &[OHLCData], target_tf: &Timeframe) -> Vec<OHLCData> {
+    if *target_tf == Timeframe::OneMinute {
         return klines_1m.to_vec();
     }
 
-    let interval_secs = match target_tf {
-        "3m" => 180,
-        "6h" => 21600,
-        "8h" => 28800,
-        "12h" => 43200,
-        "45m" => 2700,
-        _ => return Vec::new(),
-    };
+    let interval_secs = target_tf.as_duration().num_seconds();
+    if interval_secs <= 0 {
+        return Vec::new();
+    }
 
     let mut aggregated: Vec<OHLCData> = Vec::new();
     let mut current_window: Vec<&OHLCData> = Vec::new();
@@ -222,7 +200,7 @@ pub fn aggregate_klines(klines_1m: &[OHLCData], target_tf: &str) -> Vec<OHLCData
 }
 
 /// 聚合一个时间窗口内的 K 线
-fn aggregate_window(klines: &[&OHLCData], target_tf: &str, interval_secs: i64) -> Option<OHLCData> {
+fn aggregate_window(klines: &[&OHLCData], target_tf: &Timeframe, interval_secs: i64) -> Option<OHLCData> {
     if klines.is_empty() {
         return None;
     }
@@ -240,17 +218,10 @@ fn aggregate_window(klines: &[&OHLCData], target_tf: &str, interval_secs: i64) -
     let ts = first.timestamp.timestamp();
     let window_start = (ts / interval_secs) * interval_secs;
 
-    // Parse target_tf to Timeframe enum
-    let timeframe = match target_tf {
-        "3m" => Timeframe::FiveMinutes, // 近似，用于标识
-        "45m" => Timeframe::ThirtyMinutes,
-        _ => Timeframe::FourHour,
-    };
-
     Some(OHLCData {
         timestamp: chrono::DateTime::from_timestamp(window_start, 0)?.with_timezone(&chrono::Utc),
         symbol: first.symbol.clone(),
-        timeframe,
+        timeframe: *target_tf,
         open,
         high,
         low,
@@ -338,7 +309,7 @@ pub fn write_single_timeframe(
 pub fn write_market_data_multi_tf(
     redis_url: &str,
     symbol: &str,
-    data: &std::collections::HashMap<String, Vec<OHLCData>>,
+    data: &std::collections::HashMap<Timeframe, Vec<OHLCData>>,
 ) -> anyhow::Result<()> {
     if data.is_empty() {
         return Ok(());
@@ -347,74 +318,20 @@ pub fn write_market_data_multi_tf(
     let client = redis::Client::open(redis_url)?;
     let mut conn = client.get_connection()?;
 
-    for (tf_str, ohlc_list) in data {
-        let timeframe = match Timeframe::from_str(tf_str) {
-            Some(tf) => tf,
-            None => {
-                // 按需聚合框架，使用特殊写入
-                write_on_demand_timeframe(&mut conn, symbol, tf_str, ohlc_list)?;
-                continue;
-            }
-        };
-
-        write_single_timeframe(&mut conn, symbol, &timeframe, ohlc_list)?;
+    for (timeframe, ohlc_list) in data {
+        write_single_timeframe(&mut conn, symbol, timeframe, ohlc_list)?;
     }
 
     debug!("[{}] Redis multi-TF write completed", symbol);
     Ok(())
 }
 
-/// 写入按需聚合的时间框架（3m, 6h, 8h, 12h, 45m）
-fn write_on_demand_timeframe(
-    conn: &mut redis::Connection,
-    symbol: &str,
-    tf: &str,
-    ohlc_list: &[OHLCData],
-) -> anyhow::Result<()> {
-    let key = format!("kline:{}:{}", symbol, tf);
-    let cache_size = get_on_demand_cache_size(tf);
-    let ttl = KLINE_TTL_MEDIUM; // 1天
-
-    let klines: Vec<KlineZsetMember> = ohlc_list
-        .iter()
-        .map(|k| KlineZsetMember {
-            ts: k.timestamp.timestamp_millis(),
-            o: decimal_to_f64(k.open),
-            h: decimal_to_f64(k.high),
-            l: decimal_to_f64(k.low),
-            c: decimal_to_f64(k.close),
-            v: decimal_to_f64(k.volume),
-        })
-        .collect();
-
-    // 写入数据
-    let mut pipe = redis::pipe();
-    for kline in &klines {
-        let member_json = serde_json::to_string(kline)?;
-        pipe.cmd("ZADD").arg(&key).arg(kline.ts).arg(&member_json);
-    }
-    pipe.execute(conn);
-
-    // 裁剪
-    let total: usize = redis::cmd("ZCARD").arg(&key).query(conn)?;
-    if total > cache_size {
-        let remove_count = total - cache_size;
-        redis::cmd("ZREMRANGEBYRANK")
-            .arg(&key)
-            .arg(0)
-            .arg((remove_count - 1) as isize)
-            .query::<()>(conn)?;
-    }
-
-    redis::cmd("EXPIRE").arg(&key).arg(ttl).query::<()>(conn)?;
-
-    Ok(())
-}
-
 /// 写入 1m K 线并按需聚合成其他框架
 ///
-/// 保留向后兼容，但不再自动聚合所有框架
-/// 高时间框架数据从数据库加载
+/// 保留向后兼容：
+/// - 写入 1m K 线
+/// - 按需聚合 3m/45m/6h/8h/12h 到 Redis（不存数据库）
+/// - 高时间框架数据（5m/15m/30m/1h/2h/4h/1d/3d/1w）从数据库加载到 Redis
 pub fn write_market_data(redis_url: &str, symbol: &str, ohlc_list: &[OHLCData]) -> anyhow::Result<()> {
     if ohlc_list.is_empty() {
         return Ok(());
@@ -426,17 +343,16 @@ pub fn write_market_data(redis_url: &str, symbol: &str, ohlc_list: &[OHLCData]) 
     // 写入 1m K 线
     write_single_timeframe(&mut conn, symbol, &Timeframe::OneMinute, ohlc_list)?;
 
-    // 按需聚合 3m, 45m 等框架（如果配置了）
-    let on_demand = get_on_demand_timeframes();
-    for tf in on_demand {
-        let aggregated = aggregate_klines(ohlc_list, tf);
+    // 按需聚合 3m, 45m, 6h, 8h, 12h 框架
+    for tf in get_on_demand_timeframes() {
+        let aggregated = aggregate_klines(ohlc_list, &tf);
         if !aggregated.is_empty() {
-            write_on_demand_timeframe(&mut conn, symbol, tf, &aggregated)?;
+            write_single_timeframe(&mut conn, symbol, &tf, &aggregated)?;
         }
     }
 
     debug!(
-        "[{}] Redis 写入完成: 1m({} 条), 已聚合按需框架",
+        "[{}] Redis 写入完成: 1m({} 条), 已聚合按需框架(3m/45m/6h/8h/12h)",
         symbol,
         ohlc_list.len(),
     );
@@ -543,15 +459,28 @@ mod tests {
     fn test_cache_sizes() {
         // 验证缓存大小配置
         assert_eq!(get_cache_size(&Timeframe::OneMinute), 20160);
+        assert_eq!(get_cache_size(&Timeframe::ThreeMinutes), 2880);
         assert_eq!(get_cache_size(&Timeframe::FiveMinutes), 8640);
+        assert_eq!(get_cache_size(&Timeframe::FortyFiveMinutes), 1920);
         assert_eq!(get_cache_size(&Timeframe::OneHour), 4320);
+        assert_eq!(get_cache_size(&Timeframe::SixHour), 720);
         assert_eq!(get_cache_size(&Timeframe::OneDay), 1825);
     }
 
     #[test]
-    fn test_on_demand_cache_sizes() {
-        assert_eq!(get_on_demand_cache_size("3m"), 2880);
-        assert_eq!(get_on_demand_cache_size("45m"), 1920);
-        assert_eq!(get_on_demand_cache_size("6h"), 720);
+    fn test_on_demand_timeframes() {
+        let on_demand = get_on_demand_timeframes();
+        assert_eq!(on_demand.len(), 5);
+        assert!(on_demand.contains(&Timeframe::ThreeMinutes));
+        assert!(on_demand.contains(&Timeframe::FortyFiveMinutes));
+        assert!(on_demand.contains(&Timeframe::SixHour));
+        assert!(on_demand.contains(&Timeframe::EightHour));
+        assert!(on_demand.contains(&Timeframe::TwelveHour));
+
+        // 按需框架不应在存储列表中
+        let stored = get_stored_timeframes();
+        for tf in &on_demand {
+            assert!(!stored.contains(tf), "{:?} should not be in stored timeframes", tf);
+        }
     }
 }

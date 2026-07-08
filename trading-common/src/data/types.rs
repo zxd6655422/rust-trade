@@ -210,12 +210,17 @@ pub struct LiveStrategyLog {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Timeframe {
     OneMinute,
+    ThreeMinutes,
     FiveMinutes,
     FifteenMinutes,
     ThirtyMinutes,
+    FortyFiveMinutes,
     OneHour,
     TwoHour,
     FourHour,
+    SixHour,
+    EightHour,
+    TwelveHour,
     OneDay,
     ThreeDay,
     OneWeek,
@@ -225,12 +230,17 @@ impl Timeframe {
     pub fn as_duration(&self) -> Duration {
         match self {
             Timeframe::OneMinute => Duration::minutes(1),
+            Timeframe::ThreeMinutes => Duration::minutes(3),
             Timeframe::FiveMinutes => Duration::minutes(5),
             Timeframe::FifteenMinutes => Duration::minutes(15),
             Timeframe::ThirtyMinutes => Duration::minutes(30),
+            Timeframe::FortyFiveMinutes => Duration::minutes(45),
             Timeframe::OneHour => Duration::hours(1),
             Timeframe::TwoHour => Duration::hours(2),
             Timeframe::FourHour => Duration::hours(4),
+            Timeframe::SixHour => Duration::hours(6),
+            Timeframe::EightHour => Duration::hours(8),
+            Timeframe::TwelveHour => Duration::hours(12),
             Timeframe::OneDay => Duration::days(1),
             Timeframe::ThreeDay => Duration::days(3),
             Timeframe::OneWeek => Duration::weeks(1),
@@ -240,12 +250,17 @@ impl Timeframe {
     pub fn as_str(&self) -> &'static str {
         match self {
             Timeframe::OneMinute => "1m",
+            Timeframe::ThreeMinutes => "3m",
             Timeframe::FiveMinutes => "5m",
             Timeframe::FifteenMinutes => "15m",
             Timeframe::ThirtyMinutes => "30m",
+            Timeframe::FortyFiveMinutes => "45m",
             Timeframe::OneHour => "1h",
             Timeframe::TwoHour => "2h",
             Timeframe::FourHour => "4h",
+            Timeframe::SixHour => "6h",
+            Timeframe::EightHour => "8h",
+            Timeframe::TwelveHour => "12h",
             Timeframe::OneDay => "1d",
             Timeframe::ThreeDay => "3d",
             Timeframe::OneWeek => "1w",
@@ -256,17 +271,55 @@ impl Timeframe {
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "1m" => Some(Timeframe::OneMinute),
+            "3m" => Some(Timeframe::ThreeMinutes),
             "5m" => Some(Timeframe::FiveMinutes),
             "15m" => Some(Timeframe::FifteenMinutes),
             "30m" => Some(Timeframe::ThirtyMinutes),
+            "45m" => Some(Timeframe::FortyFiveMinutes),
             "1h" => Some(Timeframe::OneHour),
             "2h" => Some(Timeframe::TwoHour),
             "4h" => Some(Timeframe::FourHour),
+            "6h" => Some(Timeframe::SixHour),
+            "8h" => Some(Timeframe::EightHour),
+            "12h" => Some(Timeframe::TwelveHour),
             "1d" => Some(Timeframe::OneDay),
             "3d" => Some(Timeframe::ThreeDay),
             "1w" => Some(Timeframe::OneWeek),
             _ => None,
         }
+    }
+
+    /// 获取时间框架的级别（用于排序，值越小级别越低）
+    pub fn level(&self) -> u8 {
+        match self {
+            Timeframe::OneMinute => 1,
+            Timeframe::ThreeMinutes => 2,
+            Timeframe::FiveMinutes => 3,
+            Timeframe::FifteenMinutes => 4,
+            Timeframe::ThirtyMinutes => 5,
+            Timeframe::FortyFiveMinutes => 6,
+            Timeframe::OneHour => 7,
+            Timeframe::TwoHour => 8,
+            Timeframe::FourHour => 9,
+            Timeframe::SixHour => 10,
+            Timeframe::EightHour => 11,
+            Timeframe::TwelveHour => 12,
+            Timeframe::OneDay => 13,
+            Timeframe::ThreeDay => 14,
+            Timeframe::OneWeek => 15,
+        }
+    }
+
+    /// 判断是否为按需聚合框架（不存储数据库，只在 Redis 中聚合）
+    pub fn is_on_demand(&self) -> bool {
+        matches!(
+            self,
+            Timeframe::ThreeMinutes
+                | Timeframe::FortyFiveMinutes
+                | Timeframe::SixHour
+                | Timeframe::EightHour
+                | Timeframe::TwelveHour
+        )
     }
 
     /// Get the start of the time window for a given timestamp
@@ -277,6 +330,16 @@ impl Timeframe {
                 .unwrap()
                 .with_nanosecond(0)
                 .unwrap(),
+            Timeframe::ThreeMinutes => {
+                let aligned_minute = (timestamp.minute() / 3) * 3;
+                timestamp
+                    .with_minute(aligned_minute)
+                    .unwrap()
+                    .with_second(0)
+                    .unwrap()
+                    .with_nanosecond(0)
+                    .unwrap()
+            }
             Timeframe::FiveMinutes => {
                 let aligned_minute = (timestamp.minute() / 5) * 5;
                 timestamp
@@ -307,6 +370,16 @@ impl Timeframe {
                     .with_nanosecond(0)
                     .unwrap()
             }
+            Timeframe::FortyFiveMinutes => {
+                let aligned_minute = (timestamp.minute() / 45) * 45;
+                timestamp
+                    .with_minute(aligned_minute)
+                    .unwrap()
+                    .with_second(0)
+                    .unwrap()
+                    .with_nanosecond(0)
+                    .unwrap()
+            }
             Timeframe::OneHour => timestamp
                 .with_minute(0)
                 .unwrap()
@@ -328,6 +401,42 @@ impl Timeframe {
             }
             Timeframe::FourHour => {
                 let aligned_hour = (timestamp.hour() / 4) * 4;
+                timestamp
+                    .with_hour(aligned_hour)
+                    .unwrap()
+                    .with_minute(0)
+                    .unwrap()
+                    .with_second(0)
+                    .unwrap()
+                    .with_nanosecond(0)
+                    .unwrap()
+            }
+            Timeframe::SixHour => {
+                let aligned_hour = (timestamp.hour() / 6) * 6;
+                timestamp
+                    .with_hour(aligned_hour)
+                    .unwrap()
+                    .with_minute(0)
+                    .unwrap()
+                    .with_second(0)
+                    .unwrap()
+                    .with_nanosecond(0)
+                    .unwrap()
+            }
+            Timeframe::EightHour => {
+                let aligned_hour = (timestamp.hour() / 8) * 8;
+                timestamp
+                    .with_hour(aligned_hour)
+                    .unwrap()
+                    .with_minute(0)
+                    .unwrap()
+                    .with_second(0)
+                    .unwrap()
+                    .with_nanosecond(0)
+                    .unwrap()
+            }
+            Timeframe::TwelveHour => {
+                let aligned_hour = (timestamp.hour() / 12) * 12;
                 timestamp
                     .with_hour(aligned_hour)
                     .unwrap()

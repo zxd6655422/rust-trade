@@ -80,11 +80,14 @@ CREATE TABLE IF NOT EXISTS kline_2h (
 CREATE INDEX IF NOT EXISTS idx_kline_2h_symbol_time ON kline_2h(symbol, open_time DESC);
 
 -- =================================================================
--- 更新 repository 中的 get_high_tf_table_name 函数支持
--- 需要在 Rust 代码中更新映射：
--- "5m" => "kline_5m"
--- "15m" => "kline_15m"
--- "30m" => "kline_30m"
--- "1h" => "kline_1h"
--- "2h" => "kline_2h"
+-- 说明：
+-- 1. 本文件创建 5m/15m/30m/1h/2h 五张高时间框架 K 线表
+-- 2. 已有的表（无需在此创建）：
+--    - kline_1m（1分钟，主数据源）
+--    - kline_4h（4小时）
+--    - kline_1d（日线）
+--    - kline_3d（3日线）
+--    - kline_1w（周线）
+-- 3. Rust 代码中 get_high_tf_table_name() 已支持全部时间框架映射
+-- 4. 按需聚合框架（3m/45m/6h/8h/12h）不创建数据库表，仅在 Redis 中聚合
 -- =================================================================
