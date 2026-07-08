@@ -1,5 +1,72 @@
 # Changelog
 
+## [2026-07-08] 统一账户快照系统（v2）
+
+### 设计目标
+- 统一 Binance / OKX 的账户数据结构
+- 分离账户汇总、资产余额、持仓详情三张表
+- 支持策略计算和交易执行的统一数据访问
+
+### 新增数据结构
+
+| 结构体 | 说明 |
+|--------|------|
+| `AccountSnapshot` | 账户汇总（总权益、可用余额、未实现盈亏、保证金率等） |
+| `AssetBalance` | 资产余额详情（每个币种的可用/冻结/盈亏） |
+| `PositionInfo` | 持仓信息（开仓价、标记价、强平价、杠杆、保证金等） |
+| `PositionSide` | 持仓方向枚举（Long/Short/Net） |
+| `MarginType` | 保证金模式枚举（Cross/Isolated） |
+| `AccountProvider` | 统一账户查询接口 |
+
+### 新增数据库表
+
+| 表名 | 说明 |
+|------|------|
+| `account_snapshot` | 账户汇总（支持多交易所多市场类型） |
+| `asset_balance` | 资产余额详情 |
+| `position_snapshot` | 持仓快照 |
+
+### 新增文件
+
+| 文件 | 说明 |
+|------|------|
+| `sql/account_snapshot.sql` | 建表语句 |
+| `trading-common/src/data/account_types.rs` | 统一数据结构和接口定义 |
+| `strategy-service/src/binance_account.rs` | Binance AccountProvider 实现 |
+| `strategy-service/src/okx_account.rs` | OKX AccountProvider 实现 |
+
+### 修改文件
+
+| 文件 | 改动 |
+|------|------|
+| `trading-common/src/data/mod.rs` | 注册 account_types 模块 |
+| `trading-common/src/data/repository.rs` | 新增账户快照相关方法 |
+| `strategy-service/src/account_sync.rs` | 重构为使用统一接口 |
+| `strategy-service/src/main.rs` | 注册 binance_account 模块 |
+
+### 字段映射
+
+**Binance 合约 (`/fapi/v2/account`)**
+| 统一字段 | Binance 字段 |
+|----------|-------------|
+| `total_equity` | `totalMarginBalance` |
+| `total_balance` | `totalWalletBalance` |
+| `available_balance` | `availableBalance` |
+| `unrealized_pnl` | `totalUnrealizedProfit` |
+| `initial_margin` | `totalInitialMargin` |
+| `maint_margin` | `totalMaintMargin` |
+
+**Binance 现货 (`/api/v3/account`)**
+| 统一字段 | Binance 字段 |
+|----------|-------------|
+| `total_equity` | sum(free + locked) |
+| `total_balance` | sum(free + locked) |
+| `available_balance` | USDT.free |
+| `frozen_balance` | USDT.locked |
+| `unrealized_pnl` | 0 |
+
+---
+
 ## [2026-07-08] 市场情绪数据采集（资金费率/持仓量/多空比/订单簿/大单）
 
 ### 新增数据采集

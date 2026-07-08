@@ -1,0 +1,109 @@
+-- =================================================================
+-- 统一账户快照表
+-- 支持 Binance / OKX 等多交易所
+-- 创建时间：2026-07-08
+-- =================================================================
+
+-- 账户快照表（账户级别汇总）
+CREATE TABLE IF NOT EXISTS account_snapshot (
+    id BIGSERIAL PRIMARY KEY,
+    exchange VARCHAR(20) NOT NULL,          -- 'binance' / 'okx'
+    market_type VARCHAR(20) NOT NULL,       -- 'spot' / 'futures' / 'swap'
+    snapshot_at TIMESTAMPTZ NOT NULL,
+
+    -- ============ 余额相关 ============
+    total_equity DECIMAL(20,8) NOT NULL DEFAULT 0,      -- 总权益（USD）
+    total_balance DECIMAL(20,8) NOT NULL DEFAULT 0,      -- 总余额（不含未实现盈亏）
+    available_balance DECIMAL(20,8) NOT NULL DEFAULT 0,  -- 可用余额
+    frozen_balance DECIMAL(20,8) NOT NULL DEFAULT 0,     -- 冻结余额
+
+    -- ============ 盈亏相关 ============
+    unrealized_pnl DECIMAL(20,8) NOT NULL DEFAULT 0,     -- 未实现盈亏
+
+    -- ============ 保证金相关（仅合约） ============
+    initial_margin DECIMAL(20,8),           -- 初始保证金
+    maint_margin DECIMAL(20,8),             -- 维持保证金
+    margin_ratio DECIMAL(10,8),             -- 保证金率
+
+    -- ============ 持仓相关 ============
+    position_count INTEGER NOT NULL DEFAULT 0,
+
+    -- ============ 原始数据 ============
+    raw_data JSONB,
+
+    UNIQUE(exchange, market_type, snapshot_at)
+);
+
+CREATE INDEX IF NOT EXISTS idx_account_snapshot_exchange_time
+    ON account_snapshot(exchange, market_type, snapshot_at DESC);
+
+-- 资产余额详情表
+CREATE TABLE IF NOT EXISTS asset_balance (
+    id BIGSERIAL PRIMARY KEY,
+    exchange VARCHAR(20) NOT NULL,
+    market_type VARCHAR(20) NOT NULL,
+    asset VARCHAR(20) NOT NULL,             -- 'USDT' / 'BTC'
+    snapshot_at TIMESTAMPTZ NOT NULL,
+
+    total DECIMAL(20,8) NOT NULL DEFAULT 0,         -- 总余额
+    available DECIMAL(20,8) NOT NULL DEFAULT 0,      -- 可用余额
+    frozen DECIMAL(20,8) NOT NULL DEFAULT 0,         -- 冻结余额
+    unrealized_pnl DECIMAL(20,8) NOT NULL DEFAULT 0, -- 未实现盈亏
+    usd_value DECIMAL(20,8),                         -- USD价值
+
+    UNIQUE(exchange, market_type, asset, snapshot_at)
+);
+
+CREATE INDEX IF NOT EXISTS idx_asset_balance_exchange_time
+    ON asset_balance(exchange, market_type, snapshot_at DESC);
+
+-- 持仓快照表
+CREATE TABLE IF NOT EXISTS position_snapshot (
+    id BIGSERIAL PRIMARY KEY,
+    exchange VARCHAR(20) NOT NULL,
+    symbol VARCHAR(30) NOT NULL,            -- 统一格式: 'BTCUSDT'
+    raw_symbol VARCHAR(50) NOT NULL,        -- 原始格式: 'BTCUSDT' / 'BTC-USDT-SWAP'
+    snapshot_at TIMESTAMPTZ NOT NULL,
+
+    -- ============ 持仓基本信息 ============
+    position_side VARCHAR(10) NOT NULL,     -- 'LONG' / 'SHORT' / 'BOTH' / 'NET'
+    position_amt DECIMAL(20,8) NOT NULL,    -- 持仓数量
+    entry_price DECIMAL(20,8) NOT NULL,     -- 开仓均价
+    mark_price DECIMAL(20,8) NOT NULL,      -- 标记价格
+    unrealized_pnl DECIMAL(20,8) NOT NULL,  -- 未实现盈亏
+
+    -- ============ 杠杆和保证金 ============
+    leverage INTEGER NOT NULL DEFAULT 1,
+    margin_type VARCHAR(10) NOT NULL DEFAULT 'cross',  -- 'cross' / 'isolated'
+    initial_margin DECIMAL(20,8) NOT NULL DEFAULT 0,
+    maint_margin DECIMAL(20,8) NOT NULL DEFAULT 0,
+
+    -- ============ 风控相关 ============
+    liquidation_price DECIMAL(20,8),        -- 强平价格
+    notional DECIMAL(20,8) NOT NULL DEFAULT 0,  -- 名义价值
+
+    -- ============ 盈亏计算 ============
+    pnl_ratio DECIMAL(10,8),                -- 盈亏比例 = unrealized_pnl / (entry_price * position_amt)
+
+    -- ============ 原始数据 ============
+    raw_data JSONB,
+
+    UNIQUE(exchange, symbol, position_side, snapshot_at)
+);
+
+CREATE INDEX IF NOT EXISTS idx_position_snapshot_exchange_time
+    ON position_snapshot(exchange, snapshot_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_position_snapshot_symbol_time
+    ON position_snapshot(symbol, snapshot_at DESC);
+
+-- =================================================================
+-- 清理旧快照的函数（保留7天）
+-- =================================================================
+CREATE OR REPLACE FUNCTION cleanup_old_account_snapshots() RETURNS void AS $$
+BEGIN
+    DELETE FROM account_snapshot WHERE snapshot_at < NOW() - INTERVAL '7 days';
+    DELETE FROM asset_balance WHERE snapshot_at < NOW() - INTERVAL '7 days';
+    DELETE FROM position_snapshot WHERE snapshot_at < NOW() - INTERVAL '7 days';
+END;
+$$ LANGUAGE plpgsql;

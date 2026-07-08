@@ -2579,6 +2579,253 @@ impl TickDataRepository {
 
         Ok(row.map(|r| (r.get("long_ratio"), r.get("short_ratio"), r.get("ratio"), r.get("timestamp"))))
     }
+
+    // =================================================================
+    // Account Snapshot v2 (统一账户快照)
+    // =================================================================
+
+    /// 插入账户快照
+    pub async fn insert_account_snapshot(
+        &self,
+        exchange: &str,
+        market_type: &str,
+        total_equity: Decimal,
+        total_balance: Decimal,
+        available_balance: Decimal,
+        frozen_balance: Decimal,
+        unrealized_pnl: Decimal,
+        initial_margin: Option<Decimal>,
+        maint_margin: Option<Decimal>,
+        margin_ratio: Option<Decimal>,
+        position_count: i32,
+        raw_data: Option<serde_json::Value>,
+    ) -> DataResult<()> {
+        sqlx::query(
+            "INSERT INTO account_snapshot \
+             (exchange, market_type, snapshot_at, total_equity, total_balance, \
+              available_balance, frozen_balance, unrealized_pnl, \
+              initial_margin, maint_margin, margin_ratio, position_count, raw_data) \
+             VALUES ($1, $2, NOW(), $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
+             ON CONFLICT (exchange, market_type, snapshot_at) DO UPDATE SET \
+              total_equity = EXCLUDED.total_equity, \
+              total_balance = EXCLUDED.total_balance, \
+              available_balance = EXCLUDED.available_balance, \
+              frozen_balance = EXCLUDED.frozen_balance, \
+              unrealized_pnl = EXCLUDED.unrealized_pnl, \
+              initial_margin = EXCLUDED.initial_margin, \
+              maint_margin = EXCLUDED.maint_margin, \
+              margin_ratio = EXCLUDED.margin_ratio, \
+              position_count = EXCLUDED.position_count, \
+              raw_data = EXCLUDED.raw_data"
+        )
+        .bind(exchange)
+        .bind(market_type)
+        .bind(total_equity)
+        .bind(total_balance)
+        .bind(available_balance)
+        .bind(frozen_balance)
+        .bind(unrealized_pnl)
+        .bind(initial_margin)
+        .bind(maint_margin)
+        .bind(margin_ratio)
+        .bind(position_count)
+        .bind(raw_data)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// 插入资产余额
+    pub async fn insert_asset_balance(
+        &self,
+        exchange: &str,
+        market_type: &str,
+        asset: &str,
+        total: Decimal,
+        available: Decimal,
+        frozen: Decimal,
+        unrealized_pnl: Decimal,
+        usd_value: Option<Decimal>,
+    ) -> DataResult<()> {
+        sqlx::query(
+            "INSERT INTO asset_balance \
+             (exchange, market_type, asset, snapshot_at, total, available, frozen, unrealized_pnl, usd_value) \
+             VALUES ($1, $2, $3, NOW(), $4, $5, $6, $7, $8) \
+             ON CONFLICT (exchange, market_type, asset, snapshot_at) DO UPDATE SET \
+              total = EXCLUDED.total, \
+              available = EXCLUDED.available, \
+              frozen = EXCLUDED.frozen, \
+              unrealized_pnl = EXCLUDED.unrealized_pnl, \
+              usd_value = EXCLUDED.usd_value"
+        )
+        .bind(exchange)
+        .bind(market_type)
+        .bind(asset)
+        .bind(total)
+        .bind(available)
+        .bind(frozen)
+        .bind(unrealized_pnl)
+        .bind(usd_value)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// 插入持仓快照
+    pub async fn insert_position_snapshot(
+        &self,
+        exchange: &str,
+        symbol: &str,
+        raw_symbol: &str,
+        position_side: &str,
+        position_amt: Decimal,
+        entry_price: Decimal,
+        mark_price: Decimal,
+        unrealized_pnl: Decimal,
+        leverage: i32,
+        margin_type: &str,
+        initial_margin: Decimal,
+        maint_margin: Decimal,
+        liquidation_price: Option<Decimal>,
+        notional: Decimal,
+        pnl_ratio: Option<Decimal>,
+        raw_data: Option<serde_json::Value>,
+    ) -> DataResult<()> {
+        sqlx::query(
+            "INSERT INTO position_snapshot \
+             (exchange, symbol, raw_symbol, snapshot_at, position_side, position_amt, \
+              entry_price, mark_price, unrealized_pnl, leverage, margin_type, \
+              initial_margin, maint_margin, liquidation_price, notional, pnl_ratio, raw_data) \
+             VALUES ($1, $2, $3, NOW(), $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) \
+             ON CONFLICT (exchange, symbol, position_side, snapshot_at) DO UPDATE SET \
+              position_amt = EXCLUDED.position_amt, \
+              entry_price = EXCLUDED.entry_price, \
+              mark_price = EXCLUDED.mark_price, \
+              unrealized_pnl = EXCLUDED.unrealized_pnl, \
+              leverage = EXCLUDED.leverage, \
+              margin_type = EXCLUDED.margin_type, \
+              initial_margin = EXCLUDED.initial_margin, \
+              maint_margin = EXCLUDED.maint_margin, \
+              liquidation_price = EXCLUDED.liquidation_price, \
+              notional = EXCLUDED.notional, \
+              pnl_ratio = EXCLUDED.pnl_ratio, \
+              raw_data = EXCLUDED.raw_data"
+        )
+        .bind(exchange)
+        .bind(symbol)
+        .bind(raw_symbol)
+        .bind(position_side)
+        .bind(position_amt)
+        .bind(entry_price)
+        .bind(mark_price)
+        .bind(unrealized_pnl)
+        .bind(leverage)
+        .bind(margin_type)
+        .bind(initial_margin)
+        .bind(maint_margin)
+        .bind(liquidation_price)
+        .bind(notional)
+        .bind(pnl_ratio)
+        .bind(raw_data)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// 获取最新账户快照
+    pub async fn get_latest_account_snapshot(
+        &self,
+        exchange: &str,
+        market_type: &str,
+    ) -> DataResult<Option<crate::data::account_types::AccountSnapshot>> {
+        let row = sqlx::query(
+            "SELECT * FROM account_snapshot \
+             WHERE exchange = $1 AND market_type = $2 \
+             ORDER BY snapshot_at DESC LIMIT 1"
+        )
+        .bind(exchange)
+        .bind(market_type)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|r| crate::data::account_types::AccountSnapshot {
+            exchange: r.get("exchange"),
+            market_type: r.get("market_type"),
+            snapshot_at: r.get("snapshot_at"),
+            total_equity: r.get("total_equity"),
+            total_balance: r.get("total_balance"),
+            available_balance: r.get("available_balance"),
+            frozen_balance: r.get("frozen_balance"),
+            unrealized_pnl: r.get("unrealized_pnl"),
+            initial_margin: r.get("initial_margin"),
+            maint_margin: r.get("maint_margin"),
+            margin_ratio: r.get("margin_ratio"),
+            position_count: r.get("position_count"),
+            raw_data: r.get("raw_data"),
+        }))
+    }
+
+    /// 获取最新持仓列表
+    pub async fn get_latest_positions(
+        &self,
+        exchange: &str,
+    ) -> DataResult<Vec<crate::data::account_types::PositionInfo>> {
+        // 获取最新的快照时间
+        let latest_time: Option<DateTime<Utc>> = sqlx::query_scalar(
+            "SELECT MAX(snapshot_at) FROM position_snapshot WHERE exchange = $1"
+        )
+        .bind(exchange)
+        .fetch_one(&self.pool)
+        .await?;
+
+        let snapshot_at = match latest_time {
+            Some(t) => t,
+            None => return Ok(Vec::new()),
+        };
+
+        let rows = sqlx::query(
+            "SELECT * FROM position_snapshot \
+             WHERE exchange = $1 AND snapshot_at = $2 \
+             ORDER BY symbol"
+        )
+        .bind(exchange)
+        .bind(snapshot_at)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.iter().map(|r| crate::data::account_types::PositionInfo {
+            exchange: r.get("exchange"),
+            symbol: r.get("symbol"),
+            raw_symbol: r.get("raw_symbol"),
+            snapshot_at: r.get("snapshot_at"),
+            position_side: crate::data::account_types::PositionSide::from_str(
+                r.get::<&str, _>("position_side")
+            ),
+            position_amt: r.get("position_amt"),
+            entry_price: r.get("entry_price"),
+            mark_price: r.get("mark_price"),
+            unrealized_pnl: r.get("unrealized_pnl"),
+            leverage: r.get::<i32, _>("leverage") as u32,
+            margin_type: crate::data::account_types::MarginType::from_str(
+                r.get::<&str, _>("margin_type")
+            ),
+            initial_margin: r.get("initial_margin"),
+            maint_margin: r.get("maint_margin"),
+            liquidation_price: r.get("liquidation_price"),
+            notional: r.get("notional"),
+            raw_data: r.get("raw_data"),
+        }).collect())
+    }
+
+    /// 清理旧的账户快照
+    pub async fn cleanup_old_account_snapshots(&self) -> DataResult<u64> {
+        let result = sqlx::query(
+            "SELECT cleanup_old_account_snapshots()"
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
 }
 
 /// Calculate required time duration based on timeframe and candle count

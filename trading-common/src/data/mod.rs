@@ -1,3 +1,4 @@
+pub mod account_types;
 pub mod aggregator;
 pub mod aggregator_tests;
 pub mod cache;

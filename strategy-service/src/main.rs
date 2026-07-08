@@ -12,10 +12,12 @@ pub mod account_sync;
 pub mod exchange;
 pub mod order_sync;
 pub mod okx_client;
+pub mod binance_account;
+pub mod okx_account;
 
 use std::sync::Arc;
 use anyhow::Result;
-use tracing::{info, error};
+use tracing::{info, error, warn};
 use tracing_subscriber::{fmt, EnvFilter};
 
 #[tokio::main]
@@ -94,8 +96,29 @@ async fn main() -> Result<()> {
     let account_sync_handle = {
         let pool = db_pool.clone();
         let sync_interval = 300; // 每5分钟同步一次
+        let redis_url = std::env::var("REDIS_URL").unwrap_or_default();
         tokio::spawn(async move {
-            let sync = Arc::new(account_sync::AccountSync::new(pool, sync_interval));
+            // 创建一个简单的缓存配置用于账户同步
+            let cache_config = (10, 60); // (max_ticks, ttl)
+            let cache_result = trading_common::data::cache::TieredCache::new(
+                cache_config,
+                (&redis_url, 100, 3600)
+            ).await;
+
+            let cache = match cache_result {
+                Ok(c) => c,
+                Err(e) => {
+                    warn!("Failed to create cache for account sync: {}", e);
+                    // 创建一个最小的缓存
+                    trading_common::data::cache::TieredCache::new(
+                        (10, 60),
+                        ("redis://localhost:6379", 100, 3600)
+                    ).await.expect("Failed to create fallback cache")
+                }
+            };
+
+            let repo = Arc::new(trading_common::data::repository::TickDataRepository::new(pool, cache));
+            let sync = Arc::new(account_sync::AccountSync::new(repo, sync_interval));
             sync.start().await;
         })
     };
