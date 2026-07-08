@@ -1334,7 +1334,7 @@ impl TickDataRepository {
                 .push_bind(k.low)
                 .push_bind(k.close)
                 .push_bind(k.volume)
-                .push_bind(k.trade_count as i32);
+                .push_bind(k.trade_count.min(i32::MAX as u64) as i32);
         });
 
         query_builder.push(
@@ -1373,7 +1373,7 @@ impl TickDataRepository {
                     .push_bind(kline.low)
                     .push_bind(kline.close)
                     .push_bind(kline.volume)
-                    .push_bind(kline.trade_count as i32);
+                    .push_bind(kline.trade_count.min(i32::MAX as u64) as i32);
             });
 
             query_builder.push(
@@ -1429,10 +1429,13 @@ impl TickDataRepository {
                     .push_bind(kline.low)
                     .push_bind(kline.close)
                     .push_bind(kline.volume)
-                    .push_bind(kline.trade_count as i32);
+                    .push_bind(kline.trade_count.min(i32::MAX as u64) as i32);
             });
 
             query_builder.push(format!(
+                // 注意：open 字段不在 UPDATE 中，保留首次写入的开盘价
+                // 这是设计意图：高TF K线可能被多次部分写入（如4h K线在2小时时写入一次，4小时时更新）
+                // open 应保持时间窗口开始时的价格，high/low 应保留极值，close 应为最新值
                 " ON CONFLICT (symbol, open_time) DO UPDATE SET \
                   high = GREATEST({0}.high, EXCLUDED.high), \
                   low = LEAST({0}.low, EXCLUDED.low), \
@@ -2145,15 +2148,17 @@ impl TickDataRepository {
     pub async fn get_engine_signal_history(
         &self, symbol: Option<&str>, strategy_id: Option<&str>, limit: i32,
     ) -> DataResult<Vec<SignalRecord>> {
+        const SIGNAL_COLUMNS: &str = "id,symbol,strategy_id,direction,entry_price,overall_confidence,entry_allowed,entry_direction,timeframe_details,status,closed_reason,evaluated_at,best_price,worst_price,eval_count,closed_at,close_price,actual_return_pct,created_at";
+
         let rows = match (symbol, strategy_id) {
             (Some(sym), Some(sid)) => sqlx::query(
                 SIGNAL_SELECT_QUERY
             ).bind(sym).bind(sid).bind(limit).fetch_all(&self.pool).await?,
             (Some(sym), None) => sqlx::query(
-                "SELECT ... FROM strategy_signals WHERE symbol=$1 ORDER BY created_at DESC LIMIT $2"
+                &format!("SELECT {} FROM strategy_signals WHERE symbol=$1 ORDER BY created_at DESC LIMIT $2", SIGNAL_COLUMNS)
             ).bind(sym).bind(limit).fetch_all(&self.pool).await?,
             _ => sqlx::query(
-                "SELECT ... FROM strategy_signals ORDER BY created_at DESC LIMIT $1"
+                &format!("SELECT {} FROM strategy_signals ORDER BY created_at DESC LIMIT $1", SIGNAL_COLUMNS)
             ).bind(limit).fetch_all(&self.pool).await?,
         };
         Ok(rows.iter().map(|r| parse_signal_row(r)).collect())

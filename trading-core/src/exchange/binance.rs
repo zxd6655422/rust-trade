@@ -33,6 +33,8 @@ pub struct BinanceExchange {
     ws_url: String,
     /// 只有合约的交易对列表
     futures_symbols: Vec<String>,
+    /// 共享的 HTTP 客户端（连接池复用）
+    http_client: reqwest::Client,
 }
 
 impl BinanceExchange {
@@ -41,6 +43,7 @@ impl BinanceExchange {
         Self {
             ws_url: BINANCE_WS_URL.to_string(),
             futures_symbols: Vec::new(),
+            http_client: reqwest::Client::new(),
         }
     }
 
@@ -49,6 +52,7 @@ impl BinanceExchange {
         Self {
             ws_url: BINANCE_WS_URL.to_string(),
             futures_symbols,
+            http_client: reqwest::Client::new(),
         }
     }
 
@@ -108,7 +112,7 @@ impl BinanceExchange {
     async fn do_fetch_klines(&self, url: &str, symbol: &str) -> Result<Vec<KlineData>, ExchangeError> {
         debug!("Fetching klines for {}: {}", symbol, url);
 
-        let client = reqwest::Client::new();
+        let client = self.http_client.clone();
         let response = client
             .get(url)
             .send()
@@ -425,13 +429,14 @@ impl Exchange for BinanceExchange {
                     result.insert(tf.to_string(), klines);
                 }
                 Err(e) => {
+                    // 单个 timeframe 失败不影响其他 timeframe
+                    // 调用方通过检查 HashMap 中是否存在对应 key 来判断是否成功
                     tracing::warn!(
-                        "[{}] Failed to fetch {} klines: {}",
+                        "[{}] Failed to fetch {} klines (will be missing from result): {}",
                         symbol,
                         tf,
                         e
                     );
-                    // Continue with other timeframes even if one fails
                 }
             }
         }
@@ -444,9 +449,13 @@ impl Exchange for BinanceExchange {
         symbol: &str,
     ) -> Result<FundingRateData, ExchangeError> {
         let base_url = self.rest_url(symbol);
+        // limit=1 获取最新一条资金费率
+        // 资金费率每8小时结算一次（00:00, 08:00, 16:00 UTC）
+        // 如果恰好在结算时间点调用，可能取到上一周期的数据
+        // 对于采集服务（每小时调用一次）来说，这不会造成问题
         let url = format!("{}/fapi/v1/fundingRate?symbol={}&limit=1", base_url, symbol);
 
-        let client = reqwest::Client::new();
+        let client = self.http_client.clone();
         let response = client.get(&url).send().await
             .map_err(|e| ExchangeError::NetworkError(format!("[{}] HTTP failed: {}", symbol, e)))?;
 
@@ -501,7 +510,7 @@ impl Exchange for BinanceExchange {
             url.push_str(&format!("&endTime={}", end.timestamp_millis()));
         }
 
-        let client = reqwest::Client::new();
+        let client = self.http_client.clone();
         let response = client.get(&url).send().await
             .map_err(|e| ExchangeError::NetworkError(format!("[{}] HTTP failed: {}", symbol, e)))?;
 
@@ -516,12 +525,23 @@ impl Exchange for BinanceExchange {
 
         let mut result = Vec::new();
         for item in &raw {
-            let funding_rate = item["fundingRate"].as_str()
-                .and_then(|s| s.parse::<Decimal>().ok())
-                .unwrap_or_default();
-            let funding_time_ms = item["fundingTime"].as_i64().unwrap_or(0);
-            let funding_time = DateTime::from_timestamp_millis(funding_time_ms)
-                .unwrap_or_default();
+            // 解析失败时跳过该条记录，不产生虚假数据
+            let Some(funding_rate_str) = item["fundingRate"].as_str() else {
+                warn!("[{}] Skipping funding rate record: missing fundingRate", symbol);
+                continue;
+            };
+            let Ok(funding_rate) = funding_rate_str.parse::<Decimal>() else {
+                warn!("[{}] Skipping funding rate record: invalid fundingRate: {}", symbol, funding_rate_str);
+                continue;
+            };
+            let Some(funding_time_ms) = item["fundingTime"].as_i64() else {
+                warn!("[{}] Skipping funding rate record: missing fundingTime", symbol);
+                continue;
+            };
+            let Some(funding_time) = DateTime::from_timestamp_millis(funding_time_ms) else {
+                warn!("[{}] Skipping funding rate record: invalid fundingTime: {}", symbol, funding_time_ms);
+                continue;
+            };
             let mark_price = item["markPrice"].as_str()
                 .and_then(|s| s.parse::<Decimal>().ok());
 
@@ -543,7 +563,7 @@ impl Exchange for BinanceExchange {
         let base_url = self.rest_url(symbol);
         let url = format!("{}/fapi/v1/openInterest?symbol={}", base_url, symbol);
 
-        let client = reqwest::Client::new();
+        let client = self.http_client.clone();
         let response = client.get(&url).send().await
             .map_err(|e| ExchangeError::NetworkError(format!("[{}] HTTP failed: {}", symbol, e)))?;
 
@@ -569,6 +589,8 @@ impl Exchange for BinanceExchange {
             symbol: symbol.to_string(),
             open_interest,
             open_value,
+            // Binance API 不返回 timestamp 字段，使用调用时间
+            // 如果 API 调用有延迟，记录的时间戳会略有偏差（通常 <1秒）
             timestamp: Utc::now(),
         })
     }
@@ -585,7 +607,7 @@ impl Exchange for BinanceExchange {
             base_url, symbol, period, limit
         );
 
-        let client = reqwest::Client::new();
+        let client = self.http_client.clone();
         let response = client.get(&url).send().await
             .map_err(|e| ExchangeError::NetworkError(format!("[{}] HTTP failed: {}", symbol, e)))?;
 
@@ -600,18 +622,40 @@ impl Exchange for BinanceExchange {
 
         let mut result = Vec::new();
         for item in &raw {
-            let long_ratio = item["longAccount"].as_str()
-                .and_then(|s| s.parse::<Decimal>().ok())
-                .unwrap_or_default();
-            let short_ratio = item["shortAccount"].as_str()
-                .and_then(|s| s.parse::<Decimal>().ok())
-                .unwrap_or_default();
-            let ratio = item["longShortRatio"].as_str()
-                .and_then(|s| s.parse::<Decimal>().ok())
-                .unwrap_or_default();
-            let timestamp_ms = item["timestamp"].as_i64().unwrap_or(0);
-            let timestamp = DateTime::from_timestamp_millis(timestamp_ms)
-                .unwrap_or_default();
+            // 解析失败时跳过该条记录，不产生虚假数据
+            let Some(long_ratio_str) = item["longAccount"].as_str() else {
+                warn!("[{}] Skipping long/short ratio record: missing longAccount", symbol);
+                continue;
+            };
+            let Some(short_ratio_str) = item["shortAccount"].as_str() else {
+                warn!("[{}] Skipping long/short ratio record: missing shortAccount", symbol);
+                continue;
+            };
+            let Some(ratio_str) = item["longShortRatio"].as_str() else {
+                warn!("[{}] Skipping long/short ratio record: missing longShortRatio", symbol);
+                continue;
+            };
+            let Some(timestamp_ms) = item["timestamp"].as_i64() else {
+                warn!("[{}] Skipping long/short ratio record: missing timestamp", symbol);
+                continue;
+            };
+
+            let Ok(long_ratio) = long_ratio_str.parse::<Decimal>() else {
+                warn!("[{}] Skipping: invalid longAccount: {}", symbol, long_ratio_str);
+                continue;
+            };
+            let Ok(short_ratio) = short_ratio_str.parse::<Decimal>() else {
+                warn!("[{}] Skipping: invalid shortAccount: {}", symbol, short_ratio_str);
+                continue;
+            };
+            let Ok(ratio) = ratio_str.parse::<Decimal>() else {
+                warn!("[{}] Skipping: invalid longShortRatio: {}", symbol, ratio_str);
+                continue;
+            };
+            let Some(timestamp) = DateTime::from_timestamp_millis(timestamp_ms) else {
+                warn!("[{}] Skipping: invalid timestamp: {}", symbol, timestamp_ms);
+                continue;
+            };
 
             result.push(LongShortRatioData {
                 symbol: symbol.to_string(),
@@ -633,7 +677,7 @@ impl Exchange for BinanceExchange {
         let base_url = self.rest_url(symbol);
         let url = format!("{}/fapi/v1/depth?symbol={}&limit={}", base_url, symbol, limit);
 
-        let client = reqwest::Client::new();
+        let client = self.http_client.clone();
         let response = client.get(&url).send().await
             .map_err(|e| ExchangeError::NetworkError(format!("[{}] HTTP failed: {}", symbol, e)))?;
 
@@ -677,7 +721,7 @@ impl Exchange for BinanceExchange {
         let base_url = self.rest_url(symbol);
         let url = format!("{}/fapi/v1/aggTrades?symbol={}&limit={}", base_url, symbol, limit);
 
-        let client = reqwest::Client::new();
+        let client = self.http_client.clone();
         let response = client.get(&url).send().await
             .map_err(|e| ExchangeError::NetworkError(format!("[{}] HTTP failed: {}", symbol, e)))?;
 

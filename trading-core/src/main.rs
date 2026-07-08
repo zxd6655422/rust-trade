@@ -196,7 +196,10 @@ async fn run_live_application_with_service(
 
     // Start signal forwarding task
     tokio::spawn(async move {
-        signal::ctrl_c().await.expect("Failed to listen for ctrl-c");
+        if let Err(e) = signal::ctrl_c().await {
+            error!("Failed to listen for ctrl-c: {}", e);
+            return;
+        }
         println!("\nReceived Ctrl+C signal, forwarding to service...");
         info!("Received Ctrl+C signal, forwarding to service");
         let _ = service_shutdown_tx.send(());
@@ -422,6 +425,7 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         Err(e) => {
                             error!("Invalid backfill_start_date '{}': {}", backfill_start, e);
+                            error!("⚠️ Backfill SKIPPED - historical data will not be loaded. Fix the date format in config and restart.");
                         }
                     }
                 }
@@ -438,33 +442,34 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
 
                     if !stored_tfs.is_empty() {
                         info!("🔄 Starting multi-timeframe backfill for timeframes: {:?}", stored_tfs);
-                        let multi_tf_config = service::backfill::BackfillConfig {
-                            symbols: symbols.clone(),
-                            start_date: match NaiveDate::parse_from_str(&backfill_start, "%Y-%m-%d") {
-                                Ok(d) => d.and_hms_opt(0,0,0).unwrap().and_utc(),
-                                Err(_) => Utc::now() - chrono::Duration::days(365),
-                            },
-                            timeframes: stored_tfs.clone(),
-                            incremental: true,
-                        };
 
-                        let multi_tf_backfill = service::backfill::BackfillService::new(
-                            exchange.clone(),
-                            repo.clone(),
-                            redis_url.clone(),
-                            symbols.clone(),
-                            multi_tf_config.start_date,
-                        );
-
-                        // 初始回填在后台运行，不阻塞 polling 启动
+                        // 所有变量在 spawn 外准备，spawn 内只做执行
                         let mt_symbols = symbols.clone();
                         let mt_exchange = exchange.clone();
                         let mt_repo = repo.clone();
                         let mt_redis_url = redis_url.clone();
-                        let mt_start = multi_tf_config.start_date;
+                        let mt_start = match NaiveDate::parse_from_str(&backfill_start, "%Y-%m-%d") {
+                            Ok(d) => d.and_hms_opt(0,0,0).unwrap().and_utc(),
+                            Err(_) => Utc::now() - chrono::Duration::days(365),
+                        };
                         let mt_tfs = stored_tfs.clone();
+
                         tokio::spawn(async move {
-                            multi_tf_backfill.run_multi_tf(&multi_tf_config).await;
+                            // 初始回填
+                            let initial_backfill = service::backfill::BackfillService::new(
+                                mt_exchange.clone(),
+                                mt_repo.clone(),
+                                mt_redis_url.clone(),
+                                mt_symbols.clone(),
+                                mt_start,
+                            );
+                            let initial_config = service::backfill::BackfillConfig {
+                                symbols: mt_symbols.clone(),
+                                start_date: mt_start,
+                                timeframes: mt_tfs.clone(),
+                                incremental: true,
+                            };
+                            initial_backfill.run_multi_tf(&initial_config).await;
 
                             // 定期增量更新
                             let mut interval = tokio::time::interval(
@@ -779,7 +784,10 @@ async fn run_collector_mode() -> Result<(), Box<dyn std::error::Error>> {
     // Setup signal forwarding
     let service_shutdown_tx = service.get_shutdown_tx();
     tokio::spawn(async move {
-        signal::ctrl_c().await.expect("Failed to listen for ctrl-c");
+        if let Err(e) = signal::ctrl_c().await {
+            error!("Failed to listen for ctrl-c: {}", e);
+            return;
+        }
         println!("\nReceived Ctrl+C signal, forwarding to collector...");
         info!("Received Ctrl+C signal, forwarding to collector");
         let _ = service_shutdown_tx.send(());
@@ -1267,7 +1275,10 @@ async fn run_live_application(settings: Settings) -> Result<(), Box<dyn std::err
     // Setup signal forwarding to service
     let service_shutdown_tx = service.get_shutdown_tx();
     tokio::spawn(async move {
-        signal::ctrl_c().await.expect("Failed to listen for ctrl-c");
+        if let Err(e) = signal::ctrl_c().await {
+            error!("Failed to listen for ctrl-c: {}", e);
+            return;
+        }
         println!("\nReceived Ctrl+C signal, forwarding to service...");
         info!("Received Ctrl+C signal, forwarding to service");
         let _ = service_shutdown_tx.send(());

@@ -46,8 +46,8 @@ const KLINE_3D_CACHE_SIZE: usize = 610;
 const KLINE_1W_CACHE_SIZE: usize = 500;
 
 /// Redis 缓存 TTL（秒）
-const KLINE_TTL_SHORT: usize = 3600;       // 1小时（1m）
-const KLINE_TTL_MEDIUM: usize = 86400;     // 1天（5m/15m/30m）
+const KLINE_TTL_SHORT: usize = 604800;     // 7天（1m，与缓存容量14天对齐，poll loop每30s刷新）
+const KLINE_TTL_MEDIUM: usize = 604800;    // 7天（5m/15m/30m）
 const KLINE_TTL_LONG: usize = 604800;      // 7天（小时级及以上）
 
 // =================================================================
@@ -72,6 +72,13 @@ pub struct KlineZsetMember {
 // =================================================================
 
 /// Convert Decimal to f64 (lossy but acceptable for caching)
+///
+/// 精度损失说明：
+/// - f64 有效精度约 15-17 位十进制数字
+/// - Decimal 可以存储更高精度（如价格 "12345.67890123"）
+/// - 转换后可能丢失末尾精度（如变成 12345.678901230001）
+/// - 对于缓存用途（非交易决策）可接受
+/// - 策略引擎如需精确计算，应从 PostgreSQL 读取 Decimal 数据
 fn decimal_to_f64(d: Decimal) -> f64 {
     d.to_string().parse::<f64>().unwrap_or(0.0)
 }
@@ -163,20 +170,22 @@ pub async fn write_kline_zset(
     }
     pipe.query_async::<_, ()>(conn).await?;
 
-    // 裁剪到指定大小（保留 score 最大的）
+    // 获取当前总数
     let total: usize = redis::cmd("ZCARD").arg(&key).query_async(conn).await?;
+
+    // 裁剪 + 设置 TTL 合并到一个 pipeline
     if total > cache_size {
         let remove_count = total - cache_size;
-        redis::cmd("ZREMRANGEBYRANK")
+        let mut trim_pipe = redis::pipe();
+        trim_pipe.cmd("ZREMRANGEBYRANK")
             .arg(&key)
             .arg(0)
-            .arg((remove_count - 1) as isize)
-            .query_async::<_, ()>(conn)
-            .await?;
+            .arg((remove_count - 1) as isize);
+        trim_pipe.cmd("EXPIRE").arg(&key).arg(ttl);
+        trim_pipe.query_async::<_, ()>(conn).await?;
+    } else {
+        redis::cmd("EXPIRE").arg(&key).arg(ttl).query_async::<_, ()>(conn).await?;
     }
-
-    // 设置 TTL
-    redis::cmd("EXPIRE").arg(&key).arg(ttl).query_async::<_, ()>(conn).await?;
 
     Ok(())
 }
