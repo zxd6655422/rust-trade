@@ -176,6 +176,7 @@ impl AccountSync {
         for pos in &positions {
             self.repo.insert_position_snapshot(
                 &pos.exchange,
+                market_type,
                 &pos.symbol,
                 &pos.raw_symbol,
                 pos.position_side.as_str(),
@@ -189,6 +190,8 @@ impl AccountSync {
                 pos.maint_margin,
                 pos.liquidation_price,
                 pos.notional,
+                pos.break_even_price,
+                pos.isolated_wallet,
                 Some(pos.pnl_ratio()),
                 pos.raw_data.clone(),
             ).await?;

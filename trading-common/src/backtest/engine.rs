@@ -79,24 +79,42 @@ impl BacktestEngine {
 
             // Execute trades
             match signal {
-                crate::backtest::strategy::Signal::Buy { symbol, quantity } => {
+                crate::backtest::strategy::Signal::Buy {
+                    symbol,
+                    quantity,
+                    entry_price,
+                } => {
+                    let price = if entry_price > rust_decimal::Decimal::ZERO {
+                        entry_price
+                    } else {
+                        tick.price
+                    };
                     if let Err(e) = self
                         .portfolio
-                        .execute_buy(symbol.clone(), quantity, tick.price)
+                        .execute_buy(symbol.clone(), quantity, price)
                     {
                         println!("Buy failed {}: {}", symbol, e);
                     } else {
-                        println!("BUY {} {} @ ${}", symbol, quantity, tick.price);
+                        println!("BUY {} {} @ ${}", symbol, quantity, price);
                     }
                 }
-                crate::backtest::strategy::Signal::Sell { symbol, quantity } => {
+                crate::backtest::strategy::Signal::Sell {
+                    symbol,
+                    quantity,
+                    entry_price,
+                } => {
+                    let price = if entry_price > rust_decimal::Decimal::ZERO {
+                        entry_price
+                    } else {
+                        tick.price
+                    };
                     if let Err(e) =
                         self.portfolio
-                            .execute_sell(symbol.clone(), quantity, tick.price)
+                            .execute_sell(symbol.clone(), quantity, price)
                     {
                         println!("Sell failed {}: {}", symbol, e);
                     } else {
-                        println!("SELL {} {} @ ${}", symbol, quantity, tick.price);
+                        println!("SELL {} {} @ ${}", symbol, quantity, price);
                     }
                 }
                 crate::backtest::strategy::Signal::Hold => {}
@@ -219,24 +237,42 @@ impl BacktestEngine {
 
             // Execute trades using close price
             match signal {
-                crate::backtest::strategy::Signal::Buy { symbol, quantity } => {
+                crate::backtest::strategy::Signal::Buy {
+                    symbol,
+                    quantity,
+                    entry_price,
+                } => {
+                    let price = if entry_price > rust_decimal::Decimal::ZERO {
+                        entry_price
+                    } else {
+                        ohlc.close
+                    };
                     if let Err(e) = self
                         .portfolio
-                        .execute_buy(symbol.clone(), quantity, ohlc.close)
+                        .execute_buy(symbol.clone(), quantity, price)
                     {
                         println!("Buy failed {}: {}", symbol, e);
                     } else {
-                        println!("BUY {} {} @ ${}", symbol, quantity, ohlc.close);
+                        println!("BUY {} {} @ ${}", symbol, quantity, price);
                     }
                 }
-                crate::backtest::strategy::Signal::Sell { symbol, quantity } => {
+                crate::backtest::strategy::Signal::Sell {
+                    symbol,
+                    quantity,
+                    entry_price,
+                } => {
+                    let price = if entry_price > rust_decimal::Decimal::ZERO {
+                        entry_price
+                    } else {
+                        ohlc.close
+                    };
                     if let Err(e) =
                         self.portfolio
-                            .execute_sell(symbol.clone(), quantity, ohlc.close)
+                            .execute_sell(symbol.clone(), quantity, price)
                     {
                         println!("Sell failed {}: {}", symbol, e);
                     } else {
-                        println!("SELL {} {} @ ${}", symbol, quantity, ohlc.close);
+                        println!("SELL {} {} @ ${}", symbol, quantity, price);
                     }
                 }
                 crate::backtest::strategy::Signal::Hold => {}

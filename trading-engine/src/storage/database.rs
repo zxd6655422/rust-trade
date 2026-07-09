@@ -75,6 +75,7 @@ impl Database {
             CREATE TABLE IF NOT EXISTS trading_positions (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 exchange VARCHAR(20) NOT NULL,
+                market_type VARCHAR(20) NOT NULL DEFAULT 'futures',
                 symbol VARCHAR(20) NOT NULL,
                 side VARCHAR(10) NOT NULL,
                 quantity DECIMAL(20,8) NOT NULL,
@@ -84,9 +85,14 @@ impl Database {
                 take_profit_price DECIMAL(20,8),
                 leverage INTEGER DEFAULT 1,
                 margin DECIMAL(20,8) DEFAULT 0,
+                mark_price DECIMAL(20,8),
+                liquidation_price DECIMAL(20,8),
+                break_even_price DECIMAL(20,8),
+                notional DECIMAL(20,8) DEFAULT 0,
+                margin_type VARCHAR(10) DEFAULT 'cross',
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                UNIQUE(exchange, symbol)
+                UNIQUE(exchange, market_type, symbol)
             )
             "#,
         )

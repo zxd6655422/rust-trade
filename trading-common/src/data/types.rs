@@ -476,3 +476,519 @@ impl OHLCData {
         ))
     }
 }
+
+// =================================================================
+// Unified Order/Trading Types
+// =================================================================
+
+/// Order side (buy/sell)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum OrderSide {
+    Buy,
+    Sell,
+}
+
+impl OrderSide {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            OrderSide::Buy => "BUY",
+            OrderSide::Sell => "SELL",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_uppercase().as_str() {
+            "BUY" => Some(OrderSide::Buy),
+            "SELL" => Some(OrderSide::Sell),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for OrderSide {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+/// Order type
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum OrderType {
+    Market,
+    Limit,
+    StopLoss,
+    StopLossLimit,
+    TakeProfit,
+    TakeProfitLimit,
+    LimitMaker,
+}
+
+impl OrderType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            OrderType::Market => "MARKET",
+            OrderType::Limit => "LIMIT",
+            OrderType::StopLoss => "STOP_LOSS",
+            OrderType::StopLossLimit => "STOP_LOSS_LIMIT",
+            OrderType::TakeProfit => "TAKE_PROFIT",
+            OrderType::TakeProfitLimit => "TAKE_PROFIT_LIMIT",
+            OrderType::LimitMaker => "LIMIT_MAKER",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_uppercase().as_str() {
+            "MARKET" => Some(OrderType::Market),
+            "LIMIT" => Some(OrderType::Limit),
+            "STOP_LOSS" => Some(OrderType::StopLoss),
+            "STOP_LOSS_LIMIT" => Some(OrderType::StopLossLimit),
+            "TAKE_PROFIT" => Some(OrderType::TakeProfit),
+            "TAKE_PROFIT_LIMIT" => Some(OrderType::TakeProfitLimit),
+            "LIMIT_MAKER" => Some(OrderType::LimitMaker),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for OrderType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+/// Order status
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum OrderStatus {
+    New,
+    PartiallyFilled,
+    Filled,
+    Canceled,
+    PendingCancel,
+    Rejected,
+    Expired,
+}
+
+impl OrderStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            OrderStatus::New => "NEW",
+            OrderStatus::PartiallyFilled => "PARTIALLY_FILLED",
+            OrderStatus::Filled => "FILLED",
+            OrderStatus::Canceled => "CANCELED",
+            OrderStatus::PendingCancel => "PENDING_CANCEL",
+            OrderStatus::Rejected => "REJECTED",
+            OrderStatus::Expired => "EXPIRED",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_uppercase().as_str() {
+            "NEW" => Some(OrderStatus::New),
+            "PARTIALLY_FILLED" => Some(OrderStatus::PartiallyFilled),
+            "FILLED" => Some(OrderStatus::Filled),
+            "CANCELED" => Some(OrderStatus::Canceled),
+            "PENDING_CANCEL" => Some(OrderStatus::PendingCancel),
+            "REJECTED" => Some(OrderStatus::Rejected),
+            "EXPIRED" => Some(OrderStatus::Expired),
+            _ => None,
+        }
+    }
+
+    /// Whether the order is in a terminal state
+    pub fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            OrderStatus::Filled | OrderStatus::Canceled | OrderStatus::Rejected | OrderStatus::Expired
+        )
+    }
+
+    /// Whether the order is active (can still be filled)
+    pub fn is_active(&self) -> bool {
+        matches!(self, OrderStatus::New | OrderStatus::PartiallyFilled)
+    }
+}
+
+impl std::fmt::Display for OrderStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+/// Time in force policy
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum TimeInForce {
+    /// Good Till Cancel
+    Gtc,
+    /// Immediate or Cancel
+    Ioc,
+    /// Fill or Kill
+    Fok,
+}
+
+impl TimeInForce {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TimeInForce::Gtc => "GTC",
+            TimeInForce::Ioc => "IOC",
+            TimeInForce::Fok => "FOK",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_uppercase().as_str() {
+            "GTC" => Some(TimeInForce::Gtc),
+            "IOC" => Some(TimeInForce::Ioc),
+            "FOK" => Some(TimeInForce::Fok),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for TimeInForce {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+/// Signal type for strategy decisions
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SignalType {
+    Buy,
+    Sell,
+    Hold,
+}
+
+impl SignalType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SignalType::Buy => "BUY",
+            SignalType::Sell => "SELL",
+            SignalType::Hold => "HOLD",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_uppercase().as_str() {
+            "BUY" => Some(SignalType::Buy),
+            "SELL" => Some(SignalType::Sell),
+            "HOLD" => Some(SignalType::Hold),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for SignalType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+// =================================================================
+// Order Data Structures
+// =================================================================
+
+/// Order request for placing orders
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrderRequest {
+    pub symbol: String,
+    pub side: OrderSide,
+    pub order_type: OrderType,
+    pub quantity: Decimal,
+    pub price: Option<Decimal>,
+    pub stop_price: Option<Decimal>,
+    pub time_in_force: Option<TimeInForce>,
+    pub client_order_id: Option<String>,
+}
+
+/// Order result after placing
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrderResult {
+    pub order_id: String,
+    pub client_order_id: Option<String>,
+    pub symbol: String,
+    pub side: OrderSide,
+    pub order_type: OrderType,
+    pub status: OrderStatus,
+    pub quantity: Decimal,
+    pub filled_quantity: Decimal,
+    pub price: Option<Decimal>,
+    pub avg_price: Option<Decimal>,
+    pub commission: Option<Decimal>,
+    pub commission_asset: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Order information (query result)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrderInfo {
+    pub order_id: String,
+    pub client_order_id: Option<String>,
+    pub symbol: String,
+    pub side: OrderSide,
+    pub order_type: OrderType,
+    pub status: OrderStatus,
+    pub quantity: Decimal,
+    pub filled_quantity: Decimal,
+    pub remaining_quantity: Decimal,
+    pub price: Option<Decimal>,
+    pub stop_price: Option<Decimal>,
+    pub time_in_force: TimeInForce,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Order update from WebSocket
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrderUpdate {
+    pub order_id: String,
+    pub client_order_id: Option<String>,
+    pub symbol: String,
+    pub side: OrderSide,
+    pub order_type: OrderType,
+    pub status: OrderStatus,
+    pub quantity: Decimal,
+    pub filled_quantity: Decimal,
+    pub price: Option<Decimal>,
+    pub avg_price: Option<Decimal>,
+    pub commission: Option<Decimal>,
+    pub commission_asset: Option<String>,
+    pub timestamp: DateTime<Utc>,
+}
+
+// =================================================================
+// Account & Position Types
+// =================================================================
+
+/// Asset balance
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Balance {
+    pub asset: String,
+    pub free: Decimal,
+    pub locked: Decimal,
+}
+
+/// Account information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountInfo {
+    pub balances: Vec<Balance>,
+    pub total_equity: Decimal,
+    pub available_balance: Decimal,
+    pub unrealized_pnl: Decimal,
+    pub margin_used: Decimal,
+    pub margin_ratio: Option<Decimal>,
+}
+
+/// Position side
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum PositionSide {
+    Long,
+    Short,
+    None,
+}
+
+impl PositionSide {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            PositionSide::Long => "LONG",
+            PositionSide::Short => "SHORT",
+            PositionSide::None => "NONE",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_uppercase().as_str() {
+            "LONG" => Some(PositionSide::Long),
+            "SHORT" => Some(PositionSide::Short),
+            "NONE" => Some(PositionSide::None),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for PositionSide {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+/// Margin type
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum MarginType {
+    Isolated,
+    Crossed,
+}
+
+impl MarginType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            MarginType::Isolated => "ISOLATED",
+            MarginType::Crossed => "CROSSED",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_uppercase().as_str() {
+            "ISOLATED" => Some(MarginType::Isolated),
+            "CROSSED" => Some(MarginType::Crossed),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for MarginType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+/// Position mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum PositionMode {
+    /// One-way position mode
+    OneWay,
+    /// Hedge position mode (dual side)
+    Hedge,
+}
+
+// =================================================================
+// Market Data Types
+// =================================================================
+
+/// Ticker (24h price summary)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Ticker {
+    pub symbol: String,
+    pub last_price: Decimal,
+    pub bid_price: Decimal,
+    pub ask_price: Decimal,
+    pub high_price: Decimal,
+    pub low_price: Decimal,
+    pub volume: Decimal,
+    pub quote_volume: Decimal,
+    pub price_change: Decimal,
+    pub price_change_percent: Decimal,
+    pub timestamp: DateTime<Utc>,
+}
+
+/// Order book entry
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrderBookEntry {
+    pub price: Decimal,
+    pub quantity: Decimal,
+}
+
+/// Order book snapshot
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrderBook {
+    pub symbol: String,
+    pub bids: Vec<OrderBookEntry>,
+    pub asks: Vec<OrderBookEntry>,
+    pub last_update_id: u64,
+}
+
+/// Funding rate information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FundingRate {
+    pub symbol: String,
+    pub funding_rate: Decimal,
+    pub funding_time: DateTime<Utc>,
+    pub next_funding_time: Option<DateTime<Utc>>,
+}
+
+/// Mark price information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarkPrice {
+    pub symbol: String,
+    pub mark_price: Decimal,
+    pub index_price: Decimal,
+    pub estimated_settle_price: Option<Decimal>,
+    pub last_funding_rate: Decimal,
+    pub next_funding_time: DateTime<Utc>,
+    pub interest_rate: Decimal,
+    pub time: DateTime<Utc>,
+}
+
+/// Kline (candlestick) data
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Kline {
+    pub open_time: DateTime<Utc>,
+    pub open: Decimal,
+    pub high: Decimal,
+    pub low: Decimal,
+    pub close: Decimal,
+    pub volume: Decimal,
+    pub close_time: DateTime<Utc>,
+    pub quote_volume: Decimal,
+    pub trades_count: u64,
+}
+
+/// Public trade information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublicTrade {
+    pub id: String,
+    pub symbol: String,
+    pub price: Decimal,
+    pub quantity: Decimal,
+    pub timestamp: DateTime<Utc>,
+    pub is_buyer_maker: bool,
+}
+
+/// Trade information (account trade)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TradeInfo {
+    pub id: String,
+    pub symbol: String,
+    pub price: Decimal,
+    pub quantity: Decimal,
+    pub quote_quantity: Decimal,
+    pub commission: Decimal,
+    pub commission_asset: String,
+    pub time: DateTime<Utc>,
+    pub is_buyer: bool,
+    pub is_maker: bool,
+    pub realized_pnl: Decimal,
+}
+
+/// Position information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PositionInfo {
+    pub symbol: String,
+    pub side: PositionSide,
+    pub quantity: Decimal,
+    pub avg_entry_price: Decimal,
+    pub mark_price: Option<Decimal>,
+    pub unrealized_pnl: Decimal,
+    pub leverage: u32,
+    pub margin: Decimal,
+    pub liquidation_price: Option<Decimal>,
+}
+
+/// Exchange server time
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExchangeTime {
+    pub server_time: DateTime<Utc>,
+    pub local_time: DateTime<Utc>,
+    pub offset_ms: i64,
+}
+
+/// Futures account information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FuturesAccountInfo {
+    pub account_info: AccountInfo,
+    pub can_trade: bool,
+    pub can_withdraw: bool,
+    pub fee_tier: u32,
+    pub max_withdraw_amount: Decimal,
+    pub total_initial_margin: Decimal,
+    pub total_maint_margin: Decimal,
+    pub total_wallet_balance: Decimal,
+    pub total_unrealized_pnl: Decimal,
+    pub total_margin_balance: Decimal,
+}

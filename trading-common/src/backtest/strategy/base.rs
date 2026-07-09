@@ -4,8 +4,16 @@ use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub enum Signal {
-    Buy { symbol: String, quantity: Decimal },
-    Sell { symbol: String, quantity: Decimal },
+    Buy {
+        symbol: String,
+        quantity: Decimal,
+        entry_price: Decimal,
+    },
+    Sell {
+        symbol: String,
+        quantity: Decimal,
+        entry_price: Decimal,
+    },
     Hold,
 }
 

@@ -364,6 +364,8 @@ impl OkxAccountProvider {
                     maint_margin: mm,
                     liquidation_price: if liq_price > Decimal::ZERO { Some(liq_price) } else { None },
                     notional,
+                    break_even_price: None,
+                    isolated_wallet: None,
                     raw_data: None,
                 }
             })

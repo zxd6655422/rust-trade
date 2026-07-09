@@ -8,3 +8,4 @@ pub mod event;
 pub mod paper;
 pub mod pricing;
 pub mod simulation;
+pub mod strategy;

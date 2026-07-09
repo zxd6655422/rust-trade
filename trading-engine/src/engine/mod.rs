@@ -3,3 +3,4 @@
 
 pub mod trading_loop;
 pub mod multi_exchange;
+pub mod signal_poller;

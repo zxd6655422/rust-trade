@@ -14,6 +14,7 @@ mod storage;
 mod utils;
 
 use config::Settings;
+use engine::signal_poller::{SignalPoller, SignalPollerConfig};
 use engine::trading_loop::TradingLoop;
 use exchange::ExchangeFactory;
 use order::OrderManager;
@@ -161,6 +162,20 @@ async fn run_live_mode(_args: &[String]) -> Result<(), Box<dyn std::error::Error
         portfolio_manager.clone(),
     ));
     info!("✅ Portfolio manager and reconciler created");
+
+    // 创建信号轮询器
+    let signal_poller = Arc::new(SignalPoller::new(
+        pool.clone(),
+        order_manager.clone(),
+        SignalPollerConfig::default(),
+    ));
+
+    // 启动信号轮询器（后台任务）
+    let poller = signal_poller.clone();
+    tokio::spawn(async move {
+        poller.start().await;
+    });
+    info!("✅ Signal poller started");
 
     // 创建交易循环
     let trading_loop = TradingLoop::new(

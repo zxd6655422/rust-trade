@@ -61,6 +61,7 @@ CREATE INDEX IF NOT EXISTS idx_asset_balance_exchange_time
 CREATE TABLE IF NOT EXISTS position_snapshot (
     id BIGSERIAL PRIMARY KEY,
     exchange VARCHAR(20) NOT NULL,
+    market_type VARCHAR(20) NOT NULL DEFAULT 'futures',  -- 'futures' / 'swap' / 'spot'
     symbol VARCHAR(30) NOT NULL,            -- 统一格式: 'BTCUSDT'
     raw_symbol VARCHAR(50) NOT NULL,        -- 原始格式: 'BTCUSDT' / 'BTC-USDT-SWAP'
     snapshot_at TIMESTAMPTZ NOT NULL,
@@ -81,6 +82,10 @@ CREATE TABLE IF NOT EXISTS position_snapshot (
     -- ============ 风控相关 ============
     liquidation_price DECIMAL(20,8),        -- 强平价格
     notional DECIMAL(20,8) NOT NULL DEFAULT 0,  -- 名义价值
+
+    -- ============ 盈亏平衡 ============
+    break_even_price DECIMAL(20,8),         -- 盈亏平衡价
+    isolated_wallet DECIMAL(20,8),          -- 逐仓钱包余额
 
     -- ============ 盈亏计算 ============
     pnl_ratio DECIMAL(10,8),                -- 盈亏比例 = unrealized_pnl / (entry_price * position_amt)

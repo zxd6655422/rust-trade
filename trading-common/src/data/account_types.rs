@@ -234,6 +234,12 @@ pub struct PositionInfo {
     /// 名义价值
     pub notional: Decimal,
 
+    // ============ 盈亏平衡 ============
+    /// 盈亏平衡价 (Binance: breakEvenPrice)
+    pub break_even_price: Option<Decimal>,
+    /// 逐仓钱包余额 (Binance: isolatedWallet)
+    pub isolated_wallet: Option<Decimal>,
+
     // ============ 原始数据 ============
     pub raw_data: Option<serde_json::Value>,
 }

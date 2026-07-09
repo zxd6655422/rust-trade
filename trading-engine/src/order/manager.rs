@@ -12,12 +12,25 @@ use crate::exchange::types::*;
 use crate::risk::{RiskDecision, RiskEngine, StopLossConfig, StopLossManager, StopAction};
 use trading_common::backtest::strategy::Signal;
 
+/// 将数量截断到 step_size 精度
+fn round_to_step_size(quantity: Decimal, step_size: Decimal) -> Decimal {
+    if step_size <= Decimal::ZERO {
+        return quantity;
+    }
+    let remainder = quantity % step_size;
+    quantity - remainder
+}
+
 /// 订单管理器
 pub struct OrderManager {
     exchange: Arc<dyn Exchange>,
     risk_engine: Arc<RiskEngine>,
     stop_loss_manager: Arc<StopLossManager>,
     active_orders: Arc<Mutex<HashMap<String, OrderInfo>>>,
+    /// 默认杠杆倍数
+    leverage: u32,
+    /// 默认保证金模式
+    margin_type: MarginType,
 }
 
 impl OrderManager {
@@ -32,7 +45,19 @@ impl OrderManager {
             risk_engine,
             stop_loss_manager: Arc::new(StopLossManager::new(stop_loss_config)),
             active_orders: Arc::new(Mutex::new(HashMap::new())),
+            leverage: 10,  // 默认 10x 杠杆
+            margin_type: MarginType::Isolated,  // 默认逐仓
         }
+    }
+
+    /// 设置杠杆倍数
+    pub fn set_leverage(&mut self, leverage: u32) {
+        self.leverage = leverage;
+    }
+
+    /// 设置保证金模式
+    pub fn set_margin_type(&mut self, margin_type: MarginType) {
+        self.margin_type = margin_type;
     }
 
     /// 获取止损止盈管理器
@@ -50,9 +75,46 @@ impl OrderManager {
             .map_err(|e| OrderError::ExchangeError(e.to_string()))?;
 
         // 2. 构建订单请求
-        let order_request = self.build_order_request(&signal, &account)?;
+        let mut order_request = self.build_order_request(&signal, &account)?;
 
-        // 3. 风控检查
+        // 2.5 数量精度校验
+        match self.exchange.get_symbol_precision(&order_request.symbol).await {
+            Ok(precision) => {
+                let original_qty = order_request.quantity;
+                order_request.quantity = round_to_step_size(order_request.quantity, precision.step_size);
+                if order_request.quantity != original_qty {
+                    info!(
+                        "Quantity rounded for {}: {} -> {} (step_size={})",
+                        order_request.symbol, original_qty, order_request.quantity, precision.step_size
+                    );
+                }
+                // 检查最小数量
+                if order_request.quantity < precision.min_quantity {
+                    return Err(OrderError::InsufficientBalance(format!(
+                        "Order quantity {} below minimum {} for {}",
+                        order_request.quantity, precision.min_quantity, order_request.symbol
+                    )));
+                }
+            }
+            Err(e) => {
+                warn!("Failed to get symbol precision for {}: {}", order_request.symbol, e);
+                // 继续执行，不阻断
+            }
+        }
+
+        // 3. 设置杠杆和保证金模式（仅合约）
+        if self.leverage > 0 {
+            if let Err(e) = self.exchange.set_leverage(&order_request.symbol, self.leverage).await {
+                warn!("Failed to set leverage for {}: {}", order_request.symbol, e);
+                // 不阻断交易，使用当前杠杆设置
+            }
+        }
+        if let Err(e) = self.exchange.set_margin_type(&order_request.symbol, self.margin_type.clone()).await {
+            warn!("Failed to set margin type for {}: {}", order_request.symbol, e);
+            // 不阻断交易，使用当前保证金模式
+        }
+
+        // 4. 风控检查
         match self
             .risk_engine
             .check_order(&order_request, &account)
@@ -74,14 +136,13 @@ impl OrderManager {
                     "Risk engine modified order quantity: {} -> {}",
                     order_request.quantity, quantity
                 );
-                // 创建修改后的订单
                 let mut modified_request = order_request.clone();
                 modified_request.quantity = quantity;
                 return self.place_and_track_order(modified_request).await;
             }
         }
 
-        // 4. 下单
+        // 5. 下单
         self.place_and_track_order(order_request).await
     }
 
@@ -217,15 +278,29 @@ impl OrderManager {
 
     /// 取消所有订单
     pub async fn cancel_all_orders(&self) -> Result<(), OrderError> {
-        self.exchange
-            .cancel_all_orders(None)
-            .await
-            .map_err(|e| OrderError::ExchangeError(e.to_string()))?;
+        // 获取所有活动订单的 symbol，逐个取消
+        let symbols: Vec<String> = {
+            let active_orders = self.active_orders.lock().await;
+            active_orders.values().map(|o| o.symbol.clone()).collect()
+        };
 
+        // 去重后逐个取消
+        let mut cancelled_symbols = std::collections::HashSet::new();
+        for symbol in &symbols {
+            if cancelled_symbols.contains(symbol) {
+                continue;
+            }
+            cancelled_symbols.insert(symbol.clone());
+            if let Err(e) = self.exchange.cancel_all_orders(Some(symbol)).await {
+                warn!("Failed to cancel orders for {}: {}", symbol, e);
+            }
+        }
+
+        // 清空本地活动订单记录
         let mut active_orders = self.active_orders.lock().await;
         active_orders.clear();
 
-        info!("All orders cancelled");
+        info!("All orders cancelled ({} symbols)", cancelled_symbols.len());
         Ok(())
     }
 
@@ -254,6 +329,7 @@ impl OrderManager {
             Signal::Buy {
                 symbol,
                 quantity,
+                entry_price,
             } => {
                 // 检查余额是否充足
                 let usdt_balance = account
@@ -263,9 +339,8 @@ impl OrderManager {
                     .map(|b| b.free)
                     .unwrap_or(Decimal::ZERO);
 
-                // 估算订单价值 (需要当前价格)
-                // 这里简化处理，使用配置的最大订单大小
-                let estimated_value = quantity * rust_decimal::Decimal::from(50000); // 假设 BTC 价格
+                // 使用信号携带的价格估算订单价值
+                let estimated_value = quantity * entry_price;
                 if estimated_value > usdt_balance {
                     return Err(OrderError::InsufficientBalance(format!(
                         "Required: {} USDT, Available: {} USDT",
@@ -278,7 +353,7 @@ impl OrderManager {
                     side: OrderSide::Buy,
                     order_type: OrderType::Market,
                     quantity: *quantity,
-                    price: None,
+                    price: Some(*entry_price),
                     stop_price: None,
                     time_in_force: Some(TimeInForce::Ioc),
                     client_order_id: None,
@@ -287,9 +362,19 @@ impl OrderManager {
             Signal::Sell {
                 symbol,
                 quantity,
+                entry_price,
             } => {
                 // 检查持仓是否充足
-                let base_asset = symbol.replace("USDT", "").replace("BUSD", "");
+                // 从 symbol 中提取 base_asset（如 BTCUSDT -> BTC）
+                let base_asset = if symbol.ends_with("USDT") {
+                    symbol.strip_suffix("USDT").unwrap_or(symbol)
+                } else if symbol.ends_with("BUSD") {
+                    symbol.strip_suffix("BUSD").unwrap_or(symbol)
+                } else if symbol.ends_with("USDC") {
+                    symbol.strip_suffix("USDC").unwrap_or(symbol)
+                } else {
+                    symbol
+                };
                 let balance = account
                     .balances
                     .iter()
@@ -309,7 +394,7 @@ impl OrderManager {
                     side: OrderSide::Sell,
                     order_type: OrderType::Market,
                     quantity: *quantity,
-                    price: None,
+                    price: Some(*entry_price),
                     stop_price: None,
                     time_in_force: Some(TimeInForce::Ioc),
                     client_order_id: None,
@@ -405,6 +490,7 @@ mod tests {
         let signal = Signal::Buy {
             symbol: "BTCUSDT".to_string(),
             quantity: Decimal::from_str("0.1").unwrap(),
+            entry_price: Decimal::from(50000),
         };
 
         let result = manager.execute_signal(signal).await;
@@ -431,6 +517,7 @@ mod tests {
         let sell_signal = Signal::Sell {
             symbol: "BTCUSDT".to_string(),
             quantity: Decimal::from_str("0.02").unwrap(),
+            entry_price: Decimal::from(50000),
         };
         let result = manager.execute_signal(sell_signal).await;
         assert!(result.is_ok(), "Sell signal failed: {:?}", result.err());
@@ -455,6 +542,7 @@ mod tests {
         let signal = Signal::Buy {
             symbol: "BTCUSDT".to_string(),
             quantity: Decimal::from_str("0.1").unwrap(),
+            entry_price: Decimal::from(50000),
         };
         let result = manager.execute_signal(signal).await.unwrap();
 
@@ -492,6 +580,7 @@ mod tests {
         let signal = Signal::Buy {
             symbol: "BTCUSDT".to_string(),
             quantity: Decimal::from_str("0.1").unwrap(),
+            entry_price: Decimal::from(50000),
         };
         let result = manager.execute_signal(signal).await.unwrap();
 
@@ -557,6 +646,7 @@ mod tests {
         let signal = Signal::Buy {
             symbol: "BTCUSDT".to_string(),
             quantity: Decimal::from(1), // 价值 50000，超过余额 100
+            entry_price: Decimal::from(50000),
         };
         let result = manager.execute_signal(signal).await;
         assert!(result.is_err());

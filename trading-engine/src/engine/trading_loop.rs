@@ -79,6 +79,17 @@ impl TradingLoop {
         info!("Data source: {}", self.data_source);
         info!("Poll interval: {}ms", self.poll_interval_ms);
 
+        // 同步初始账户余额到风控引擎
+        match self.exchange.get_account().await {
+            Ok(account) => {
+                self.risk_engine.sync_account_balance(&account).await;
+                info!("Initial account balance synced: equity={}", account.total_equity);
+            }
+            Err(e) => {
+                warn!("Failed to sync initial account balance: {}", e);
+            }
+        }
+
         // 创建 tick 数据通道
         let (tick_tx, mut tick_rx) = mpsc::channel::<TickData>(1000);
 
@@ -396,10 +407,14 @@ impl TradingLoop {
 
         // 6. 根据信号执行交易
         match &signal {
-            Signal::Buy { symbol, quantity } => {
+            Signal::Buy {
+                symbol,
+                quantity,
+                entry_price,
+            } => {
                 info!(
                     "BUY signal: {} {} @ {}",
-                    symbol, quantity, tick.price
+                    symbol, quantity, entry_price
                 );
                 match self.order_manager.execute_signal(signal).await {
                     Ok(result) => {
@@ -410,10 +425,14 @@ impl TradingLoop {
                     }
                 }
             }
-            Signal::Sell { symbol, quantity } => {
+            Signal::Sell {
+                symbol,
+                quantity,
+                entry_price,
+            } => {
                 info!(
                     "SELL signal: {} {} @ {}",
-                    symbol, quantity, tick.price
+                    symbol, quantity, entry_price
                 );
                 match self.order_manager.execute_signal(signal).await {
                     Ok(result) => {

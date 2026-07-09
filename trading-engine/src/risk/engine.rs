@@ -45,6 +45,8 @@ impl RiskDecision {
 /// 风控状态
 #[derive(Debug, Clone)]
 pub struct RiskState {
+    /// 初始资金（从交易所账户获取）
+    pub initial_capital: Decimal,
     /// 日盈亏
     pub daily_pnl: Decimal,
     /// 峰值权益
@@ -83,6 +85,7 @@ impl RiskEngine {
     /// 创建新的风控引擎
     pub fn new(config: RiskConfig) -> Self {
         let initial_state = RiskState {
+            initial_capital: Decimal::ZERO,
             daily_pnl: Decimal::ZERO,
             peak_equity: Decimal::ZERO,
             current_equity: Decimal::ZERO,
@@ -96,6 +99,28 @@ impl RiskEngine {
         Self {
             config,
             state: Arc::new(Mutex::new(initial_state)),
+        }
+    }
+
+    /// 设置初始资金（从交易所账户获取）
+    pub async fn set_initial_capital(&self, capital: Decimal) {
+        let mut state = self.state.lock().await;
+        state.initial_capital = capital;
+        state.current_equity = capital + state.daily_pnl;
+        if state.peak_equity < state.current_equity {
+            state.peak_equity = state.current_equity;
+        }
+        info!("Risk engine initial capital set to: {}", capital);
+    }
+
+    /// 同步账户余额到风控状态
+    pub async fn sync_account_balance(&self, account: &AccountInfo) {
+        let mut state = self.state.lock().await;
+        state.initial_capital = account.total_equity;
+        let total_unrealized: Decimal = state.positions.values().map(|p| p.unrealized_pnl).sum();
+        state.current_equity = account.total_equity + state.daily_pnl + total_unrealized;
+        if state.peak_equity < state.current_equity {
+            state.peak_equity = state.current_equity;
         }
     }
 
@@ -208,13 +233,13 @@ impl RiskEngine {
                 (tick.price - position.avg_entry_price) * position.quantity;
         }
 
-        // 更新当前权益
+        // 更新当前权益 = 初始资金 + 已实现盈亏 + 未实现盈亏
         let total_unrealized: Decimal = state
             .positions
             .values()
             .map(|p| p.unrealized_pnl)
             .sum();
-        state.current_equity = state.daily_pnl + total_unrealized;
+        state.current_equity = state.initial_capital + state.daily_pnl + total_unrealized;
 
         // 更新峰值权益
         if state.current_equity > state.peak_equity {

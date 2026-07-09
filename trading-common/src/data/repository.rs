@@ -2132,6 +2132,45 @@ impl TickDataRepository {
         Ok(())
     }
 
+    /// 获取所有待执行信号（按创建时间排序）
+    pub async fn get_all_pending_signals(&self, limit: i64) -> DataResult<Vec<SignalRecord>> {
+        let rows = sqlx::query(
+            "SELECT id,symbol,strategy_id,direction,entry_price,overall_confidence, \
+                    entry_allowed,entry_direction,timeframe_details,status,closed_reason, \
+                    evaluated_at,best_price,worst_price,eval_count, \
+                    closed_at,close_price,actual_return_pct,created_at \
+             FROM strategy_signals \
+             WHERE status='pending' AND entry_allowed=true \
+             ORDER BY created_at DESC LIMIT $1"
+        ).bind(limit)
+         .fetch_all(&self.pool).await?;
+        Ok(rows.iter().map(|r| parse_signal_row(r)).collect())
+    }
+
+    /// 标记信号为已执行
+    pub async fn mark_signal_executed(
+        &self, signal_id: uuid::Uuid, order_id: &str,
+    ) -> DataResult<()> {
+        sqlx::query(
+            "UPDATE strategy_signals SET status='executed', closed_reason=$2 \
+             WHERE id=$1 AND status='pending'"
+        ).bind(signal_id).bind(order_id)
+         .execute(&self.pool).await?;
+        Ok(())
+    }
+
+    /// 标记信号为已拒绝
+    pub async fn mark_signal_rejected(
+        &self, signal_id: uuid::Uuid, reason: &str,
+    ) -> DataResult<()> {
+        sqlx::query(
+            "UPDATE strategy_signals SET status='rejected', closed_reason=$2 \
+             WHERE id=$1 AND status='pending'"
+        ).bind(signal_id).bind(reason)
+         .execute(&self.pool).await?;
+        Ok(())
+    }
+
     /// 关闭引擎过期信号
     pub async fn close_expired_engine_signals(&self, max_age_hours: i64) -> DataResult<u64> {
         let r = sqlx::query(
@@ -2675,6 +2714,7 @@ impl TickDataRepository {
     pub async fn insert_position_snapshot(
         &self,
         exchange: &str,
+        market_type: &str,
         symbol: &str,
         raw_symbol: &str,
         position_side: &str,
@@ -2688,15 +2728,18 @@ impl TickDataRepository {
         maint_margin: Decimal,
         liquidation_price: Option<Decimal>,
         notional: Decimal,
+        break_even_price: Option<Decimal>,
+        isolated_wallet: Option<Decimal>,
         pnl_ratio: Option<Decimal>,
         raw_data: Option<serde_json::Value>,
     ) -> DataResult<()> {
         sqlx::query(
             "INSERT INTO position_snapshot \
-             (exchange, symbol, raw_symbol, snapshot_at, position_side, position_amt, \
+             (exchange, market_type, symbol, raw_symbol, snapshot_at, position_side, position_amt, \
               entry_price, mark_price, unrealized_pnl, leverage, margin_type, \
-              initial_margin, maint_margin, liquidation_price, notional, pnl_ratio, raw_data) \
-             VALUES ($1, $2, $3, NOW(), $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) \
+              initial_margin, maint_margin, liquidation_price, notional, \
+              break_even_price, isolated_wallet, pnl_ratio, raw_data) \
+             VALUES ($1, $2, $3, $4, NOW(), $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19) \
              ON CONFLICT (exchange, symbol, position_side, snapshot_at) DO UPDATE SET \
               position_amt = EXCLUDED.position_amt, \
               entry_price = EXCLUDED.entry_price, \
@@ -2708,10 +2751,13 @@ impl TickDataRepository {
               maint_margin = EXCLUDED.maint_margin, \
               liquidation_price = EXCLUDED.liquidation_price, \
               notional = EXCLUDED.notional, \
+              break_even_price = EXCLUDED.break_even_price, \
+              isolated_wallet = EXCLUDED.isolated_wallet, \
               pnl_ratio = EXCLUDED.pnl_ratio, \
               raw_data = EXCLUDED.raw_data"
         )
         .bind(exchange)
+        .bind(market_type)
         .bind(symbol)
         .bind(raw_symbol)
         .bind(position_side)
@@ -2725,6 +2771,8 @@ impl TickDataRepository {
         .bind(maint_margin)
         .bind(liquidation_price)
         .bind(notional)
+        .bind(break_even_price)
+        .bind(isolated_wallet)
         .bind(pnl_ratio)
         .bind(raw_data)
         .execute(&self.pool)
@@ -2813,6 +2861,8 @@ impl TickDataRepository {
             maint_margin: r.get("maint_margin"),
             liquidation_price: r.get("liquidation_price"),
             notional: r.get("notional"),
+            break_even_price: r.get("break_even_price"),
+            isolated_wallet: r.get("isolated_wallet"),
             raw_data: r.get("raw_data"),
         }).collect())
     }

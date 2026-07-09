@@ -7,7 +7,7 @@ use anyhow::{anyhow, Result};
 use chrono::Utc;
 use reqwest::Client;
 use rust_decimal::Decimal;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tracing::{debug, warn};
 
@@ -125,62 +125,64 @@ impl AccountProvider for BinanceAccountProvider {
 // =================================================================
 
 /// Binance 合约账户响应
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct FuturesAccountResponse {
-    #[serde(rename = "totalWalletBalance")]
     total_wallet_balance: String,
-    #[serde(rename = "totalUnrealizedProfit")]
     total_unrealized_profit: String,
-    #[serde(rename = "totalMarginBalance")]
     total_margin_balance: String,
-    #[serde(rename = "availableBalance")]
     available_balance: String,
-    #[serde(rename = "totalInitialMargin")]
     total_initial_margin: String,
-    #[serde(rename = "totalMaintMargin")]
     total_maint_margin: String,
-    #[serde(rename = "maxWithdrawAmount")]
     max_withdraw_amount: String,
+    #[serde(default)]
+    total_cross_wallet_balance: String,
     assets: Vec<FuturesAssetResponse>,
     positions: Vec<FuturesPositionResponse>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct FuturesAssetResponse {
     asset: String,
-    #[serde(rename = "walletBalance")]
     wallet_balance: String,
-    #[serde(rename = "unrealizedProfit")]
     unrealized_profit: String,
-    #[serde(rename = "marginBalance")]
     margin_balance: String,
-    #[serde(rename = "availableBalance")]
     available_balance: String,
+    cross_wallet_balance: String,
+    cross_un_pnl: String,
 }
 
-#[derive(Deserialize)]
+/// Binance /fapi/v2/account 中的持仓
+/// 注意：字段名与 /fapi/v2/positionRisk 不同（如 unrealizedProfit vs unRealizedProfit）
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct FuturesPositionResponse {
     symbol: String,
-    #[serde(rename = "positionAmt")]
     position_amt: String,
-    #[serde(rename = "entryPrice")]
     entry_price: String,
-    #[serde(rename = "markPrice")]
     mark_price: String,
-    #[serde(rename = "unRealizedProfit")]
+    /// /fapi/v2/account 返回 "unrealizedProfit"（小写 r）
+    /// /fapi/v2/positionRisk 返回 "unRealizedProfit"（大写 R）
+    #[serde(alias = "unRealizedProfit")]
     unrealized_profit: String,
     leverage: String,
-    #[serde(rename = "marginType")]
     margin_type: String,
-    #[serde(rename = "positionSide")]
     position_side: String,
-    #[serde(rename = "liquidationPrice")]
     liquidation_price: String,
     notional: String,
-    #[serde(rename = "initialMargin")]
     initial_margin: String,
-    #[serde(rename = "maintMargin")]
     maint_margin: String,
+    #[serde(default)]
+    break_even_price: String,
+    #[serde(default)]
+    isolated_wallet: String,
+    #[serde(default)]
+    isolated_margin: String,
+    #[serde(default)]
+    max_notional: String,
+    #[serde(default)]
+    update_time: i64,
 }
 
 impl BinanceAccountProvider {
@@ -201,8 +203,15 @@ impl BinanceAccountProvider {
         let initial_margin = response.total_initial_margin.parse().ok();
         let maint_margin = response.total_maint_margin.parse().ok();
 
-        // 计算冻结余额 = total_balance - available - unrealized_pnl
-        let frozen = total_balance - available - unrealized_pnl;
+        // 直接用 API 返回的全仓钱包余额和可用余额计算冻结
+        // frozen = crossWalletBalance - availableBalance
+        let cross_wallet: Decimal = response.total_cross_wallet_balance.parse().unwrap_or(Decimal::ZERO);
+        let frozen = if cross_wallet > Decimal::ZERO {
+            (cross_wallet - available).max(Decimal::ZERO)
+        } else {
+            // fallback: total_balance - available - unrealized_pnl
+            (total_balance - available - unrealized_pnl).max(Decimal::ZERO)
+        };
 
         // 计算保证金率
         let margin_ratio = if let (Some(imr), Some(mmr)) = (initial_margin, maint_margin) {
@@ -220,6 +229,9 @@ impl BinanceAccountProvider {
             .filter(|p| p.position_amt.parse::<Decimal>().unwrap_or(Decimal::ZERO) != Decimal::ZERO)
             .count() as i32;
 
+        // 存储原始响应用于调试
+        let raw_data = serde_json::to_value(&response).ok();
+
         Ok(AccountSnapshot {
             exchange: "binance".to_string(),
             market_type: "futures".to_string(),
@@ -227,13 +239,13 @@ impl BinanceAccountProvider {
             total_equity,
             total_balance,
             available_balance: available,
-            frozen_balance: frozen.max(Decimal::ZERO),
+            frozen_balance: frozen,
             unrealized_pnl,
             initial_margin,
             maint_margin,
             margin_ratio,
             position_count,
-            raw_data: None,
+            raw_data,
         })
     }
 
@@ -300,6 +312,10 @@ impl BinanceAccountProvider {
                 let notional: Decimal = p.notional.parse().unwrap_or(Decimal::ZERO);
                 let im: Decimal = p.initial_margin.parse().unwrap_or(Decimal::ZERO);
                 let mm: Decimal = p.maint_margin.parse().unwrap_or(Decimal::ZERO);
+                let break_even: Decimal = p.break_even_price.parse().unwrap_or(Decimal::ZERO);
+                let isolated_wallet: Decimal = p.isolated_wallet.parse().unwrap_or(Decimal::ZERO);
+
+                let raw_data = serde_json::to_value(p).ok();
 
                 PositionInfo {
                     exchange: "binance".to_string(),
@@ -317,7 +333,9 @@ impl BinanceAccountProvider {
                     maint_margin: mm,
                     liquidation_price: if liq_price > Decimal::ZERO { Some(liq_price) } else { None },
                     notional,
-                    raw_data: None,
+                    break_even_price: Some(break_even),
+                    isolated_wallet: Some(isolated_wallet),
+                    raw_data,
                 }
             })
             .collect();
@@ -331,24 +349,19 @@ impl BinanceAccountProvider {
 // =================================================================
 
 /// Binance 现货账户响应
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct SpotAccountResponse {
-    #[serde(rename = "makerCommission")]
     maker_commission: i64,
-    #[serde(rename = "takerCommission")]
     taker_commission: i64,
-    #[serde(rename = "canTrade")]
     can_trade: bool,
-    #[serde(rename = "canWithdraw")]
     can_withdraw: bool,
-    #[serde(rename = "canDeposit")]
     can_deposit: bool,
-    #[serde(rename = "accountType")]
     account_type: String,
     balances: Vec<SpotBalanceResponse>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct SpotBalanceResponse {
     asset: String,
     free: String,
@@ -387,6 +400,8 @@ impl BinanceAccountProvider {
         // 现货没有未实现盈亏（除非计算持仓的浮动盈亏）
         let unrealized_pnl = Decimal::ZERO;
 
+        let raw_data = serde_json::to_value(&response).ok();
+
         Ok(AccountSnapshot {
             exchange: "binance".to_string(),
             market_type: "spot".to_string(),
@@ -400,7 +415,7 @@ impl BinanceAccountProvider {
             maint_margin: None,
             margin_ratio: None,
             position_count: 0,
-            raw_data: None,
+            raw_data,
         })
     }
 

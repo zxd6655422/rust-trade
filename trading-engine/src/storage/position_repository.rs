@@ -13,6 +13,7 @@ use crate::exchange::types::{PositionInfo, PositionSide};
 pub struct PositionRecord {
     pub id: Uuid,
     pub exchange: String,
+    pub market_type: String,
     pub symbol: String,
     pub side: String,
     pub quantity: Decimal,
@@ -22,6 +23,11 @@ pub struct PositionRecord {
     pub take_profit_price: Option<Decimal>,
     pub leverage: i32,
     pub margin: Decimal,
+    pub mark_price: Option<Decimal>,
+    pub liquidation_price: Option<Decimal>,
+    pub break_even_price: Option<Decimal>,
+    pub notional: Decimal,
+    pub margin_type: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -41,6 +47,7 @@ impl PositionRepository {
     pub async fn upsert_position(
         &self,
         exchange: &str,
+        market_type: &str,
         symbol: &str,
         side: &str,
         quantity: Decimal,
@@ -48,17 +55,18 @@ impl PositionRepository {
     ) -> Result<PositionRecord, sqlx::Error> {
         let record = sqlx::query_as::<_, PositionRecord>(
             r#"
-            INSERT INTO trading_positions (exchange, symbol, side, quantity, avg_entry_price)
-            VALUES ($1, $2, $3, $4, $5)
-            ON CONFLICT (exchange, symbol) DO UPDATE
-            SET side = $3,
-                quantity = $4,
-                avg_entry_price = $5,
+            INSERT INTO trading_positions (exchange, market_type, symbol, side, quantity, avg_entry_price)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            ON CONFLICT (exchange, market_type, symbol) DO UPDATE
+            SET side = $4,
+                quantity = $5,
+                avg_entry_price = $6,
                 updated_at = NOW()
             RETURNING *
             "#,
         )
         .bind(exchange)
+        .bind(market_type)
         .bind(symbol)
         .bind(side)
         .bind(quantity)
@@ -126,15 +134,17 @@ impl PositionRepository {
     pub async fn get_position(
         &self,
         exchange: &str,
+        market_type: &str,
         symbol: &str,
     ) -> Result<Option<PositionRecord>, sqlx::Error> {
         let record = sqlx::query_as::<_, PositionRecord>(
             r#"
             SELECT * FROM trading_positions
-            WHERE exchange = $1 AND symbol = $2
+            WHERE exchange = $1 AND market_type = $2 AND symbol = $3
             "#,
         )
         .bind(exchange)
+        .bind(market_type)
         .bind(symbol)
         .fetch_optional(&self.pool)
         .await?;
@@ -146,15 +156,17 @@ impl PositionRepository {
     pub async fn get_all_positions(
         &self,
         exchange: &str,
+        market_type: &str,
     ) -> Result<Vec<PositionRecord>, sqlx::Error> {
         let records = sqlx::query_as::<_, PositionRecord>(
             r#"
             SELECT * FROM trading_positions
-            WHERE exchange = $1 AND quantity > 0
+            WHERE exchange = $1 AND market_type = $2 AND quantity > 0
             ORDER BY updated_at DESC
             "#,
         )
         .bind(exchange)
+        .bind(market_type)
         .fetch_all(&self.pool)
         .await?;
 
@@ -162,14 +174,15 @@ impl PositionRepository {
     }
 
     /// 删除持仓
-    pub async fn delete_position(&self, exchange: &str, symbol: &str) -> Result<(), sqlx::Error> {
+    pub async fn delete_position(&self, exchange: &str, market_type: &str, symbol: &str) -> Result<(), sqlx::Error> {
         sqlx::query(
             r#"
             DELETE FROM trading_positions
-            WHERE exchange = $1 AND symbol = $2
+            WHERE exchange = $1 AND market_type = $2 AND symbol = $3
             "#,
         )
         .bind(exchange)
+        .bind(market_type)
         .bind(symbol)
         .execute(&self.pool)
         .await?;
@@ -188,11 +201,11 @@ impl PositionRepository {
             },
             quantity: record.quantity,
             avg_entry_price: record.avg_entry_price,
-            mark_price: None,
+            mark_price: record.mark_price,
             unrealized_pnl: record.unrealized_pnl,
             leverage: record.leverage as u32,
             margin: record.margin,
-            liquidation_price: None,
+            liquidation_price: record.liquidation_price,
         }
     }
 }

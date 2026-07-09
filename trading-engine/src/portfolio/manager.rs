@@ -85,6 +85,7 @@ impl PortfolioManager {
                 .position_repo
                 .upsert_position(
                     "exchange", // 默认交易所标识
+                    "futures",
                     &pos.symbol,
                     &format!("{:?}", pos.side),
                     pos.quantity,

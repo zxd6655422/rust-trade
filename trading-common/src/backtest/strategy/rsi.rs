@@ -109,6 +109,7 @@ impl Strategy for RsiStrategy {
                 let signal = Signal::Buy {
                     symbol: tick.symbol.clone(),
                     quantity: Decimal::from(100),
+                    entry_price: tick.price,
                 };
                 self.last_signal = Some(signal.clone());
                 return signal;
@@ -119,6 +120,7 @@ impl Strategy for RsiStrategy {
                 let signal = Signal::Sell {
                     symbol: tick.symbol.clone(),
                     quantity: Decimal::from(100),
+                    entry_price: tick.price,
                 };
                 self.last_signal = Some(signal.clone());
                 return signal;
@@ -156,6 +158,7 @@ impl Strategy for RsiStrategy {
                 let signal = Signal::Buy {
                     symbol: ohlc.symbol.clone(),
                     quantity: Decimal::from(100),
+                    entry_price: ohlc.close,
                 };
                 self.last_signal = Some(signal.clone());
                 return signal;
@@ -164,6 +167,7 @@ impl Strategy for RsiStrategy {
                 let signal = Signal::Sell {
                     symbol: ohlc.symbol.clone(),
                     quantity: Decimal::from(100),
+                    entry_price: ohlc.close,
                 };
                 self.last_signal = Some(signal.clone());
                 return signal;
