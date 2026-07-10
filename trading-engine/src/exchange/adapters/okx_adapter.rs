@@ -191,11 +191,21 @@ impl OkxAdapter {
 
     /// 判断 instId 是现货还是合约
     fn detect_td_mode(inst_id: &str) -> &'static str {
-        if inst_id.ends_with("-SWAP") || inst_id.ends_with("-FUTURES") {
+        if Self::is_swap_symbol(inst_id) {
             "cross" // 合约默认全仓
         } else {
             "cash" // 现货
         }
+    }
+
+    /// 判断是否为合约 symbol（-SWAP 或 -FUTURES 后缀）
+    fn is_swap_symbol(inst_id: &str) -> bool {
+        inst_id.ends_with("-SWAP") || inst_id.ends_with("-FUTURES")
+    }
+
+    /// 从现货 symbol 提取 base asset（如 BTC-USDT → BTC, ETH-USDT → ETH）
+    fn extract_spot_base_asset(symbol: &str) -> &str {
+        symbol.split('-').next().unwrap_or(symbol)
     }
 
     /// 解析订单信息 (通用)
@@ -807,46 +817,97 @@ impl TradingOperations for OkxAdapter {
         })
     }
 
-    /// GET /api/v5/account/positions - 获取单个持仓
+    /// 获取单个持仓
+    ///
+    /// 合约（-SWAP/-FUTURES）：从 /api/v5/account/positions 查询真实持仓
+    /// 现货：从账户余额推导（OKX 现货没有持仓接口）
     async fn get_position(&self, symbol: &str) -> Result<PositionInfo, ExchangeError> {
-        let endpoint = format!("/api/v5/account/positions?instId={}", symbol);
-        let data = self.send_signed_request("GET", &endpoint, "").await?;
+        if Self::is_swap_symbol(symbol) {
+            // 合约：查询真实持仓
+            let endpoint = format!("/api/v5/account/positions?instId={}", symbol);
+            let data = self.send_signed_request("GET", &endpoint, "").await?;
 
-        let positions = data["data"]
-            .as_array()
-            .ok_or_else(|| ExchangeError::ParseError("Missing positions data".to_string()))?;
+            let positions = data["data"]
+                .as_array()
+                .ok_or_else(|| ExchangeError::ParseError("Missing positions data".to_string()))?;
 
-        for pos in positions {
-            if let Some(info) = Self::parse_position(pos) {
-                if info.symbol == symbol {
-                    return Ok(info);
+            for pos in positions {
+                if let Some(info) = Self::parse_position(pos) {
+                    if info.symbol == symbol {
+                        return Ok(info);
+                    }
                 }
             }
-        }
 
-        // 空仓位
-        Ok(PositionInfo {
-            symbol: symbol.to_string(),
-            side: PositionSide::None,
-            quantity: Decimal::ZERO,
-            avg_entry_price: Decimal::ZERO,
-            mark_price: None,
-            unrealized_pnl: Decimal::ZERO,
-            leverage: 1,
-            margin: Decimal::ZERO,
-            liquidation_price: None,
-        })
+            // 空仓位
+            Ok(PositionInfo {
+                symbol: symbol.to_string(),
+                side: PositionSide::None,
+                quantity: Decimal::ZERO,
+                avg_entry_price: Decimal::ZERO,
+                mark_price: None,
+                unrealized_pnl: Decimal::ZERO,
+                leverage: 1,
+                margin: Decimal::ZERO,
+                liquidation_price: None,
+            })
+        } else {
+            // 现货：从余额推导持仓（参考 BinanceSpotAdapter 实现）
+            let account = self.get_account().await?;
+            let base_asset = Self::extract_spot_base_asset(symbol);
+
+            let balance = account.balances.iter().find(|b| b.asset == base_asset);
+            let quantity = balance.map(|b| b.free + b.locked).unwrap_or(Decimal::ZERO);
+
+            Ok(PositionInfo {
+                symbol: symbol.to_string(),
+                side: if quantity > Decimal::ZERO { PositionSide::Long } else { PositionSide::None },
+                quantity,
+                avg_entry_price: Decimal::ZERO,
+                mark_price: None,
+                unrealized_pnl: Decimal::ZERO,
+                leverage: 1,
+                margin: Decimal::ZERO,
+                liquidation_price: None,
+            })
+        }
     }
 
-    /// GET /api/v5/account/positions - 获取所有持仓
+    /// 获取所有持仓
+    ///
+    /// 合约模式（default_inst_type=SWAP）：从 positions 接口查询
+    /// 现货模式（default_inst_type=SPOT）：从账户余额推导
     async fn get_positions(&self) -> Result<Vec<PositionInfo>, ExchangeError> {
-        let data = self.send_signed_request("GET", "/api/v5/account/positions", "").await?;
+        if self.config.default_inst_type == "SWAP" {
+            // 合约：查询真实持仓
+            let data = self.send_signed_request("GET", "/api/v5/account/positions", "").await?;
 
-        let positions = data["data"]
-            .as_array()
-            .ok_or_else(|| ExchangeError::ParseError("Missing positions data".to_string()))?;
+            let positions = data["data"]
+                .as_array()
+                .ok_or_else(|| ExchangeError::ParseError("Missing positions data".to_string()))?;
 
-        Ok(positions.iter().filter_map(|pos| Self::parse_position(pos)).collect())
+            Ok(positions.iter().filter_map(|pos| Self::parse_position(pos)).collect())
+        } else {
+            // 现货：从余额推导
+            let account = self.get_account().await?;
+
+            let positions = account.balances.iter().map(|b| {
+                let quantity = b.free + b.locked;
+                PositionInfo {
+                    symbol: format!("{}-USDT", b.asset),
+                    side: if quantity > Decimal::ZERO { PositionSide::Long } else { PositionSide::None },
+                    quantity,
+                    avg_entry_price: Decimal::ZERO,
+                    mark_price: None,
+                    unrealized_pnl: Decimal::ZERO,
+                    leverage: 1,
+                    margin: Decimal::ZERO,
+                    liquidation_price: None,
+                }
+            }).collect();
+
+            Ok(positions)
+        }
     }
 
     // ===== 订单接口 =====
@@ -1125,26 +1186,35 @@ impl TradingOperations for OkxAdapter {
     // ===== 合约配置接口 =====
 
     /// POST /api/v5/account/set-leverage - 设置杠杆
+    ///
+    /// 现货不支持杠杆，返回 ConfigError（与 BinanceSpotAdapter 行为一致）
     async fn set_leverage(&self, symbol: &str, leverage: u32) -> Result<(), ExchangeError> {
-        let mgn_mode = if symbol.ends_with("-SWAP") || symbol.ends_with("-FUTURES") {
-            "cross"
-        } else {
-            "isolated"
-        };
+        if !Self::is_swap_symbol(symbol) {
+            return Err(ExchangeError::ConfigError(
+                "Spot trading does not support leverage".to_string()
+            ));
+        }
 
         let body = serde_json::json!({
             "instId": symbol,
             "lever": leverage.to_string(),
-            "mgnMode": mgn_mode,
+            "mgnMode": "cross",
         });
         self.send_signed_request("POST", "/api/v5/account/set-leverage", &body.to_string()).await?;
         Ok(())
     }
 
-    /// POST /api/v5/account/set-isolated-mode - 设置保证金模式
+    /// 设置保证金模式
+    ///
+    /// 现货不支持保证金模式，返回 ConfigError（与 BinanceSpotAdapter 行为一致）
+    /// 合约：保证金模式通过下单时 tdMode 指定，这里尝试调用 set-leverage 接口
     async fn set_margin_type(&self, symbol: &str, margin_type: MarginType) -> Result<(), ExchangeError> {
-        // OKX 的保证金模式通过 tdMode 在下单时指定
-        // 这里设置 isolated mode 的自动转账行为
+        if !Self::is_swap_symbol(symbol) {
+            return Err(ExchangeError::ConfigError(
+                "Spot trading does not support margin type".to_string()
+            ));
+        }
+
         let body = serde_json::json!({
             "instId": symbol,
             "mgnMode": match margin_type {
@@ -1152,9 +1222,6 @@ impl TradingOperations for OkxAdapter {
                 MarginType::Crossed => "cross",
             },
         });
-        // 注意: OKX 没有直接的 set-margin-type 端点
-        // 保证金模式在下单时通过 tdMode 指定
-        // 这里尝试调用，如果失败则忽略
         match self.send_signed_request("POST", "/api/v5/account/set-leverage", &body.to_string()).await {
             Ok(_) => Ok(()),
             Err(ExchangeError::ApiError { code: _, message }) => {
