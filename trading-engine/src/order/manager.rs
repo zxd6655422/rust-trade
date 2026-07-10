@@ -505,11 +505,10 @@ impl OrderManager {
     }
 
     /// 构建订单请求
-    /// 构建订单请求
     ///
-    /// Sell 信号校验逻辑：
-    /// 1. 优先从交易所查询实时合约持仓（合约场景）
-    /// 2. 查询失败时回退到 spot balance（兼容现货场景）
+    /// 根据 market_type 区分校验逻辑：
+    /// - futures: 查询交易所合约持仓（get_position）
+    /// - spot: 查询现货余额（account.balances）
     async fn build_order_request(
         &self,
         signal: &Signal,
@@ -521,7 +520,7 @@ impl OrderManager {
                 quantity,
                 entry_price,
             } => {
-                // 检查余额是否充足
+                // 检查 USDT 余额是否充足
                 let usdt_balance = account
                     .balances
                     .iter()
@@ -529,7 +528,6 @@ impl OrderManager {
                     .map(|b| b.free)
                     .unwrap_or(Decimal::ZERO);
 
-                // 使用信号携带的价格估算订单价值
                 let estimated_value = quantity * entry_price;
                 if estimated_value > usdt_balance {
                     return Err(OrderError::InsufficientBalance(format!(
@@ -554,72 +552,66 @@ impl OrderManager {
                 quantity,
                 entry_price,
             } => {
-                // 优先查询交易所实时持仓（合约场景）
-                // 风控计算必须使用交易所真实数据，不使用缓存
-                match self.exchange.get_position(symbol).await {
-                    Ok(position) if position.quantity >= *quantity => {
-                        // 合约持仓充足，允许卖出
-                        Ok(OrderRequest {
-                            symbol: symbol.clone(),
-                            side: OrderSide::Sell,
-                            order_type: OrderType::Market,
-                            quantity: *quantity,
-                            price: Some(*entry_price),
-                            stop_price: None,
-                            time_in_force: Some(TimeInForce::Ioc),
-                            client_order_id: None,
-                        })
-                    }
-                    Ok(position) => {
-                        // 持仓不足
-                        Err(OrderError::InsufficientPosition(format!(
-                            "Sell {} {} failed: only {} available on exchange",
-                            quantity, symbol, position.quantity
-                        )))
-                    }
-                    Err(e) => {
-                        // 交易所查询失败，回退到 spot balance（兼容现货场景）
-                        warn!(
-                            "Failed to get futures position for {}, falling back to spot balance: {}",
-                            symbol, e
-                        );
-                        let base_asset = if symbol.ends_with("USDT") {
-                            symbol.strip_suffix("USDT").unwrap_or(symbol)
-                        } else if symbol.ends_with("BUSD") {
-                            symbol.strip_suffix("BUSD").unwrap_or(symbol)
-                        } else if symbol.ends_with("USDC") {
-                            symbol.strip_suffix("USDC").unwrap_or(symbol)
-                        } else {
-                            symbol
-                        };
-                        let balance = account
-                            .balances
-                            .iter()
-                            .find(|b| b.asset == base_asset)
-                            .map(|b| b.free)
-                            .unwrap_or(Decimal::ZERO);
+                // 根据交易模式选择不同的持仓校验方式
+                if self.market_type == "futures" {
+                    // 合约模式：从交易所查询合约持仓
+                    let position = self.exchange.get_position(symbol).await
+                        .map_err(|e| OrderError::ExchangeError(
+                            format!("Failed to get futures position for {}: {}", symbol, e)
+                        ))?;
 
-                        if *quantity > balance {
-                            return Err(OrderError::InsufficientPosition(format!(
-                                "Required: {} {}, Available: {} {} (spot)",
-                                quantity, base_asset, balance, base_asset
-                            )));
-                        }
+                    if position.quantity < *quantity {
+                        return Err(OrderError::InsufficientPosition(format!(
+                            "[futures] Sell {} {}: need {}, have {}",
+                            symbol, quantity, quantity, position.quantity
+                        )));
+                    }
+                } else {
+                    // 现货模式：从账户余额查询 base asset
+                    let base_asset = Self::extract_base_asset(symbol);
+                    let balance = account
+                        .balances
+                        .iter()
+                        .find(|b| b.asset == base_asset)
+                        .map(|b| b.free)
+                        .unwrap_or(Decimal::ZERO);
 
-                        Ok(OrderRequest {
-                            symbol: symbol.clone(),
-                            side: OrderSide::Sell,
-                            order_type: OrderType::Market,
-                            quantity: *quantity,
-                            price: Some(*entry_price),
-                            stop_price: None,
-                            time_in_force: Some(TimeInForce::Ioc),
-                            client_order_id: None,
-                        })
+                    if *quantity > balance {
+                        return Err(OrderError::InsufficientPosition(format!(
+                            "[spot] Sell {} {}: need {} {}, have {} {}",
+                            symbol, quantity, quantity, base_asset, balance, base_asset
+                        )));
                     }
                 }
+
+                Ok(OrderRequest {
+                    symbol: symbol.clone(),
+                    side: OrderSide::Sell,
+                    order_type: OrderType::Market,
+                    quantity: *quantity,
+                    price: Some(*entry_price),
+                    stop_price: None,
+                    time_in_force: Some(TimeInForce::Ioc),
+                    client_order_id: None,
+                })
             }
             Signal::Hold => Err(OrderError::InvalidSignal("Cannot execute Hold signal".to_string())),
+        }
+    }
+
+    /// 从 symbol 提取 base asset（如 BTCUSDT → BTC）
+    fn extract_base_asset(symbol: &str) -> &str {
+        if symbol.ends_with("USDT") {
+            symbol.strip_suffix("USDT").unwrap_or(symbol)
+        } else if symbol.ends_with("BUSD") {
+            symbol.strip_suffix("BUSD").unwrap_or(symbol)
+        } else if symbol.ends_with("USDC") {
+            symbol.strip_suffix("USDC").unwrap_or(symbol)
+        } else if symbol.ends_with("-USDT") {
+            // OKX 格式: BTC-USDT → BTC
+            symbol.strip_suffix("-USDT").unwrap_or(symbol)
+        } else {
+            symbol
         }
     }
 }
