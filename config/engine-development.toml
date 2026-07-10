@@ -15,6 +15,10 @@ max_ticks_per_symbol = 1000
 id = "binance"
 testnet = true
 
+# 交易所配置已移至数据库 exchange_config 表
+# 前端可动态管理：增删改查交易所实例
+# 交易引擎启动时从数据库加载
+
 [trading]
 mode = "testnet"
 strategy = "rsi"

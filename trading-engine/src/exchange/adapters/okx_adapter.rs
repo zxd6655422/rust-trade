@@ -31,6 +31,8 @@ pub struct OkxConfig {
     pub api_secret: String,
     pub passphrase: String,
     pub simulated: bool,
+    /// 默认 instType: "SPOT" / "SWAP"，用于无 symbol 时的批量操作
+    pub default_inst_type: String,
 }
 
 impl Default for OkxConfig {
@@ -40,6 +42,7 @@ impl Default for OkxConfig {
             api_secret: String::new(),
             passphrase: String::new(),
             simulated: true,
+            default_inst_type: "SWAP".to_string(),
         }
     }
 }
@@ -403,8 +406,14 @@ impl MarketDataProvider for OkxAdapter {
 
     /// GET /api/v5/market/tickers - 批量获取行情快照
     async fn get_tickers(&self, symbols: &[String]) -> Result<Vec<Ticker>, ExchangeError> {
+        // 根据 symbol 后缀判断 instType
+        let inst_type = if symbols.iter().any(|s| s.ends_with("-SWAP") || s.ends_with("-FUTURES")) {
+            "SWAP"
+        } else {
+            "SPOT"
+        };
         let mut params = HashMap::new();
-        params.insert("instType".to_string(), "SWAP".to_string());
+        params.insert("instType".to_string(), inst_type.to_string());
 
         let data = self.send_public_request("/api/v5/market/tickers", &params).await?;
 
@@ -925,9 +934,9 @@ impl TradingOperations for OkxAdapter {
             });
             self.send_signed_request("POST", "/api/v5/trade/mass-cancel", &body.to_string()).await?;
         } else {
-            // 需要 instType，这里默认 SWAP
+            // 使用配置的默认 instType
             let body = serde_json::json!({
-                "instType": "SWAP",
+                "instType": self.config.default_inst_type,
             });
             self.send_signed_request("POST", "/api/v5/trade/mass-cancel", &body.to_string()).await?;
         }

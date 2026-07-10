@@ -6,5 +6,5 @@ pub mod engine;
 pub mod stop_loss;
 
 pub use config::RiskConfig;
-pub use engine::{RiskDecision, RiskEngine};
+pub use engine::{RiskAction, RiskDecision, RiskEngine};
 pub use stop_loss::{StopAction, StopLossConfig, StopLossManager};

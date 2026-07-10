@@ -1,5 +1,8 @@
 // main.rs
 // 交易引擎入口
+//
+// 交易所配置从数据库 exchange_config 表加载
+// 前端可动态管理交易所实例（增删改查、启用禁用）
 
 use std::sync::Arc;
 use tracing::{error, info, warn};
@@ -15,20 +18,14 @@ mod utils;
 
 use config::Settings;
 use engine::signal_poller::{SignalPoller, SignalPollerConfig};
-use engine::trading_loop::TradingLoop;
-use exchange::ExchangeFactory;
-use order::OrderManager;
-use portfolio::{PortfolioManager, PositionReconciler};
-use risk::{RiskEngine, StopLossConfig};
-use storage::{Database, OrderRepository, PositionRepository, RedisCache};
-use trading_common::backtest::strategy;
+use engine::trading_unit::TradingUnit;
+use risk::RiskEngine;
+use storage::{Database, ExchangeRepository, PositionRepository, RedisCache};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 加载环境变量
     config::load_env();
 
-    // 初始化日志
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
         .with_file(true)
@@ -37,7 +34,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("🚀 Trading Engine starting...");
 
-    // 解析命令行参数
     let args: Vec<String> = std::env::args().collect();
 
     match args.get(1).map(|s| s.as_str()) {
@@ -63,50 +59,23 @@ fn print_usage() {
     println!("  cargo run live            # Run in live mode");
     println!("  cargo run --help          # Show this help message");
     println!();
-    println!("Environment Variables:");
-    println!("  BINANCE_API_KEY           # Binance API key");
-    println!("  BINANCE_API_SECRET        # Binance API secret");
-    println!("  BINANCE_TESTNET           # Use testnet (true/false)");
-    println!("  DATABASE_URL              # PostgreSQL connection string");
-    println!("  REDIS_URL                 # Redis connection string");
+    println!("Configuration:");
+    println!("  config/engine-development.toml  # DB/Redis/Risk config");
+    println!("  exchange_config table           # Exchange instances (frontend managed)");
     println!();
 }
 
 async fn run_live_mode(_args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     info!("Starting Trading Engine in live mode");
 
-    // 加载配置
     let settings = Settings::new()?;
-    info!("✅ Configuration loaded successfully");
+    info!("✅ Configuration loaded");
 
-    // 检查是否为测试网模式
     if settings.is_testnet() {
         info!("⚠️  Running in TESTNET mode");
     } else {
         warn!("🔥 Running in LIVE mode - Real money at risk!");
     }
-
-    // 获取 API Key
-    let api_key = std::env::var("BINANCE_API_KEY")
-        .map_err(|_| "BINANCE_API_KEY not set")?;
-    let api_secret = std::env::var("BINANCE_API_SECRET")
-        .map_err(|_| "BINANCE_API_SECRET not set")?;
-
-    // 创建交易所适配器
-    let exchange = ExchangeFactory::create(
-        settings.exchange_id(),
-        settings.is_testnet(),
-        &api_key,
-        &api_secret,
-        None,
-    )?;
-    let exchange: Arc<dyn exchange::Exchange> = Arc::from(exchange);
-
-    info!("✅ Exchange adapter created: {}", settings.exchange_id());
-
-    // 创建风控引擎
-    let risk_engine = Arc::new(RiskEngine::new(settings.risk_control.clone()));
-    info!("✅ Risk engine created");
 
     // 创建数据库连接
     let database = Database::new(&settings.database).await?;
@@ -117,86 +86,72 @@ async fn run_live_mode(_args: &[String]) -> Result<(), Box<dyn std::error::Error
     let cache = Arc::new(RedisCache::new(&settings.cache).await?);
     info!("✅ Redis connected");
 
-    // 创建仓储
-    let order_repo = Arc::new(OrderRepository::new(pool.clone()));
-    let position_repo = Arc::new(PositionRepository::new(pool.clone()));
-    info!("✅ Repositories created");
+    // 从数据库加载交易所配置
+    let exchange_repo = ExchangeRepository::new(pool.clone());
+    let exchange_configs = exchange_repo.load_enabled().await?;
 
-    // 创建策略
-    let strategy = strategy::create_strategy(&settings.trading.strategy)?;
-    info!("✅ Strategy created: {}", strategy.name());
-
-    // 创建止损止盈配置
-    let stop_loss_config = StopLossConfig {
-        default_stop_loss_pct: settings.risk_control.stop_loss_pct,
-        default_take_profit_pct: settings.risk_control.take_profit_pct,
-        enable_trailing_stop: false,
-        trailing_stop_pct: rust_decimal::Decimal::from(1) / rust_decimal::Decimal::from(100),
-    };
-
-    // 创建订单管理器
-    let order_manager = Arc::new(OrderManager::new(
-        exchange.clone(),
-        risk_engine.clone(),
-        stop_loss_config,
-    ));
-    info!("✅ Order manager created");
-
-    // 创建持仓管理器
-    let portfolio_manager = Arc::new(PortfolioManager::new(
-        exchange.clone(),
-        position_repo.clone(),
-        cache.clone(),
-    ));
-
-    // 同步初始持仓
-    match portfolio_manager.sync_positions().await {
-        Ok(count) => info!("✅ Initial positions synced: {}", count),
-        Err(e) => warn!("⚠️  Failed to sync initial positions: {}", e),
+    if exchange_configs.is_empty() {
+        error!("❌ No enabled exchanges in database!");
+        error!("   Please insert exchange configs into exchange_config table.");
+        error!("   Example:");
+        error!("   INSERT INTO exchange_config (id, exchange_id, market_type, testnet, enabled, leverage)");
+        error!("   VALUES ('binance-futures', 'binance', 'futures', true, true, 10);");
+        return Err("No enabled exchanges configured".into());
     }
 
-    // 创建对账器
-    let reconciler = Arc::new(PositionReconciler::new(
-        exchange.clone(),
-        position_repo.clone(),
-        portfolio_manager.clone(),
-    ));
-    info!("✅ Portfolio manager and reconciler created");
+    info!("📋 Loaded {} enabled exchange configs:", exchange_configs.len());
+    for config in &exchange_configs {
+        info!("   - {} ({} {}, leverage={}x)",
+            config.id, config.exchange_id, config.market_type, config.leverage);
+    }
 
-    // 创建信号轮询器
+    // 创建持仓仓储
+    let position_repo = Arc::new(PositionRepository::new(pool.clone()));
+
+    // 创建风控引擎（所有 TradingUnit 共享）
+    let risk_engine = Arc::new(RiskEngine::new(settings.risk_control.clone()));
+    info!("✅ Risk engine created");
+
+    // 创建 TradingUnit
+    let mut trading_units = Vec::new();
+    for exchange_config in &exchange_configs {
+        match TradingUnit::from_config(
+            exchange_config,
+            risk_engine.clone(),
+            position_repo.clone(),
+            cache.clone(),
+        ) {
+            Ok(unit) => {
+                trading_units.push(Arc::new(unit));
+            }
+            Err(e) => {
+                error!("Failed to create trading unit {}: {}", exchange_config.id, e);
+                // 非致命错误，跳过
+            }
+        }
+    }
+
+    if trading_units.is_empty() {
+        error!("❌ No trading units created! Check exchange configs and API keys.");
+        return Err("No trading units available".into());
+    }
+
+    info!("✅ {} trading units created", trading_units.len());
+
+    // 创建信号轮询器（交易引擎唯一主循环）
     let signal_poller = Arc::new(SignalPoller::new(
         pool.clone(),
-        order_manager.clone(),
+        risk_engine.clone(),
+        trading_units.clone(),
         SignalPollerConfig::default(),
     ));
 
-    // 启动信号轮询器（后台任务）
-    let poller = signal_poller.clone();
-    tokio::spawn(async move {
-        poller.start().await;
-    });
-    info!("✅ Signal poller started");
-
-    // 创建交易循环
-    let trading_loop = TradingLoop::new(
-        exchange.clone(),
-        order_manager.clone(),
-        risk_engine.clone(),
-        portfolio_manager.clone(),
-        reconciler.clone(),
-        cache.clone(),
-        strategy,
-        &settings,
-    );
-    info!("✅ Trading loop created");
-
-    info!("🎯 Trading Engine initialization complete");
+    info!("🎯 Trading Engine ready");
     info!("Starting main loop...");
 
-    // 启动交易循环
-    trading_loop.start().await?;
+    // 启动主循环
+    signal_poller.start().await;
 
-    // 清理资源
     database.close().await;
     info!("👋 Trading Engine stopped");
 

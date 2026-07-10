@@ -6,7 +6,13 @@
 - F:\rust_projects\rust-trade\version\CHANGELOG.md 版本更新记录
 - F:\rust_projects\rust-trade\version\v1.0\PLAN.md 版本开发计划
 - F:\rust_projects\rust-trade\version\v1.0\README.md 版本要实现的目标
+- F:\rust_projects\rust-trade\version\v1.0\ARCHITECTURE.md 架构设计（含核心约束）
 - F:\rust-projects\rust-trade\sql 所有的表结构脚本
+
+# 核心架构约束（强制遵守，详见 ARCHITECTURE.md）
+1. **信号路径唯一性** — 信号只能从策略服务发出，是唯一信号源。Tick数据也必须在策略服务内处理，任何模块不得绕过策略服务直接产生交易信号。
+2. **持仓风险=实时数据** — 持仓风险计算必须实时从交易所获取真实持仓数据。数据库持仓快照仅用于前端展示，不参与风险计算。
+3. **信号执行校验链** — Buy/Sell信号执行前必须依次校验：①交易类型是否启用 ②是否已有持仓 ③是否有未成交挂单 ④仓位占比是否合规。现货和合约走不同校验路径。
 
 # 开发约束
 - 前端展示的地方都需要满足中英文切换

@@ -5,11 +5,11 @@ use rust_decimal::Decimal;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use crate::exchange::traits::Exchange;
 use crate::exchange::types::*;
-use crate::risk::{RiskDecision, RiskEngine, StopLossConfig, StopLossManager, StopAction};
+use crate::risk::{RiskDecision, RiskEngine, RiskAction, StopLossConfig, StopLossManager, StopAction};
 use trading_common::backtest::strategy::Signal;
 
 /// 将数量截断到 step_size 精度
@@ -27,6 +27,10 @@ pub struct OrderManager {
     risk_engine: Arc<RiskEngine>,
     stop_loss_manager: Arc<StopLossManager>,
     active_orders: Arc<Mutex<HashMap<String, OrderInfo>>>,
+    /// 交易所标识（用于日志和记录）
+    exchange_id: String,
+    /// 交易模式: "spot" / "futures"
+    market_type: String,
     /// 默认杠杆倍数
     leverage: u32,
     /// 默认保证金模式
@@ -45,9 +49,42 @@ impl OrderManager {
             risk_engine,
             stop_loss_manager: Arc::new(StopLossManager::new(stop_loss_config)),
             active_orders: Arc::new(Mutex::new(HashMap::new())),
+            exchange_id: "unknown".to_string(),
+            market_type: "futures".to_string(),
             leverage: 10,  // 默认 10x 杠杆
             margin_type: MarginType::Isolated,  // 默认逐仓
         }
+    }
+
+    /// 创建带标识的订单管理器
+    pub fn with_identity(
+        exchange: Arc<dyn Exchange>,
+        risk_engine: Arc<RiskEngine>,
+        stop_loss_config: StopLossConfig,
+        exchange_id: String,
+        market_type: String,
+        leverage: u32,
+    ) -> Self {
+        Self {
+            exchange,
+            risk_engine,
+            stop_loss_manager: Arc::new(StopLossManager::new(stop_loss_config)),
+            active_orders: Arc::new(Mutex::new(HashMap::new())),
+            exchange_id,
+            market_type,
+            leverage,
+            margin_type: MarginType::Isolated,
+        }
+    }
+
+    /// 获取交易所标识
+    pub fn exchange_id(&self) -> &str {
+        &self.exchange_id
+    }
+
+    /// 获取交易模式
+    pub fn market_type(&self) -> &str {
+        &self.market_type
     }
 
     /// 设置杠杆倍数
@@ -75,7 +112,7 @@ impl OrderManager {
             .map_err(|e| OrderError::ExchangeError(e.to_string()))?;
 
         // 2. 构建订单请求
-        let mut order_request = self.build_order_request(&signal, &account)?;
+        let mut order_request = self.build_order_request(&signal, &account).await?;
 
         // 2.5 数量精度校验
         match self.exchange.get_symbol_precision(&order_request.symbol).await {
@@ -319,8 +356,161 @@ impl OrderManager {
         Ok(())
     }
 
+    /// 执行风控动作（持仓风控触发时调用）
+    pub async fn execute_risk_action(
+        &self,
+        action: crate::risk::RiskAction,
+    ) -> Result<(), OrderError> {
+        use crate::risk::RiskAction;
+
+        match action {
+            RiskAction::ForceClose {
+                symbol,
+                quantity,
+                reason,
+            } => {
+                warn!(
+                    "⚠️ Risk force close: {} {} — {}",
+                    symbol, quantity, reason
+                );
+
+                // 从交易所获取实时持仓确定平仓方向
+                let position = self.exchange.get_position(&symbol).await
+                    .map_err(|e| OrderError::ExchangeError(e.to_string()))?;
+                let close_side = match position.side {
+                    crate::exchange::types::PositionSide::Long => OrderSide::Sell,
+                    crate::exchange::types::PositionSide::Short => OrderSide::Buy,
+                    _ => OrderSide::Sell, // 默认卖出
+                };
+
+                let order_request = OrderRequest {
+                    symbol: symbol.clone(),
+                    side: close_side,
+                    order_type: OrderType::Market,
+                    quantity,
+                    price: None,
+                    stop_price: None,
+                    time_in_force: Some(TimeInForce::Ioc),
+                    client_order_id: None,
+                };
+
+                match self.place_and_track_order(order_request).await {
+                    Ok(result) => {
+                        info!("Risk force close order placed: {}", result.order_id);
+                        // 移除止损止盈
+                        self.stop_loss_manager.remove_stop_order(&symbol).await;
+                    }
+                    Err(e) => {
+                        error!("Risk force close failed for {}: {}", symbol, e);
+                        return Err(e);
+                    }
+                }
+            }
+            RiskAction::ReducePosition {
+                symbol,
+                current_quantity,
+                target_quantity,
+                reason,
+            } => {
+                warn!(
+                    "⚠️ Risk reduce position: {} {} → {} — {}",
+                    symbol, current_quantity, target_quantity, reason
+                );
+
+                let reduce_qty = current_quantity - target_quantity;
+                if reduce_qty <= Decimal::ZERO {
+                    return Ok(());
+                }
+
+                // 从交易所获取实时持仓确定减仓方向
+                let position = self.exchange.get_position(&symbol).await
+                    .map_err(|e| OrderError::ExchangeError(e.to_string()))?;
+                let close_side = match position.side {
+                    crate::exchange::types::PositionSide::Long => OrderSide::Sell,
+                    crate::exchange::types::PositionSide::Short => OrderSide::Buy,
+                    _ => OrderSide::Sell,
+                };
+
+                let order_request = OrderRequest {
+                    symbol: symbol.clone(),
+                    side: close_side,
+                    order_type: OrderType::Market,
+                    quantity: reduce_qty,
+                    price: None,
+                    stop_price: None,
+                    time_in_force: Some(TimeInForce::Ioc),
+                    client_order_id: None,
+                };
+
+                match self.place_and_track_order(order_request).await {
+                    Ok(result) => {
+                        info!("Risk reduce order placed: {}", result.order_id);
+                    }
+                    Err(e) => {
+                        error!("Risk reduce failed for {}: {}", symbol, e);
+                        return Err(e);
+                    }
+                }
+            }
+            RiskAction::CloseAll { reason } => {
+                warn!("⚠️ Risk close ALL positions — {}", reason);
+
+                // 获取所有持仓并逐个平仓
+                let positions = self.exchange.get_positions().await.unwrap_or_default();
+                for pos in positions {
+                    if pos.quantity <= Decimal::ZERO {
+                        continue;
+                    }
+                    let close_side = match pos.side {
+                        crate::exchange::types::PositionSide::Long => OrderSide::Sell,
+                        crate::exchange::types::PositionSide::Short => OrderSide::Buy,
+                        _ => OrderSide::Sell,
+                    };
+
+                    let order_request = OrderRequest {
+                        symbol: pos.symbol.clone(),
+                        side: close_side,
+                        order_type: OrderType::Market,
+                        quantity: pos.quantity,
+                        price: None,
+                        stop_price: None,
+                        time_in_force: Some(TimeInForce::Ioc),
+                        client_order_id: None,
+                    };
+
+                    match self.place_and_track_order(order_request).await {
+                        Ok(result) => {
+                            info!(
+                                "Risk close all — {} order placed: {}",
+                                pos.symbol, result.order_id
+                            );
+                        }
+                        Err(e) => {
+                            error!("Risk close all failed for {}: {}", pos.symbol, e);
+                        }
+                    }
+                }
+
+                // 清除所有止损止盈
+                // （CloseAll 后持仓已清，止损止盈也应清除）
+
+                // 触发熔断，暂停交易
+                self.risk_engine
+                    .trigger_circuit_breaker(&format!("CloseAll: {}", reason))
+                    .await;
+            }
+        }
+
+        Ok(())
+    }
+
     /// 构建订单请求
-    fn build_order_request(
+    /// 构建订单请求
+    ///
+    /// Sell 信号校验逻辑：
+    /// 1. 优先从交易所查询实时合约持仓（合约场景）
+    /// 2. 查询失败时回退到 spot balance（兼容现货场景）
+    async fn build_order_request(
         &self,
         signal: &Signal,
         account: &AccountInfo,
@@ -364,41 +554,70 @@ impl OrderManager {
                 quantity,
                 entry_price,
             } => {
-                // 检查持仓是否充足
-                // 从 symbol 中提取 base_asset（如 BTCUSDT -> BTC）
-                let base_asset = if symbol.ends_with("USDT") {
-                    symbol.strip_suffix("USDT").unwrap_or(symbol)
-                } else if symbol.ends_with("BUSD") {
-                    symbol.strip_suffix("BUSD").unwrap_or(symbol)
-                } else if symbol.ends_with("USDC") {
-                    symbol.strip_suffix("USDC").unwrap_or(symbol)
-                } else {
-                    symbol
-                };
-                let balance = account
-                    .balances
-                    .iter()
-                    .find(|b| b.asset == base_asset)
-                    .map(|b| b.free)
-                    .unwrap_or(Decimal::ZERO);
+                // 优先查询交易所实时持仓（合约场景）
+                // 风控计算必须使用交易所真实数据，不使用缓存
+                match self.exchange.get_position(symbol).await {
+                    Ok(position) if position.quantity >= *quantity => {
+                        // 合约持仓充足，允许卖出
+                        Ok(OrderRequest {
+                            symbol: symbol.clone(),
+                            side: OrderSide::Sell,
+                            order_type: OrderType::Market,
+                            quantity: *quantity,
+                            price: Some(*entry_price),
+                            stop_price: None,
+                            time_in_force: Some(TimeInForce::Ioc),
+                            client_order_id: None,
+                        })
+                    }
+                    Ok(position) => {
+                        // 持仓不足
+                        Err(OrderError::InsufficientPosition(format!(
+                            "Sell {} {} failed: only {} available on exchange",
+                            quantity, symbol, position.quantity
+                        )))
+                    }
+                    Err(e) => {
+                        // 交易所查询失败，回退到 spot balance（兼容现货场景）
+                        warn!(
+                            "Failed to get futures position for {}, falling back to spot balance: {}",
+                            symbol, e
+                        );
+                        let base_asset = if symbol.ends_with("USDT") {
+                            symbol.strip_suffix("USDT").unwrap_or(symbol)
+                        } else if symbol.ends_with("BUSD") {
+                            symbol.strip_suffix("BUSD").unwrap_or(symbol)
+                        } else if symbol.ends_with("USDC") {
+                            symbol.strip_suffix("USDC").unwrap_or(symbol)
+                        } else {
+                            symbol
+                        };
+                        let balance = account
+                            .balances
+                            .iter()
+                            .find(|b| b.asset == base_asset)
+                            .map(|b| b.free)
+                            .unwrap_or(Decimal::ZERO);
 
-                if *quantity > balance {
-                    return Err(OrderError::InsufficientPosition(format!(
-                        "Required: {} {}, Available: {} {}",
-                        quantity, base_asset, balance, base_asset
-                    )));
+                        if *quantity > balance {
+                            return Err(OrderError::InsufficientPosition(format!(
+                                "Required: {} {}, Available: {} {} (spot)",
+                                quantity, base_asset, balance, base_asset
+                            )));
+                        }
+
+                        Ok(OrderRequest {
+                            symbol: symbol.clone(),
+                            side: OrderSide::Sell,
+                            order_type: OrderType::Market,
+                            quantity: *quantity,
+                            price: Some(*entry_price),
+                            stop_price: None,
+                            time_in_force: Some(TimeInForce::Ioc),
+                            client_order_id: None,
+                        })
+                    }
                 }
-
-                Ok(OrderRequest {
-                    symbol: symbol.clone(),
-                    side: OrderSide::Sell,
-                    order_type: OrderType::Market,
-                    quantity: *quantity,
-                    price: Some(*entry_price),
-                    stop_price: None,
-                    time_in_force: Some(TimeInForce::Ioc),
-                    client_order_id: None,
-                })
             }
             Signal::Hold => Err(OrderError::InvalidSignal("Cannot execute Hold signal".to_string())),
         }

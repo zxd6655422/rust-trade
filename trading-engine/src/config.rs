@@ -23,12 +23,40 @@ pub struct CacheConfig {
     pub max_ticks_per_symbol: usize,
 }
 
-/// 交易所配置
+/// 交易所配置（单个，兼容旧配置）
 #[derive(Debug, Deserialize, Clone)]
 pub struct ExchangeConfig {
     pub id: String,
     pub testnet: bool,
 }
+
+/// 交易所实例配置（支持多交易所多模式）
+///
+/// 每个实例代表一个 交易所+交易模式 的组合，
+/// 如 binance-futures、binance-spot、okx-futures
+///
+/// API Key 从 .env 环境变量读取，交易对由策略服务控制
+#[derive(Debug, Deserialize, Clone)]
+pub struct ExchangeInstanceConfig {
+    /// 实例唯一标识，如 "binance-futures"
+    pub id: String,
+    /// 交易所 ID，传给 ExchangeFactory，如 "binance", "binance-spot", "okx"
+    pub exchange_id: String,
+    /// 交易模式: "spot" / "futures"
+    pub market_type: String,
+    /// 是否测试网
+    #[serde(default)]
+    pub testnet: bool,
+    /// 是否启用
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// 杠杆倍数（仅合约有效）
+    #[serde(default = "default_leverage")]
+    pub leverage: u32,
+}
+
+fn default_true() -> bool { true }
+fn default_leverage() -> u32 { 10 }
 
 /// 数据源类型
 #[derive(Debug, Deserialize, Clone, PartialEq)]
@@ -75,6 +103,7 @@ pub struct TradingConfig {
 pub struct Settings {
     pub database: DatabaseConfig,
     pub cache: CacheConfig,
+    /// 单交易所配置（兼容旧配置）
     pub exchange: ExchangeConfig,
     pub trading: TradingConfig,
     pub risk_control: RiskConfig,
@@ -166,6 +195,28 @@ impl Settings {
     /// 获取交易所 ID
     pub fn exchange_id(&self) -> &str {
         &self.exchange.id
+    }
+}
+
+impl ExchangeInstanceConfig {
+    /// 从环境变量获取 API Key
+    /// 环境变量名：{ID 大写，- 替换为 _}_API_KEY
+    /// 例如 binance-futures → BINANCE_FUTURES_API_KEY
+    pub fn api_key(&self) -> Result<String, String> {
+        let env_name = format!("{}_API_KEY", self.id.to_uppercase().replace("-", "_"));
+        std::env::var(&env_name).map_err(|_| format!("{} not set", env_name))
+    }
+
+    /// 从环境变量获取 API Secret
+    pub fn api_secret(&self) -> Result<String, String> {
+        let env_name = format!("{}_API_SECRET", self.id.to_uppercase().replace("-", "_"));
+        std::env::var(&env_name).map_err(|_| format!("{} not set", env_name))
+    }
+
+    /// 从环境变量获取 Passphrase（OKX 需要，Binance 不需要）
+    pub fn passphrase(&self) -> Option<String> {
+        let env_name = format!("{}_PASSPHRASE", self.id.to_uppercase().replace("-", "_"));
+        std::env::var(env_name).ok()
     }
 }
 

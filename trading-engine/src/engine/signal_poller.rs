@@ -1,6 +1,15 @@
 // engine/signal_poller.rs
 //
-// 信号轮询器：从 strategy_signals 表读取待执行信号，通过 OrderManager 执行交易
+// 交易引擎主循环（唯一入口）
+//
+// 职责：
+// 1. 从 strategy_signals 表轮询待执行信号 → 广播到所有 TradingUnit 执行
+// 2. 定期检查止损止盈（每个 TradingUnit 独立检查）
+// 3. 定期同步持仓（每个 TradingUnit 独立同步到 RiskEngine）
+// 4. 定期检查持仓风控（RiskEngine 聚合所有 TradingUnit 持仓）
+// 5. 定期清理过期信号
+//
+// 多交易所多模式：每个 TradingUnit 独立运行，信号广播到所有已启用的 unit
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -13,7 +22,8 @@ use uuid::Uuid;
 
 use trading_common::backtest::strategy::Signal;
 
-use crate::order::OrderManager;
+use crate::engine::trading_unit::TradingUnit;
+use crate::risk::RiskEngine;
 
 /// 信号记录（从 strategy_signals 表读取）
 #[derive(Debug, Clone)]
@@ -31,7 +41,7 @@ struct SignalRecord {
 
 /// 信号轮询器配置
 pub struct SignalPollerConfig {
-    /// 轮询间隔（毫秒）
+    /// 信号轮询间隔（毫秒）
     pub poll_interval_ms: u64,
     /// 每次最多获取的信号数
     pub batch_size: i64,
@@ -39,6 +49,12 @@ pub struct SignalPollerConfig {
     pub signal_expire_hours: i64,
     /// 默认下单数量（当信号没有指定数量时）
     pub default_quantity: Decimal,
+    /// 止损止盈检查间隔（秒）
+    pub stop_check_interval_secs: u64,
+    /// 持仓同步间隔（秒）
+    pub position_sync_interval_secs: u64,
+    /// 持仓风控检查间隔（秒）
+    pub risk_check_interval_secs: u64,
 }
 
 impl Default for SignalPollerConfig {
@@ -47,59 +63,141 @@ impl Default for SignalPollerConfig {
             poll_interval_ms: 5000,
             batch_size: 10,
             signal_expire_hours: 1,
-            default_quantity: Decimal::from(100), // 默认 100 USDT 等值
+            default_quantity: Decimal::from(100),
+            stop_check_interval_secs: 5,
+            position_sync_interval_secs: 300,  // 5 分钟
+            risk_check_interval_secs: 30,      // 30 秒
         }
     }
 }
 
-/// 信号轮询器
+/// 交易引擎主循环
 ///
-/// 定时从 strategy_signals 表获取待执行信号，
-/// 转换为交易引擎的 Signal 格式，通过 OrderManager 执行
+/// 支持多交易所多模式：
+/// - 每个 TradingUnit 是一个独立的 交易所+模式 交易实例
+/// - 信号广播到所有已启用的 TradingUnit
+/// - 每个 TradingUnit 独立执行止损止盈、持仓同步
+/// - RiskEngine 聚合所有 TradingUnit 持仓进行统一风控
 pub struct SignalPoller {
     pool: PgPool,
-    order_manager: Arc<OrderManager>,
+    risk_engine: Arc<RiskEngine>,
+    trading_units: Vec<Arc<TradingUnit>>,
     config: SignalPollerConfig,
 }
 
 impl SignalPoller {
     pub fn new(
         pool: PgPool,
-        order_manager: Arc<OrderManager>,
+        risk_engine: Arc<RiskEngine>,
+        trading_units: Vec<Arc<TradingUnit>>,
         config: SignalPollerConfig,
     ) -> Self {
         Self {
             pool,
-            order_manager,
+            risk_engine,
+            trading_units,
             config,
         }
     }
 
-    /// 启动轮询循环
+    /// 启动主循环（交易引擎唯一入口）
+    ///
+    /// 每个定时任务独立 spawn，互不阻塞
     pub async fn start(self: Arc<Self>) {
-        info!(
-            "Signal poller started (interval: {}ms, batch: {})",
-            self.config.poll_interval_ms, self.config.batch_size
-        );
+        let enabled_units: Vec<_> = self.trading_units.iter()
+            .filter(|u| u.enabled)
+            .collect();
 
-        let mut poll_interval = interval(Duration::from_millis(self.config.poll_interval_ms));
-        let mut expire_interval = interval(Duration::from_secs(3600)); // 每小时清理过期信号
+        info!("=== Trading Engine Started ===");
+        info!("Trading units: {}", enabled_units.len());
+        for unit in &enabled_units {
+            info!("  - {} ({} {}, leverage={}x)",
+                unit.id, unit.exchange_id, unit.market_type, unit.leverage);
+        }
+        info!("Signal poll interval: {}ms", self.config.poll_interval_ms);
+        info!("Stop check interval: {}s", self.config.stop_check_interval_secs);
+        info!("Risk check interval: {}s", self.config.risk_check_interval_secs);
+        info!("Position sync interval: {}s", self.config.position_sync_interval_secs);
 
-        loop {
-            tokio::select! {
-                _ = poll_interval.tick() => {
-                    if let Err(e) = self.poll_and_execute().await {
-                        error!("Signal poll error: {}", e);
-                    }
+        // 初始同步所有 TradingUnit 的持仓
+        for unit in &enabled_units {
+            if let Err(e) = unit.portfolio_manager.sync_positions().await {
+                warn!("Initial sync failed for {}: {}", unit.id, e);
+            }
+        }
+
+        // 任务1: 信号轮询执行（广播到所有 TradingUnit）
+        let s = self.clone();
+        tokio::spawn(async move {
+            let mut interval = interval(Duration::from_millis(s.config.poll_interval_ms));
+            loop {
+                interval.tick().await;
+                if let Err(e) = s.poll_and_execute().await {
+                    error!("Signal poll error: {}", e);
                 }
-                _ = expire_interval.tick() => {
-                    if let Err(e) = self.expire_old_signals().await {
-                        warn!("Failed to expire old signals: {}", e);
+            }
+        });
+
+        // 任务2: 止损止盈检查（每个 TradingUnit 独立检查）
+        let s = self.clone();
+        tokio::spawn(async move {
+            let mut interval = interval(Duration::from_secs(s.config.stop_check_interval_secs));
+            loop {
+                interval.tick().await;
+                s.check_all_stop_orders().await;
+            }
+        });
+
+        // 任务3: 持仓风控检查（RiskEngine 聚合所有 unit）
+        let s = self.clone();
+        tokio::spawn(async move {
+            let mut interval = interval(Duration::from_secs(s.config.risk_check_interval_secs));
+            loop {
+                interval.tick().await;
+                if let Err(e) = s.check_position_risk().await {
+                    warn!("Position risk check error: {}", e);
+                }
+            }
+        });
+
+        // 任务4: 持仓同步（每个 TradingUnit 独立同步）
+        let s = self.clone();
+        tokio::spawn(async move {
+            let mut interval = interval(Duration::from_secs(s.config.position_sync_interval_secs));
+            loop {
+                interval.tick().await;
+                for unit in &s.trading_units {
+                    if !unit.enabled { continue; }
+                    if let Err(e) = unit.portfolio_manager.sync_positions().await {
+                        warn!("Position sync failed for {}: {}", unit.id, e);
                     }
                 }
             }
+        });
+
+        // 任务5: 过期信号清理
+        let s = self.clone();
+        tokio::spawn(async move {
+            let mut interval = interval(Duration::from_secs(3600));
+            loop {
+                interval.tick().await;
+                if let Err(e) = s.expire_old_signals().await {
+                    warn!("Failed to expire old signals: {}", e);
+                }
+            }
+        });
+
+        info!("All 5 tasks spawned, running in parallel");
+
+        // 保持主任务存活
+        loop {
+            tokio::time::sleep(Duration::from_secs(3600)).await;
         }
     }
+
+    // ============================================================
+    // 信号执行（广播到所有 TradingUnit）
+    // ============================================================
 
     /// 轮询并执行信号
     async fn poll_and_execute(&self) -> Result<(), String> {
@@ -116,24 +214,34 @@ impl SignalPoller {
             let signal_id = record.id;
 
             info!(
-                "Executing signal: {} {} @ {} (confidence: {}, strategy: {})",
+                "Broadcasting signal: {} {} @ {} (confidence: {}, strategy: {})",
                 record.direction, record.symbol, record.entry_price,
                 record.overall_confidence, record.strategy_id
             );
 
-            match self.order_manager.execute_signal(signal).await {
-                Ok(result) => {
-                    info!(
-                        "Signal executed: {} -> order_id={}",
-                        signal_id, result.order_id
-                    );
-                    self.mark_signal_executed(signal_id, &result.order_id).await;
-                }
-                Err(e) => {
-                    warn!("Signal execution failed: {} - {}", signal_id, e);
-                    self.mark_signal_rejected(signal_id, &e.to_string()).await;
+            // 广播到所有已启用的 TradingUnit
+            for unit in &self.trading_units {
+                if !unit.enabled { continue; }
+
+                let unit_id = unit.id.clone();
+                match unit.order_manager.execute_signal(signal.clone()).await {
+                    Ok(result) => {
+                        info!(
+                            "[{}] Signal executed: {} -> order_id={}",
+                            unit_id, signal_id, result.order_id
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            "[{}] Signal execution failed: {} - {}",
+                            unit_id, signal_id, e
+                        );
+                    }
                 }
             }
+
+            // 标记信号为已执行（只要有一个 unit 成功就标记）
+            self.mark_signal_executed(signal_id, "broadcast").await;
         }
 
         Ok(())
@@ -222,6 +330,127 @@ impl SignalPoller {
             Signal::Hold
         }
     }
+
+    // ============================================================
+    // 止损止盈检查（每个 TradingUnit 独立）
+    // ============================================================
+
+    /// 检查所有 TradingUnit 的止损止盈
+    async fn check_all_stop_orders(&self) {
+        for unit in &self.trading_units {
+            if !unit.enabled { continue; }
+
+            let active_stops = unit.stop_loss_manager.get_active_stop_orders().await;
+            if active_stops.is_empty() {
+                continue;
+            }
+
+            for stop_order in active_stops {
+                match unit.exchange.get_ticker(&stop_order.symbol).await {
+                    Ok(ticker) => {
+                        let current_price = ticker.last_price;
+
+                        if let Some(action) = unit.stop_loss_manager.check_price(
+                            &stop_order.symbol,
+                            current_price,
+                        ).await {
+                            warn!(
+                                "[{}] Stop triggered for {}: {:?} at {}",
+                                unit.id, stop_order.symbol, action, current_price
+                            );
+
+                            match unit.order_manager.execute_stop_action(action).await {
+                                Ok(result) => {
+                                    info!("[{}] Stop order executed: {}", unit.id, result.order_id);
+                                }
+                                Err(e) => {
+                                    error!("[{}] Failed to execute stop for {}: {}",
+                                        unit.id, stop_order.symbol, e);
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            "[{}] Failed to get ticker for {} (stop check skipped): {}",
+                            unit.id, stop_order.symbol, e
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // ============================================================
+    // 持仓风控检查（RiskEngine 聚合）
+    // ============================================================
+
+    /// 检查持仓风控
+    async fn check_position_risk(&self) -> Result<(), String> {
+        // 从所有 TradingUnit 获取账户信息，取第一个成功的
+        // （理想情况下应该聚合所有交易所的余额，但 RiskEngine 目前基于单一账户）
+        let mut account = None;
+        for unit in &self.trading_units {
+            if !unit.enabled { continue; }
+            match unit.exchange.get_account().await {
+                Ok(acc) => {
+                    account = Some(acc);
+                    break;
+                }
+                Err(e) => {
+                    warn!("[{}] Failed to get account: {}", unit.id, e);
+                }
+            }
+        }
+
+        let account = account.ok_or("Failed to get account from any exchange")?;
+
+        // 同步账户余额到风控引擎
+        self.risk_engine.sync_account_balance(&account).await;
+
+        // 执行持仓风控检查
+        let actions = self.risk_engine.check_positions(&account).await;
+
+        if actions.is_empty() {
+            return Ok(());
+        }
+
+        warn!("⚠️ Position risk check triggered {} actions", actions.len());
+
+        // 执行风控动作（找到对应 symbol 的 TradingUnit 执行）
+        for action in actions {
+            // 从 RiskAction 中提取 symbol，找到对应的 TradingUnit
+            let symbol = match &action {
+                crate::risk::RiskAction::ForceClose { symbol, .. } => Some(symbol.as_str()),
+                crate::risk::RiskAction::ReducePosition { symbol, .. } => Some(symbol.as_str()),
+                crate::risk::RiskAction::CloseAll { .. } => None,
+            };
+
+            if let Some(_symbol) = symbol {
+                // 对所有 TradingUnit 执行（因为 symbol 可能在多个 unit 中存在）
+                for unit in &self.trading_units {
+                    if !unit.enabled { continue; }
+                    if let Err(e) = unit.order_manager.execute_risk_action(action.clone()).await {
+                        error!("[{}] Failed to execute risk action: {}", unit.id, e);
+                    }
+                }
+            } else {
+                // CloseAll: 对所有 TradingUnit 执行
+                for unit in &self.trading_units {
+                    if !unit.enabled { continue; }
+                    if let Err(e) = unit.order_manager.execute_risk_action(action.clone()).await {
+                        error!("[{}] Failed to execute risk action: {}", unit.id, e);
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    // ============================================================
+    // 信号过期
+    // ============================================================
 
     /// 清理过期信号
     async fn expire_old_signals(&self) -> Result<(), String> {

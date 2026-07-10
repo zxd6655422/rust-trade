@@ -12,7 +12,7 @@ use super::config::RiskConfig;
 use crate::exchange::types::{AccountInfo, OrderRequest};
 use trading_common::data::types::TickData;
 
-/// 风控决策
+/// 风控决策（针对新订单）
 #[derive(Debug, Clone)]
 pub enum RiskDecision {
     /// 允许执行
@@ -21,6 +21,28 @@ pub enum RiskDecision {
     Reject(String),
     /// 允许但修改数量
     Modify(Decimal),
+}
+
+/// 持仓风控动作（针对已有持仓）
+#[derive(Debug, Clone)]
+pub enum RiskAction {
+    /// 强制平仓某个持仓
+    ForceClose {
+        symbol: String,
+        quantity: Decimal,
+        reason: String,
+    },
+    /// 减仓（部分平仓）
+    ReducePosition {
+        symbol: String,
+        current_quantity: Decimal,
+        target_quantity: Decimal,
+        reason: String,
+    },
+    /// 全部平仓（账户级风控触发）
+    CloseAll {
+        reason: String,
+    },
 }
 
 impl RiskDecision {
@@ -124,6 +146,47 @@ impl RiskEngine {
         }
     }
 
+    /// 从 PortfolioManager 同步交易所实时持仓到风控引擎
+    ///
+    /// 持仓 key 格式为 "exchange_id:symbol"，如 "binance-futures:BTCUSDT"
+    /// 不同 TradingUnit 的持仓通过 key 前缀区分
+    ///
+    /// 此方法在以下时机被调用：
+    /// - 启动时初始同步
+    /// - 定时同步（5分钟间隔）
+    /// - 订单成交后
+    pub async fn sync_positions_from_unit(
+        &self,
+        exchange_id: &str,
+        market_type: &str,
+        positions: &HashMap<String, crate::portfolio::manager::PositionSnapshot>,
+    ) {
+        let mut state = self.state.lock().await;
+
+        // 先清除该 unit 的旧持仓
+        let prefix = format!("{}:", exchange_id);
+        state.positions.retain(|k, _| !k.starts_with(&prefix));
+
+        // 写入新持仓
+        for (symbol, pos) in positions {
+            state.positions.insert(
+                symbol.clone(),  // key 已经是 "exchange_id:symbol" 格式
+                PositionSnapshot {
+                    symbol: pos.symbol.clone(),
+                    quantity: pos.quantity,
+                    avg_entry_price: pos.avg_entry_price,
+                    current_price: pos.current_price,
+                    unrealized_pnl: pos.unrealized_pnl,
+                },
+            );
+        }
+
+        info!(
+            "RiskEngine synced {} positions from {} {}",
+            positions.len(), exchange_id, market_type
+        );
+    }
+
     /// 核心方法：检查订单是否允许执行
     pub async fn check_order(
         &self,
@@ -208,6 +271,146 @@ impl RiskEngine {
         }
 
         Ok(RiskDecision::Allow)
+    }
+
+    /// 检查已有持仓的风控状态
+    ///
+    /// 定期调用，检查以下规则：
+    /// 1. 日亏损限制 → 全部平仓
+    /// 2. 最大回撤 → 全部平仓
+    /// 3. 总曝光度超限 → 减仓
+    /// 4. 单个持仓过大 → 减仓
+    ///
+    /// 返回需要执行的风控动作列表
+    pub async fn check_positions(
+        &self,
+        account: &AccountInfo,
+    ) -> Vec<RiskAction> {
+        let state = self.state.lock().await;
+        let mut actions = Vec::new();
+
+        // 1. 日亏损限制 → 全部平仓
+        if state.daily_pnl < -self.config.max_daily_loss {
+            warn!(
+                "⚠️ Daily loss limit breached: {} / {}, force closing all positions",
+                state.daily_pnl, self.config.max_daily_loss
+            );
+            actions.push(RiskAction::CloseAll {
+                reason: format!(
+                    "Daily loss {} exceeds limit {}",
+                    state.daily_pnl, self.config.max_daily_loss
+                ),
+            });
+            return actions; // 优先级最高，直接返回
+        }
+
+        // 2. 最大回撤 → 全部平仓
+        if state.peak_equity > Decimal::ZERO {
+            let drawdown = (state.peak_equity - state.current_equity) / state.peak_equity;
+            if drawdown > self.config.max_drawdown_pct {
+                warn!(
+                    "⚠️ Max drawdown breached: {}% / {}%, force closing all positions",
+                    drawdown * Decimal::from(100),
+                    self.config.max_drawdown_pct * Decimal::from(100)
+                );
+                actions.push(RiskAction::CloseAll {
+                    reason: format!(
+                        "Drawdown {}% exceeds limit {}%",
+                        drawdown * Decimal::from(100),
+                        self.config.max_drawdown_pct * Decimal::from(100)
+                    ),
+                });
+                return actions;
+            }
+        }
+
+        // 3. 总曝光度检查 → 减仓
+        let total_exposure: Decimal = state
+            .positions
+            .values()
+            .map(|p| p.quantity * p.current_price)
+            .sum();
+        let max_exposure = account.total_equity * self.config.max_exposure_pct;
+
+        if total_exposure > max_exposure && !state.positions.is_empty() {
+            let excess_ratio = (total_exposure - max_exposure) / total_exposure;
+            warn!(
+                "⚠️ Total exposure {} exceeds limit {}, reducing by {}%",
+                total_exposure,
+                max_exposure,
+                excess_ratio * Decimal::from(100)
+            );
+
+            // 按持仓价值从大到小减仓
+            let mut sorted_positions: Vec<_> = state.positions.values().collect();
+            sorted_positions.sort_by(|a, b| {
+                let val_a = a.quantity * a.current_price;
+                let val_b = b.quantity * b.current_price;
+                val_b.cmp(&val_a)
+            });
+
+            let mut remaining_excess = total_exposure - max_exposure;
+            for pos in sorted_positions {
+                if remaining_excess <= Decimal::ZERO {
+                    break;
+                }
+                let pos_value = pos.quantity * pos.current_price;
+                let reduce_value = pos_value.min(remaining_excess);
+                let reduce_qty = if pos.current_price > Decimal::ZERO {
+                    reduce_value / pos.current_price
+                } else {
+                    Decimal::ZERO
+                };
+
+                if reduce_qty > Decimal::ZERO && reduce_qty < pos.quantity {
+                    let target_qty = pos.quantity - reduce_qty;
+                    actions.push(RiskAction::ReducePosition {
+                        symbol: pos.symbol.clone(),
+                        current_quantity: pos.quantity,
+                        target_quantity: target_qty,
+                        reason: format!("Exposure reduction: {} USDT", reduce_value),
+                    });
+                    remaining_excess -= reduce_value;
+                } else if reduce_qty >= pos.quantity {
+                    actions.push(RiskAction::ForceClose {
+                        symbol: pos.symbol.clone(),
+                        quantity: pos.quantity,
+                        reason: format!("Exposure reduction (full close): {} USDT", pos_value),
+                    });
+                    remaining_excess -= pos_value;
+                }
+            }
+        }
+
+        // 4. 单个持仓过大 → 减仓
+        for pos in state.positions.values() {
+            let pos_value = pos.quantity * pos.current_price;
+            if pos_value > self.config.max_position_size {
+                let target_value = self.config.max_position_size;
+                let target_qty = if pos.current_price > Decimal::ZERO {
+                    target_value / pos.current_price
+                } else {
+                    Decimal::ZERO
+                };
+                if target_qty < pos.quantity {
+                    warn!(
+                        "⚠️ Position {} value {} exceeds max {}, reducing to {}",
+                        pos.symbol, pos_value, self.config.max_position_size, target_qty
+                    );
+                    actions.push(RiskAction::ReducePosition {
+                        symbol: pos.symbol.clone(),
+                        current_quantity: pos.quantity,
+                        target_quantity: target_qty,
+                        reason: format!(
+                            "Position value {} exceeds max {}",
+                            pos_value, self.config.max_position_size
+                        ),
+                    });
+                }
+            }
+        }
+
+        actions
     }
 
     /// 更新市场数据

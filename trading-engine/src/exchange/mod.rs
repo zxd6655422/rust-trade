@@ -19,7 +19,8 @@ impl ExchangeFactory {
     /// 支持的 exchange_id:
     /// - "binance"       → Binance USDⓈ-M 合约
     /// - "binance-spot"  → Binance 现货
-    /// - "okx"           → OKX 合约
+    /// - "okx"           → OKX 合约 (SWAP)
+    /// - "okx-spot"      → OKX 现货 (SPOT)
     /// - "mock"          → Mock 交易所 (本地开发测试)
     pub fn create(
         exchange_id: &str,
@@ -57,6 +58,18 @@ impl ExchangeFactory {
                     api_secret: api_secret.to_string(),
                     passphrase: passphrase.unwrap_or("").to_string(),
                     simulated: testnet,
+                    default_inst_type: "SWAP".to_string(),
+                };
+                let adapter = OkxAdapter::new(config)?;
+                Ok(Box::new(adapter))
+            }
+            "okx-spot" => {
+                let config = crate::exchange::adapters::okx_adapter::OkxConfig {
+                    api_key: api_key.to_string(),
+                    api_secret: api_secret.to_string(),
+                    passphrase: passphrase.unwrap_or("").to_string(),
+                    simulated: testnet,
+                    default_inst_type: "SPOT".to_string(),
                 };
                 let adapter = OkxAdapter::new(config)?;
                 Ok(Box::new(adapter))
