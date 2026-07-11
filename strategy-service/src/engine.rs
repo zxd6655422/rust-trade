@@ -276,46 +276,24 @@ async fn process_strategy(
         }
     }
 
-    // 如果启用了自动交易，执行交易
+    // 如果启用了自动交易，标记信号为待执行
+    // 实际下单由 trading-engine 从 strategy_signals 表轮询执行
     if strategy_instance.auto_trade {
-        let exchange_config = ExchangeConfig::default();
-        let executor = TradeExecutor::new(pool.clone(), exchange_config);
-        match executor.execute_trade(
-            &saved_signal,
-            strategy_instance.id,
-            strategy_instance.position_size_pct,
-            &strategy_instance.exchange,
-            &strategy_instance.market_type,
-        ).await {
-            Ok(order_ids) => {
-                if order_ids.is_empty() {
-                    info!(
-                        "⏭️ Auto-trade skipped: signal={} (no actionable signal)",
-                        saved_signal.id
-                    );
-                } else {
-                    info!(
-                        "✅ Auto-trade executed: signal={}, orders={:?}",
-                        saved_signal.id, order_ids
-                    );
-                    // 发送交易执行告警
-                    if let Some(alert_mgr) = alert_manager {
-                        let trade_alert = create_trade_alert(
-                            symbol,
-                            direction,
-                            signal.entry_price,
-                            &order_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(","),
-                        );
-                        let _ = alert_mgr.send(&trade_alert).await;
-                    }
-                }
-            }
-            Err(e) => {
-                error!(
-                    "❌ Auto-trade failed for signal {}: {}",
-                    saved_signal.id, e
-                );
-            }
+        info!(
+            "✅ Auto-trade signal queued: {} {} @ {} (signal={}, stop_loss={:?}, take_profit={:?})",
+            direction, symbol, signal.entry_price,
+            saved_signal.id, signal.stop_loss, signal.take_profit
+        );
+
+        // 发送交易执行告警
+        if let Some(alert_mgr) = alert_manager {
+            let trade_alert = create_trade_alert(
+                symbol,
+                direction,
+                signal.entry_price,
+                &saved_signal.id.to_string(),
+            );
+            let _ = alert_mgr.send(&trade_alert).await;
         }
     }
 

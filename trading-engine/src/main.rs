@@ -20,7 +20,7 @@ use config::Settings;
 use engine::signal_poller::{SignalPoller, SignalPollerConfig};
 use engine::trading_unit::TradingUnit;
 use risk::RiskEngine;
-use storage::{Database, ExchangeRepository, PositionRepository, RedisCache};
+use storage::{Database, ExchangeRepository, PositionRepository, RedisCache, StopOrderRepository};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -108,6 +108,10 @@ async fn run_live_mode(_args: &[String]) -> Result<(), Box<dyn std::error::Error
     // 创建持仓仓储
     let position_repo = Arc::new(PositionRepository::new(pool.clone()));
 
+    // 创建止损止盈仓储（持久化）
+    let stop_order_repo = Arc::new(StopOrderRepository::new(pool.clone()));
+    info!("✅ Stop order repository created");
+
     // 创建风控引擎（所有 TradingUnit 共享）
     let risk_engine = Arc::new(RiskEngine::new(settings.risk_control.clone()));
     info!("✅ Risk engine created");
@@ -120,6 +124,7 @@ async fn run_live_mode(_args: &[String]) -> Result<(), Box<dyn std::error::Error
             risk_engine.clone(),
             position_repo.clone(),
             cache.clone(),
+            Some(stop_order_repo.clone()),
         ) {
             Ok(unit) => {
                 trading_units.push(Arc::new(unit));

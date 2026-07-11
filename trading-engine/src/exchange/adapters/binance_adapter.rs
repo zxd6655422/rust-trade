@@ -1257,6 +1257,153 @@ impl TradingOperations for BinanceAdapter {
 
         Ok(())
     }
+
+    async fn place_conditional_order(
+        &self,
+        order: ConditionalOrderRequest,
+    ) -> Result<ConditionalOrderResult, ExchangeError> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), order.symbol.clone());
+        params.insert("side".to_string(), order.side.to_string());
+        params.insert("type".to_string(), order.order_type.to_string());
+        params.insert("stopPrice".to_string(), order.stop_price.to_string());
+        params.insert("workingType".to_string(),
+            order.working_type.clone().unwrap_or_else(|| "CONTRACT_PRICE".to_string()));
+
+        if order.close_position {
+            params.insert("closePosition".to_string(), "true".to_string());
+        } else if let Some(qty) = order.quantity {
+            params.insert("quantity".to_string(), qty.to_string());
+        }
+
+        if let Some(rate) = order.callback_rate {
+            params.insert("callbackRate".to_string(), rate.to_string());
+        }
+
+        if let Some(client_id) = order.client_order_id {
+            params.insert("newClientOrderId".to_string(), client_id);
+        }
+
+        params.insert("newOrderRespType".to_string(), "RESULT".to_string());
+
+        let data = self.send_signed_form_request("POST", "/fapi/v1/algo/order", &params).await?;
+
+        Ok(ConditionalOrderResult {
+            strategy_id: data["strategyId"].as_i64().unwrap_or(0).to_string(),
+            symbol: data["symbol"].as_str().unwrap_or(&order.symbol).to_string(),
+            side: order.side,
+            order_type: order.order_type,
+            stop_price: order.stop_price,
+            quantity: order.quantity,
+            close_position: order.close_position,
+            status: data["status"].as_str().unwrap_or("NEW").to_string(),
+            created_at: Utc::now(),
+        })
+    }
+
+    async fn cancel_conditional_order(
+        &self,
+        symbol: &str,
+        strategy_id: &str,
+    ) -> Result<(), ExchangeError> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        params.insert("strategyId".to_string(), strategy_id.to_string());
+
+        self.send_signed_request("DELETE", "/fapi/v1/algo/order", &params).await?;
+        Ok(())
+    }
+
+    async fn get_conditional_orders(
+        &self,
+        symbol: Option<&str>,
+    ) -> Result<Vec<ConditionalOrderResult>, ExchangeError> {
+        let mut params = HashMap::new();
+        if let Some(s) = symbol {
+            params.insert("symbol".to_string(), s.to_string());
+        }
+
+        let data = self.send_signed_request("GET", "/fapi/v1/algo/openOrders", &params).await?;
+
+        let orders = data
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|o| {
+                        Some(ConditionalOrderResult {
+                            strategy_id: o["strategyId"].as_i64()?.to_string(),
+                            symbol: o["symbol"].as_str()?.to_string(),
+                            side: match o["side"].as_str()? {
+                                "BUY" => OrderSide::Buy,
+                                _ => OrderSide::Sell,
+                            },
+                            order_type: match o["type"].as_str()? {
+                                "STOP_MARKET" => OrderType::StopMarket,
+                                "TAKE_PROFIT_MARKET" => OrderType::TakeProfitMarket,
+                                "TRAILING_STOP_MARKET" => OrderType::TrailingStopMarket,
+                                _ => OrderType::StopMarket,
+                            },
+                            stop_price: Decimal::from_str(o["stopPrice"].as_str()?).ok()?,
+                            quantity: o["quantity"].as_str().and_then(|s| Decimal::from_str(s).ok()),
+                            close_position: o["closePosition"].as_bool().unwrap_or(false),
+                            status: o["status"].as_str().unwrap_or("NEW").to_string(),
+                            created_at: DateTime::from_timestamp_millis(o["createTime"].as_i64()?)?,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(orders)
+    }
+
+    async fn get_income_history(
+        &self,
+        symbol: Option<&str>,
+        income_type: Option<&str>,
+        start_time: Option<DateTime<Utc>>,
+        end_time: Option<DateTime<Utc>>,
+        limit: Option<u32>,
+    ) -> Result<Vec<IncomeRecord>, ExchangeError> {
+        let mut params = HashMap::new();
+        if let Some(s) = symbol {
+            params.insert("symbol".to_string(), s.to_string());
+        }
+        if let Some(t) = income_type {
+            params.insert("incomeType".to_string(), t.to_string());
+        }
+        if let Some(st) = start_time {
+            params.insert("startTime".to_string(), st.timestamp_millis().to_string());
+        }
+        if let Some(et) = end_time {
+            params.insert("endTime".to_string(), et.timestamp_millis().to_string());
+        }
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+
+        let data = self.send_signed_request("GET", "/fapi/v1/income", &params).await?;
+
+        let records = data
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|item| {
+                        Some(IncomeRecord {
+                            symbol: item["symbol"].as_str()?.to_string(),
+                            income_type: item["incomeType"].as_str()?.to_string(),
+                            income: Decimal::from_str(item["income"].as_str()?).ok()?,
+                            asset: item["asset"].as_str()?.to_string(),
+                            time: DateTime::from_timestamp_millis(item["time"].as_i64()?)?,
+                            info: item["info"].as_str().map(|s| s.to_string()),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(records)
+    }
 }
 
 /// 解析交易数据 (WebSocket @trade stream)

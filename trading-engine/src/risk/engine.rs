@@ -9,7 +9,8 @@ use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
 use super::config::RiskConfig;
-use crate::exchange::types::{AccountInfo, OrderRequest};
+use crate::exchange::traits::Exchange;
+use crate::exchange::types::{AccountInfo, IncomeRecord, OrderRequest};
 use trading_common::data::types::TickData;
 
 /// 风控决策（针对新订单）
@@ -104,6 +105,11 @@ pub struct RiskEngine {
 }
 
 impl RiskEngine {
+    /// 获取风控配置
+    pub fn config(&self) -> &RiskConfig {
+        &self.config
+    }
+
     /// 创建新的风控引擎
     pub fn new(config: RiskConfig) -> Self {
         let initial_state = RiskState {
@@ -536,6 +542,47 @@ impl RiskEngine {
         state.daily_pnl = Decimal::ZERO;
         state.daily_trade_count = 0;
         info!("Daily risk stats reset");
+    }
+
+    /// 从交易所同步已实现盈亏（替代简化计算）
+    ///
+    /// 调用 exchange.get_income_history() 获取当日 REALIZED_PNL，
+    /// 累加得到真实的 daily_pnl
+    pub async fn sync_realized_pnl(
+        &self,
+        exchange: &dyn Exchange,
+        exchange_id: &str,
+    ) {
+        // 获取今日零点时间戳
+        let today_start = Utc::now()
+            .date_naive()
+            .and_hms_opt(0, 0, 0)
+            .unwrap()
+            .and_utc();
+
+        match exchange.get_income_history(
+            None,                    // 所有交易对
+            Some("REALIZED_PNL"),    // 只查已实现盈亏
+            Some(today_start),
+            None,
+            Some(1000),
+        ).await {
+            Ok(records) => {
+                let total_realized: Decimal = records.iter().map(|r| r.income).sum();
+                let mut state = self.state.lock().await;
+                state.daily_pnl = total_realized;
+                debug!(
+                    "[{}] Synced realized PnL from exchange: {} USDT ({} records)",
+                    exchange_id, total_realized, records.len()
+                );
+            }
+            Err(e) => {
+                warn!(
+                    "[{}] Failed to sync realized PnL: {}, using in-memory calculation",
+                    exchange_id, e
+                );
+            }
+        }
     }
 
     /// 检测黑天鹅事件

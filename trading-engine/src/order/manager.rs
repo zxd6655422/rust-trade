@@ -1,15 +1,18 @@
 // order/manager.rs
 // 订单管理器
 
+use chrono::Utc;
 use rust_decimal::Decimal;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
+use uuid::Uuid;
 
 use crate::exchange::traits::Exchange;
 use crate::exchange::types::*;
 use crate::risk::{RiskDecision, RiskEngine, RiskAction, StopLossConfig, StopLossManager, StopAction};
+use crate::storage::StopOrderRepository;
 use trading_common::backtest::strategy::Signal;
 
 /// 将数量截断到 step_size 精度
@@ -26,6 +29,7 @@ pub struct OrderManager {
     exchange: Arc<dyn Exchange>,
     risk_engine: Arc<RiskEngine>,
     stop_loss_manager: Arc<StopLossManager>,
+    stop_order_repo: Option<Arc<StopOrderRepository>>,
     active_orders: Arc<Mutex<HashMap<String, OrderInfo>>>,
     /// 交易所标识（用于日志和记录）
     exchange_id: String,
@@ -35,6 +39,8 @@ pub struct OrderManager {
     leverage: u32,
     /// 默认保证金模式
     margin_type: MarginType,
+    /// 止损止盈配置（用于计算止损止盈价格）
+    stop_loss_config: StopLossConfig,
 }
 
 impl OrderManager {
@@ -47,12 +53,14 @@ impl OrderManager {
         Self {
             exchange,
             risk_engine,
-            stop_loss_manager: Arc::new(StopLossManager::new(stop_loss_config)),
+            stop_loss_manager: Arc::new(StopLossManager::new(stop_loss_config.clone())),
+            stop_order_repo: None,
             active_orders: Arc::new(Mutex::new(HashMap::new())),
             exchange_id: "unknown".to_string(),
             market_type: "futures".to_string(),
             leverage: 10,  // 默认 10x 杠杆
             margin_type: MarginType::Isolated,  // 默认逐仓
+            stop_loss_config,
         }
     }
 
@@ -68,13 +76,20 @@ impl OrderManager {
         Self {
             exchange,
             risk_engine,
-            stop_loss_manager: Arc::new(StopLossManager::new(stop_loss_config)),
+            stop_loss_manager: Arc::new(StopLossManager::new(stop_loss_config.clone())),
+            stop_order_repo: None,
             active_orders: Arc::new(Mutex::new(HashMap::new())),
             exchange_id,
             market_type,
             leverage,
             margin_type: MarginType::Isolated,
+            stop_loss_config,
         }
+    }
+
+    /// 设置止损止盈订单仓储（启用 DB 持久化）
+    pub fn set_stop_order_repo(&mut self, repo: Arc<StopOrderRepository>) {
+        self.stop_order_repo = Some(repo);
     }
 
     /// 获取交易所标识
@@ -252,16 +267,62 @@ impl OrderManager {
                     // 自动创建止损止盈订单
                     let entry_price = update.avg_price.unwrap_or_default();
                     if entry_price > Decimal::ZERO {
+                        // 计算止损止盈价格
+                        let (sl_price, tp_price) = self.calculate_stop_prices(
+                            &update.side, entry_price,
+                        );
+
+                        // 1. 写入内存（用于价格监控）
                         self.stop_loss_manager
                             .create_stop_order(
                                 &update.symbol,
                                 update.side.clone(),
                                 update.filled_quantity,
                                 entry_price,
-                                None, // 使用默认止损
-                                None, // 使用默认止盈
+                                Some(sl_price),
+                                Some(tp_price),
                             )
                             .await;
+
+                        // 2. 持久化到 DB
+                        if let Some(repo) = &self.stop_order_repo {
+                            match repo.create(
+                                &self.exchange_id,
+                                &self.market_type,
+                                &update.symbol,
+                                &update.side.to_string(),
+                                update.filled_quantity,
+                                entry_price,
+                                Some(sl_price),
+                                Some(tp_price),
+                                None,
+                            ).await {
+                                Ok(record) => {
+                                    info!("Stop order persisted to DB: {}", record.id);
+
+                                    // 3. 下交易所条件单（双保险）
+                                    let (sl_exchange_id, tp_exchange_id) = self
+                                        .place_exchange_stop_orders(
+                                            &update.symbol,
+                                            &update.side,
+                                            update.filled_quantity,
+                                            sl_price,
+                                            tp_price,
+                                        )
+                                        .await;
+
+                                    // 4. 更新 DB 中的交易所订单 ID
+                                    let _ = repo.update_exchange_order_ids(
+                                        record.id,
+                                        sl_exchange_id.as_deref(),
+                                        tp_exchange_id.as_deref(),
+                                    ).await;
+                                }
+                                Err(e) => {
+                                    error!("Failed to persist stop order: {}", e);
+                                }
+                            }
+                        }
                     }
 
                     // 从活动订单中移除
@@ -509,6 +570,8 @@ impl OrderManager {
     /// 根据 market_type 区分校验逻辑：
     /// - futures: 查询交易所合约持仓（get_position）
     /// - spot: 查询现货余额（account.balances）
+    ///
+    /// 当 quantity = 0 时，自动根据账户权益和风险参数计算仓位大小
     async fn build_order_request(
         &self,
         signal: &Signal,
@@ -520,6 +583,9 @@ impl OrderManager {
                 quantity,
                 entry_price,
             } => {
+                // 动态计算仓位大小
+                let quantity = self.resolve_quantity(*quantity, *entry_price, account);
+
                 // 检查 USDT 余额是否充足
                 let usdt_balance = account
                     .balances
@@ -536,14 +602,19 @@ impl OrderManager {
                     )));
                 }
 
+                // 尝试获取订单簿最优价格做限价单
+                let (order_type, price, tif) = self.determine_order_params(
+                    symbol, OrderSide::Buy, *entry_price,
+                ).await;
+
                 Ok(OrderRequest {
                     symbol: symbol.clone(),
                     side: OrderSide::Buy,
-                    order_type: OrderType::Market,
-                    quantity: *quantity,
-                    price: Some(*entry_price),
+                    order_type,
+                    quantity,
+                    price: Some(price),
                     stop_price: None,
-                    time_in_force: Some(TimeInForce::Ioc),
+                    time_in_force: Some(tif),
                     client_order_id: None,
                 })
             }
@@ -552,6 +623,9 @@ impl OrderManager {
                 quantity,
                 entry_price,
             } => {
+                // 动态计算仓位大小
+                let quantity = self.resolve_quantity(*quantity, *entry_price, account);
+
                 // 根据交易模式选择不同的持仓校验方式
                 if self.market_type == "futures" {
                     // 合约模式：从交易所查询合约持仓
@@ -560,7 +634,7 @@ impl OrderManager {
                             format!("Failed to get futures position for {}: {}", symbol, e)
                         ))?;
 
-                    if position.quantity < *quantity {
+                    if position.quantity < quantity {
                         return Err(OrderError::InsufficientPosition(format!(
                             "[futures] Sell {} {}: need {}, have {}",
                             symbol, quantity, quantity, position.quantity
@@ -576,7 +650,7 @@ impl OrderManager {
                         .map(|b| b.free)
                         .unwrap_or(Decimal::ZERO);
 
-                    if *quantity > balance {
+                    if quantity > balance {
                         return Err(OrderError::InsufficientPosition(format!(
                             "[spot] Sell {} {}: need {} {}, have {} {}",
                             symbol, quantity, quantity, base_asset, balance, base_asset
@@ -584,14 +658,19 @@ impl OrderManager {
                     }
                 }
 
+                // 尝试获取订单簿最优价格做限价单
+                let (order_type, price, tif) = self.determine_order_params(
+                    symbol, OrderSide::Sell, *entry_price,
+                ).await;
+
                 Ok(OrderRequest {
                     symbol: symbol.clone(),
                     side: OrderSide::Sell,
-                    order_type: OrderType::Market,
-                    quantity: *quantity,
-                    price: Some(*entry_price),
+                    order_type,
+                    quantity,
+                    price: Some(price),
                     stop_price: None,
-                    time_in_force: Some(TimeInForce::Ioc),
+                    time_in_force: Some(tif),
                     client_order_id: None,
                 })
             }
@@ -613,6 +692,194 @@ impl OrderManager {
         } else {
             symbol
         }
+    }
+
+    /// 确定订单参数（限价/市价）
+    ///
+    /// 尝试获取订单簿深度，使用最优挂单价格做限价单
+    /// 如果获取失败，退回市价单
+    async fn determine_order_params(
+        &self,
+        symbol: &str,
+        side: OrderSide,
+        entry_price: Decimal,
+    ) -> (OrderType, Decimal, TimeInForce) {
+        // 尝试获取订单簿
+        match self.exchange.get_order_book(symbol, Some(5)).await {
+            Ok(order_book) => {
+                match side {
+                    OrderSide::Buy => {
+                        // 买单：取卖一价（最优卖出价），加 0.01% 确保成交
+                        if let Some(best_ask) = order_book.asks.first() {
+                            let limit_price = best_ask.price * (Decimal::ONE + Decimal::from(1) / Decimal::from(10000));
+                            info!(
+                                "Limit buy order: {} @ {} (best ask={}, entry={})",
+                                symbol, limit_price, best_ask.price, entry_price
+                            );
+                            (OrderType::Limit, limit_price, TimeInForce::Gtc)
+                        } else {
+                            warn!("Empty orderbook asks for {}, using market order", symbol);
+                            (OrderType::Market, entry_price, TimeInForce::Ioc)
+                        }
+                    }
+                    OrderSide::Sell => {
+                        // 卖单：取买一价（最优买入价），减 0.01% 确保成交
+                        if let Some(best_bid) = order_book.bids.first() {
+                            let limit_price = best_bid.price * (Decimal::ONE - Decimal::from(1) / Decimal::from(10000));
+                            info!(
+                                "Limit sell order: {} @ {} (best bid={}, entry={})",
+                                symbol, limit_price, best_bid.price, entry_price
+                            );
+                            (OrderType::Limit, limit_price, TimeInForce::Gtc)
+                        } else {
+                            warn!("Empty orderbook bids for {}, using market order", symbol);
+                            (OrderType::Market, entry_price, TimeInForce::Ioc)
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to get orderbook for {}: {}, falling back to market order",
+                    symbol, e
+                );
+                (OrderType::Market, entry_price, TimeInForce::Ioc)
+            }
+        }
+    }
+
+    /// 解析下单数量
+    ///
+    /// 当 quantity > 0 时直接使用
+    /// 当 quantity = 0 时，根据账户权益和风险参数动态计算
+    fn resolve_quantity(
+        &self,
+        quantity: Decimal,
+        entry_price: Decimal,
+        account: &AccountInfo,
+    ) -> Decimal {
+        if quantity > Decimal::ZERO {
+            return quantity;
+        }
+
+        // 动态计算: position_value = equity * risk_per_trade_pct / stop_loss_pct
+        let risk_config = self.risk_engine.config();
+        let equity = account.total_equity;
+        let risk_pct = risk_config.risk_per_trade_pct;
+        let stop_loss_pct = self.stop_loss_config.default_stop_loss_pct;
+
+        if equity <= Decimal::ZERO || entry_price <= Decimal::ZERO || stop_loss_pct <= Decimal::ZERO {
+            warn!("Cannot calculate dynamic position: equity={}, entry={}, sl_pct={}",
+                equity, entry_price, stop_loss_pct);
+            return Decimal::ZERO;
+        }
+
+        let position_value = equity * risk_pct / stop_loss_pct;
+        let calculated_qty = position_value / entry_price;
+
+        info!(
+            "Dynamic position sizing: equity={} USDT, risk={}%, sl={}%, position_value={} USDT, qty={}",
+            equity, risk_pct * Decimal::from(100), stop_loss_pct * Decimal::from(100),
+            position_value, calculated_qty
+        );
+
+        calculated_qty
+    }
+
+    /// 计算止损止盈价格
+    fn calculate_stop_prices(
+        &self,
+        side: &OrderSide,
+        entry_price: Decimal,
+    ) -> (Decimal, Decimal) {
+        let sl_pct = self.stop_loss_config.default_stop_loss_pct;
+        let tp_pct = self.stop_loss_config.default_take_profit_pct;
+
+        match side {
+            OrderSide::Buy => (
+                entry_price * (Decimal::ONE - sl_pct),   // 止损：低于入场价
+                entry_price * (Decimal::ONE + tp_pct),   // 止盈：高于入场价
+            ),
+            OrderSide::Sell => (
+                entry_price * (Decimal::ONE + sl_pct),   // 止损：高于入场价
+                entry_price * (Decimal::ONE - tp_pct),   // 止盈：低于入场价
+            ),
+        }
+    }
+
+    /// 下交易所端条件单（止损 + 止盈）
+    ///
+    /// 返回 (止损单ID, 止盈单ID)
+    async fn place_exchange_stop_orders(
+        &self,
+        symbol: &str,
+        side: &OrderSide,
+        quantity: Decimal,
+        sl_price: Decimal,
+        tp_price: Decimal,
+    ) -> (Option<String>, Option<String>) {
+        // 平仓方向
+        let close_side = match side {
+            OrderSide::Buy => OrderSide::Sell,
+            OrderSide::Sell => OrderSide::Buy,
+        };
+
+        let mut sl_order_id = None;
+        let mut tp_order_id = None;
+
+        // 下止损单 (STOP_MARKET)
+        let sl_request = ConditionalOrderRequest {
+            symbol: symbol.to_string(),
+            side: close_side.clone(),
+            order_type: OrderType::StopMarket,
+            stop_price: sl_price,
+            quantity: Some(quantity),
+            close_position: false,
+            callback_rate: None,
+            working_type: Some("CONTRACT_PRICE".to_string()),
+            client_order_id: Some(format!("sl_{}_{}", symbol, Utc::now().timestamp_millis())),
+        };
+
+        match self.exchange.place_conditional_order(sl_request).await {
+            Ok(result) => {
+                info!(
+                    "Exchange stop-loss order placed: {} {} strategy_id={}",
+                    symbol, sl_price, result.strategy_id
+                );
+                sl_order_id = Some(result.strategy_id);
+            }
+            Err(e) => {
+                warn!("Failed to place exchange stop-loss order for {}: {}", symbol, e);
+            }
+        }
+
+        // 下止盈单 (TAKE_PROFIT_MARKET)
+        let tp_request = ConditionalOrderRequest {
+            symbol: symbol.to_string(),
+            side: close_side,
+            order_type: OrderType::TakeProfitMarket,
+            stop_price: tp_price,
+            quantity: Some(quantity),
+            close_position: false,
+            callback_rate: None,
+            working_type: Some("CONTRACT_PRICE".to_string()),
+            client_order_id: Some(format!("tp_{}_{}", symbol, Utc::now().timestamp_millis())),
+        };
+
+        match self.exchange.place_conditional_order(tp_request).await {
+            Ok(result) => {
+                info!(
+                    "Exchange take-profit order placed: {} {} strategy_id={}",
+                    symbol, tp_price, result.strategy_id
+                );
+                tp_order_id = Some(result.strategy_id);
+            }
+            Err(e) => {
+                warn!("Failed to place exchange take-profit order for {}: {}", symbol, e);
+            }
+        }
+
+        (sl_order_id, tp_order_id)
     }
 }
 

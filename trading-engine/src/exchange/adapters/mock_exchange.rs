@@ -649,4 +649,52 @@ impl TradingOperations for MockExchange {
         }
         Ok(())
     }
+
+    async fn place_conditional_order(
+        &self,
+        order: ConditionalOrderRequest,
+    ) -> Result<ConditionalOrderResult, ExchangeError> {
+        let strategy_id = format!("mock_cond_{}", Utc::now().timestamp_millis());
+        info!(
+            "Mock conditional order: {} {} {} stop_price={}",
+            order.symbol, order.side, order.order_type, order.stop_price
+        );
+        Ok(ConditionalOrderResult {
+            strategy_id,
+            symbol: order.symbol,
+            side: order.side,
+            order_type: order.order_type,
+            stop_price: order.stop_price,
+            quantity: order.quantity,
+            close_position: order.close_position,
+            status: "NEW".to_string(),
+            created_at: Utc::now(),
+        })
+    }
+
+    async fn cancel_conditional_order(
+        &self,
+        _symbol: &str,
+        _strategy_id: &str,
+    ) -> Result<(), ExchangeError> {
+        Ok(())
+    }
+
+    async fn get_conditional_orders(
+        &self,
+        _symbol: Option<&str>,
+    ) -> Result<Vec<ConditionalOrderResult>, ExchangeError> {
+        Ok(vec![])
+    }
+
+    async fn get_income_history(
+        &self,
+        _symbol: Option<&str>,
+        _income_type: Option<&str>,
+        _start_time: Option<DateTime<Utc>>,
+        _end_time: Option<DateTime<Utc>>,
+        _limit: Option<u32>,
+    ) -> Result<Vec<IncomeRecord>, ExchangeError> {
+        Ok(vec![])
+    }
 }

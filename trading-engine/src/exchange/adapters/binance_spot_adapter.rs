@@ -1066,6 +1066,46 @@ impl TradingOperations for BinanceSpotAdapter {
 
         Ok(())
     }
+
+    async fn place_conditional_order(
+        &self,
+        _order: ConditionalOrderRequest,
+    ) -> Result<ConditionalOrderResult, ExchangeError> {
+        // 现货不支持 algo 条件单，返回不支持错误
+        Err(ExchangeError::InvalidOrder(
+            "Binance Spot does not support conditional orders (use futures instead)".to_string()
+        ))
+    }
+
+    async fn cancel_conditional_order(
+        &self,
+        _symbol: &str,
+        _strategy_id: &str,
+    ) -> Result<(), ExchangeError> {
+        Err(ExchangeError::InvalidOrder(
+            "Binance Spot does not support conditional orders".to_string()
+        ))
+    }
+
+    async fn get_conditional_orders(
+        &self,
+        _symbol: Option<&str>,
+    ) -> Result<Vec<ConditionalOrderResult>, ExchangeError> {
+        Ok(vec![])
+    }
+
+    async fn get_income_history(
+        &self,
+        _symbol: Option<&str>,
+        _income_type: Option<&str>,
+        _start_time: Option<DateTime<Utc>>,
+        _end_time: Option<DateTime<Utc>>,
+        _limit: Option<u32>,
+    ) -> Result<Vec<IncomeRecord>, ExchangeError> {
+        // 现货没有 income 接口，使用 myTrades 计算
+        // 暂时返回空，后续可以通过 myTrades 接口实现
+        Ok(vec![])
+    }
 }
 
 // ===== 辅助函数 =====

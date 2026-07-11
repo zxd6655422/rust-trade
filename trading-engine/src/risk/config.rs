@@ -4,6 +4,10 @@
 use rust_decimal::Decimal;
 use serde::Deserialize;
 
+fn default_risk_per_trade_pct() -> Decimal {
+    Decimal::from(2) / Decimal::from(100) // 2%
+}
+
 /// 风控配置
 #[derive(Debug, Clone, Deserialize)]
 pub struct RiskConfig {
@@ -20,6 +24,11 @@ pub struct RiskConfig {
 
     /// 止盈百分比 (如 0.04 = 4%)
     pub take_profit_pct: Decimal,
+
+    /// 单笔风险占账户权益的百分比 (如 0.02 = 2%)
+    /// 用于动态仓位计算: position_value = equity * risk_per_trade_pct / stop_loss_pct
+    #[serde(default = "default_risk_per_trade_pct")]
+    pub risk_per_trade_pct: Decimal,
 
     // ===== 中级风控 =====
 
@@ -58,6 +67,7 @@ impl Default for RiskConfig {
             max_order_size: Decimal::from(1000),
             stop_loss_pct: Decimal::from(2) / Decimal::from(100), // 2%
             take_profit_pct: Decimal::from(4) / Decimal::from(100), // 4%
+            risk_per_trade_pct: Decimal::from(2) / Decimal::from(100), // 2%
 
             // 中级风控
             max_daily_loss: Decimal::from(200),

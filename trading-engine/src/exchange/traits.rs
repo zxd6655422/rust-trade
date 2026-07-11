@@ -11,6 +11,9 @@ use super::errors::ExchangeError;
 use super::types::*;
 use trading_common::data::types::TickData;
 
+// Re-export new types for trait usage
+use super::types::{ConditionalOrderRequest, ConditionalOrderResult, IncomeRecord};
+
 /// 只读市场数据接口（公开 API，无需认证）
 ///
 /// 提供行情查询、K线数据、订单簿等公开市场数据接口
@@ -130,6 +133,51 @@ pub trait TradingOperations: Send + Sync {
         order_callback: Box<dyn Fn(OrderUpdate) + Send + Sync>,
         shutdown_rx: broadcast::Receiver<()>,
     ) -> Result<(), ExchangeError>;
+
+    // ===== 条件单接口 (止盈止损) =====
+
+    /// 下条件单（止盈止损）
+    ///
+    /// Binance: POST /fapi/v1/algo/order (algoType=CONDITIONAL)
+    /// OKX: POST /api/v5/trade/order (ordType=conditional)
+    async fn place_conditional_order(
+        &self,
+        order: ConditionalOrderRequest,
+    ) -> Result<ConditionalOrderResult, ExchangeError>;
+
+    /// 撤销条件单
+    ///
+    /// Binance: DELETE /fapi/v1/algo/order
+    /// OKX: POST /api/v5/trade/cancel-algos
+    async fn cancel_conditional_order(
+        &self,
+        symbol: &str,
+        strategy_id: &str,
+    ) -> Result<(), ExchangeError>;
+
+    /// 查询条件单列表
+    ///
+    /// Binance: GET /fapi/v1/algo/openOrders
+    /// OKX: GET /api/v5/trade/orders-algo-pending
+    async fn get_conditional_orders(
+        &self,
+        symbol: Option<&str>,
+    ) -> Result<Vec<ConditionalOrderResult>, ExchangeError>;
+
+    // ===== 收入查询接口 =====
+
+    /// 查询已实现盈亏历史
+    ///
+    /// Binance: GET /fapi/v1/income?incomeType=REALIZED_PNL
+    /// OKX: GET /api/v5/trade/fills-history
+    async fn get_income_history(
+        &self,
+        symbol: Option<&str>,
+        income_type: Option<&str>,
+        start_time: Option<DateTime<Utc>>,
+        end_time: Option<DateTime<Utc>>,
+        limit: Option<u32>,
+    ) -> Result<Vec<IncomeRecord>, ExchangeError>;
 }
 
 /// 组合 trait，保持向后兼容

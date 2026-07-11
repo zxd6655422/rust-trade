@@ -307,11 +307,14 @@ impl SignalPoller {
     }
 
     /// 将数据库信号转换为交易引擎的 Signal 格式
+    ///
+    /// quantity 传 0，由 OrderManager 根据账户权益动态计算
     fn convert_signal(&self, record: &SignalRecord) -> Signal {
         let direction = record.direction.to_lowercase();
         let entry_price = record.entry_price;
         let symbol = record.symbol.clone();
-        let quantity = self.config.default_quantity;
+        // quantity = 0 表示由 OrderManager 动态计算仓位
+        let quantity = Decimal::ZERO;
 
         if direction == "bullish" || direction == "buy" {
             Signal::Buy {
@@ -385,62 +388,42 @@ impl SignalPoller {
     // 持仓风控检查（RiskEngine 聚合）
     // ============================================================
 
-    /// 检查持仓风控
+    /// 检查持仓风控（每个交易所独立计算）
     async fn check_position_risk(&self) -> Result<(), String> {
-        // 从所有 TradingUnit 获取账户信息，取第一个成功的
-        // （理想情况下应该聚合所有交易所的余额，但 RiskEngine 目前基于单一账户）
-        let mut account = None;
         for unit in &self.trading_units {
             if !unit.enabled { continue; }
-            match unit.exchange.get_account().await {
-                Ok(acc) => {
-                    account = Some(acc);
-                    break;
-                }
+
+            // 1. 从交易所获取账户信息
+            let account = match unit.exchange.get_account().await {
+                Ok(acc) => acc,
                 Err(e) => {
                     warn!("[{}] Failed to get account: {}", unit.id, e);
+                    continue;
                 }
-            }
-        }
-
-        let account = account.ok_or("Failed to get account from any exchange")?;
-
-        // 同步账户余额到风控引擎
-        self.risk_engine.sync_account_balance(&account).await;
-
-        // 执行持仓风控检查
-        let actions = self.risk_engine.check_positions(&account).await;
-
-        if actions.is_empty() {
-            return Ok(());
-        }
-
-        warn!("⚠️ Position risk check triggered {} actions", actions.len());
-
-        // 执行风控动作（找到对应 symbol 的 TradingUnit 执行）
-        for action in actions {
-            // 从 RiskAction 中提取 symbol，找到对应的 TradingUnit
-            let symbol = match &action {
-                crate::risk::RiskAction::ForceClose { symbol, .. } => Some(symbol.as_str()),
-                crate::risk::RiskAction::ReducePosition { symbol, .. } => Some(symbol.as_str()),
-                crate::risk::RiskAction::CloseAll { .. } => None,
             };
 
-            if let Some(_symbol) = symbol {
-                // 对所有 TradingUnit 执行（因为 symbol 可能在多个 unit 中存在）
-                for unit in &self.trading_units {
-                    if !unit.enabled { continue; }
-                    if let Err(e) = unit.order_manager.execute_risk_action(action.clone()).await {
-                        error!("[{}] Failed to execute risk action: {}", unit.id, e);
-                    }
-                }
-            } else {
-                // CloseAll: 对所有 TradingUnit 执行
-                for unit in &self.trading_units {
-                    if !unit.enabled { continue; }
-                    if let Err(e) = unit.order_manager.execute_risk_action(action.clone()).await {
-                        error!("[{}] Failed to execute risk action: {}", unit.id, e);
-                    }
+            // 2. 同步账户余额到风控引擎
+            self.risk_engine.sync_account_balance(&account).await;
+
+            // 3. 从交易所同步已实现盈亏（替代简化计算）
+            self.risk_engine.sync_realized_pnl(
+                unit.exchange.as_ref(),
+                &unit.id,
+            ).await;
+
+            // 4. 执行持仓风控检查
+            let actions = self.risk_engine.check_positions(&account).await;
+
+            if actions.is_empty() {
+                continue;
+            }
+
+            warn!("[{}] ⚠️ Position risk check triggered {} actions", unit.id, actions.len());
+
+            // 5. 执行风控动作
+            for action in actions {
+                if let Err(e) = unit.order_manager.execute_risk_action(action).await {
+                    error!("[{}] Failed to execute risk action: {}", unit.id, e);
                 }
             }
         }

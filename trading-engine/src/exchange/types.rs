@@ -42,6 +42,12 @@ pub enum OrderType {
     TakeProfitLimit,
     #[serde(rename = "LIMIT_MAKER")]
     LimitMaker,
+    #[serde(rename = "STOP_MARKET")]
+    StopMarket,
+    #[serde(rename = "TAKE_PROFIT_MARKET")]
+    TakeProfitMarket,
+    #[serde(rename = "TRAILING_STOP_MARKET")]
+    TrailingStopMarket,
 }
 
 impl std::fmt::Display for OrderType {
@@ -54,6 +60,9 @@ impl std::fmt::Display for OrderType {
             OrderType::TakeProfit => write!(f, "TAKE_PROFIT"),
             OrderType::TakeProfitLimit => write!(f, "TAKE_PROFIT_LIMIT"),
             OrderType::LimitMaker => write!(f, "LIMIT_MAKER"),
+            OrderType::StopMarket => write!(f, "STOP_MARKET"),
+            OrderType::TakeProfitMarket => write!(f, "TAKE_PROFIT_MARKET"),
+            OrderType::TrailingStopMarket => write!(f, "TRAILING_STOP_MARKET"),
         }
     }
 }
@@ -415,4 +424,69 @@ pub struct PublicTrade {
     pub timestamp: DateTime<Utc>,
     /// 是否买方主动
     pub is_buyer_maker: bool,
+}
+
+// ===== 条件单类型 (止盈止损) =====
+
+/// 条件单请求（用于交易所端止盈止损）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConditionalOrderRequest {
+    /// 交易对
+    pub symbol: String,
+    /// 订单方向 (BUY/SELL)
+    pub side: OrderSide,
+    /// 订单类型 (STOP_MARKET / TAKE_PROFIT_MARKET / TRAILING_STOP_MARKET)
+    pub order_type: OrderType,
+    /// 触发价格
+    pub stop_price: Decimal,
+    /// 数量（与 close_position 二选一）
+    pub quantity: Option<Decimal>,
+    /// 触发后是否全部平仓
+    pub close_position: bool,
+    /// 追踪止损回调比例（仅 TRAILING_STOP_MARKET）
+    pub callback_rate: Option<Decimal>,
+    /// 触发价格类型（MARK_PRICE / CONTRACT_PRICE）
+    pub working_type: Option<String>,
+    /// 客户端订单 ID
+    pub client_order_id: Option<String>,
+}
+
+/// 条件单结果
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConditionalOrderResult {
+    /// 交易所返回的策略订单 ID
+    pub strategy_id: String,
+    /// 交易对
+    pub symbol: String,
+    /// 订单方向
+    pub side: OrderSide,
+    /// 订单类型
+    pub order_type: OrderType,
+    /// 触发价格
+    pub stop_price: Decimal,
+    /// 数量
+    pub quantity: Option<Decimal>,
+    /// 是否全部平仓
+    pub close_position: bool,
+    /// 状态
+    pub status: String,
+    /// 创建时间
+    pub created_at: DateTime<Utc>,
+}
+
+/// 收入记录（已实现盈亏）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IncomeRecord {
+    /// 交易对
+    pub symbol: String,
+    /// 收入类型 (REALIZED_PNL / COMMISSION / FUNDING_FEE 等)
+    pub income_type: String,
+    /// 收入金额
+    pub income: Decimal,
+    /// 资产 (USDT 等)
+    pub asset: String,
+    /// 时间
+    pub time: DateTime<Utc>,
+    /// 交易 ID
+    pub info: Option<String>,
 }

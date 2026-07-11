@@ -1355,6 +1355,185 @@ impl TradingOperations for OkxAdapter {
 
         Ok(())
     }
+
+    async fn place_conditional_order(
+        &self,
+        order: ConditionalOrderRequest,
+    ) -> Result<ConditionalOrderResult, ExchangeError> {
+        // OKX 条件单使用 /api/v5/trade/order
+        // ordType: conditional (条件单)
+        let td_mode = Self::detect_td_mode(&order.symbol);
+
+        let mut body = serde_json::json!({
+            "instId": order.symbol,
+            "tdMode": td_mode,
+            "side": order.side.to_string().to_lowercase(),
+            "ordType": "conditional",
+            "sz": order.quantity.map(|q| q.to_string()).unwrap_or_else(|| "0".to_string()),
+            "tpTriggerPx": order.stop_price.to_string(),
+            "tpOrdPx": "-1",  // -1 表示市价
+        });
+
+        // 区分止损和止盈
+        match order.order_type {
+            OrderType::StopMarket => {
+                body["ordType"] = serde_json::json!("conditional");
+                body["slTriggerPx"] = serde_json::json!(order.stop_price.to_string());
+                body["slOrdPx"] = serde_json::json!("-1");
+                body.as_object_mut().unwrap().remove("tpTriggerPx");
+                body.as_object_mut().unwrap().remove("tpOrdPx");
+            }
+            OrderType::TakeProfitMarket => {
+                body["ordType"] = serde_json::json!("conditional");
+                body["tpTriggerPx"] = serde_json::json!(order.stop_price.to_string());
+                body["tpOrdPx"] = serde_json::json!("-1");
+                body.as_object_mut().unwrap().remove("slTriggerPx");
+                body.as_object_mut().unwrap().remove("slOrdPx");
+            }
+            _ => {}
+        }
+
+        if order.close_position {
+            body["sz"] = serde_json::json!("0");
+        }
+
+        let data = self.send_signed_request("POST", "/api/v5/trade/order", &body.to_string()).await?;
+
+        let result = data["data"].as_array().and_then(|a| a.first());
+        let s_code = result.and_then(|r| r["sCode"].as_str()).unwrap_or("-1");
+        if s_code != "0" {
+            let s_msg = result.and_then(|r| r["sMsg"].as_str()).unwrap_or("Unknown error");
+            return Err(ExchangeError::ApiError {
+                code: s_code.parse().unwrap_or(-1),
+                message: s_msg.to_string(),
+            });
+        }
+
+        Ok(ConditionalOrderResult {
+            strategy_id: result.and_then(|r| r["ordId"].as_str()).unwrap_or("").to_string(),
+            symbol: order.symbol,
+            side: order.side,
+            order_type: order.order_type,
+            stop_price: order.stop_price,
+            quantity: order.quantity,
+            close_position: order.close_position,
+            status: "live".to_string(),
+            created_at: Utc::now(),
+        })
+    }
+
+    async fn cancel_conditional_order(
+        &self,
+        symbol: &str,
+        strategy_id: &str,
+    ) -> Result<(), ExchangeError> {
+        let body = serde_json::json!({
+            "instId": symbol,
+            "algoId": strategy_id,
+        });
+
+        self.send_signed_request("POST", "/api/v5/trade/cancel-algos", &body.to_string()).await?;
+        Ok(())
+    }
+
+    async fn get_conditional_orders(
+        &self,
+        symbol: Option<&str>,
+    ) -> Result<Vec<ConditionalOrderResult>, ExchangeError> {
+        let mut params = HashMap::new();
+        if let Some(s) = symbol {
+            params.insert("instId".to_string(), s.to_string());
+        }
+        params.insert("ordType".to_string(), "conditional".to_string());
+
+        let query: String = params.iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect::<Vec<_>>()
+            .join("&");
+
+        let data = self.send_signed_request("GET", &format!("/api/v5/trade/orders-algo-pending?{}", query), "").await?;
+
+        let orders = data["data"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|o| {
+                        Some(ConditionalOrderResult {
+                            strategy_id: o["algoId"].as_str()?.to_string(),
+                            symbol: o["instId"].as_str()?.to_string(),
+                            side: match o["side"].as_str()? {
+                                "buy" => OrderSide::Buy,
+                                _ => OrderSide::Sell,
+                            },
+                            order_type: OrderType::StopMarket,
+                            stop_price: Decimal::from_str(
+                                o["slTriggerPx"].as_str().or_else(|| o["tpTriggerPx"].as_str())?
+                            ).ok()?,
+                            quantity: o["sz"].as_str().and_then(|s| Decimal::from_str(s).ok()),
+                            close_position: false,
+                            status: o["state"].as_str().unwrap_or("live").to_string(),
+                            created_at: DateTime::from_timestamp_millis(o["cTime"].as_str()?.parse::<i64>().ok()?)?,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(orders)
+    }
+
+    async fn get_income_history(
+        &self,
+        symbol: Option<&str>,
+        income_type: Option<&str>,
+        start_time: Option<DateTime<Utc>>,
+        end_time: Option<DateTime<Utc>>,
+        limit: Option<u32>,
+    ) -> Result<Vec<IncomeRecord>, ExchangeError> {
+        let mut params = HashMap::new();
+        if let Some(s) = symbol {
+            params.insert("instId".to_string(), s.to_string());
+        }
+        if let Some(t) = income_type {
+            params.insert("type".to_string(), t.to_string());
+        }
+        if let Some(st) = start_time {
+            params.insert("begin".to_string(), st.timestamp_millis().to_string());
+        }
+        if let Some(et) = end_time {
+            params.insert("end".to_string(), et.timestamp_millis().to_string());
+        }
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+
+        let query: String = params.iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect::<Vec<_>>()
+            .join("&");
+
+        let data = self.send_signed_request("GET", &format!("/api/v5/trade/fills-history?{}", query), "").await?;
+
+        let records = data["data"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|item| {
+                        Some(IncomeRecord {
+                            symbol: item["instId"].as_str()?.to_string(),
+                            income_type: "REALIZED_PNL".to_string(),
+                            income: Decimal::from_str(item["fillPnl"].as_str()?).ok()?,
+                            asset: "USDT".to_string(),
+                            time: DateTime::from_timestamp_millis(item["ts"].as_str()?.parse::<i64>().ok()?)?,
+                            info: item["fillId"].as_str().map(|s| s.to_string()),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(records)
+    }
 }
 
 // ===== WebSocket 数据解析 =====
