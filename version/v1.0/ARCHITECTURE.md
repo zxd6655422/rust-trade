@@ -111,6 +111,169 @@
 
 ---
 
+## 信号生命周期管理
+
+### 概述
+
+信号服务（strategy-service）负责信号的完整生命周期管理，包括：
+- **信号去重**：避免短时间内产生重复信号
+- **方向反转检测**：当新信号与旧信号方向相反时，自动关闭旧信号
+- **状态流转**：pending → executed/superseded/expired
+
+### 信号状态定义
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    信号状态流转图                                  │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  ┌─────────┐                                                     │
+│  │ pending │ ──── 初始状态，等待执行                               │
+│  └────┬────┘                                                     │
+│       │                                                          │
+│       ├─── 执行下单 ───▶ ┌───────────┐                           │
+│       │                  │ executed  │ 已执行                     │
+│       │                  └───────────┘                           │
+│       │                                                          │
+│       ├─── 方向反转 ───▶ ┌───────────┐                           │
+│       │                  │superseded│ 被取代（记录收益率）         │
+│       │                  └───────────┘                           │
+│       │                                                          │
+│       └─── 超时(1h) ───▶ ┌───────────┐                           │
+│                          │  expired  │ 已过期                     │
+│                          └───────────┘                           │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 信号去重策略
+
+```
+新信号产生
+    │
+    ▼
+┌─────────────────────────────────────────┐
+│         should_skip_signal() 检查        │
+├─────────────────────────────────────────┤
+│                                          │
+│  1. 基础冷却期：5分钟内跳过所有信号        │
+│     └── 无论方向，防止频繁交易             │
+│                                          │
+│  2. 同方向延长冷却：15分钟                 │
+│     └── bullish → bullish: 15分钟内跳过   │
+│     └── bearish → bearish: 15分钟内跳过   │
+│                                          │
+│  3. 反向信号：允许立即生成                 │
+│     └── bullish → bearish: 5分钟后允许    │
+│     └── bearish → bullish: 5分钟后允许    │
+│                                          │
+└─────────────────────────────────────────┘
+```
+
+### 方向反转处理流程
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    方向反转处理流程                                │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  策略分析产生新信号                                                │
+│         │                                                        │
+│         ▼                                                        │
+│  ┌─────────────────┐                                             │
+│  │ 获取活跃信号      │  查询 status IN ('pending', 'executed')    │
+│  │ get_active_signals│                                           │
+│  └────────┬────────┘                                             │
+│           │                                                      │
+│           ▼                                                      │
+│  ┌─────────────────┐                                             │
+│  │ 检测方向反转      │  bullish ↔ bearish                         │
+│  └────────┬────────┘                                             │
+│           │                                                      │
+│           ├─ 是 ──▶ ┌─────────────────────────────────────┐      │
+│           │         │ 1. 计算旧信号收益率                    │      │
+│           │         │    return_pct = calc_return_pct()    │      │
+│           │         │                                      │      │
+│           │         │ 2. 关闭旧信号为 superseded            │      │
+│           │         │    supersede_signal(                  │      │
+│           │         │      close_price = current_price,    │      │
+│           │         │      actual_return_pct = return_pct  │      │
+│           │         │    )                                  │      │
+│           │         │                                      │      │
+│           │         │ 3. 记录日志                           │      │
+│           │         │    "🔄 Signal superseded: ..."       │      │
+│           │         └─────────────────────────────────────┘      │
+│           │                                                      │
+│           └─ 否 ──▶ 继续生成新信号                                │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 价格记录策略
+
+| 场景 | 价格来源 | 说明 |
+|------|----------|------|
+| 关闭旧信号 | `market_data.current_price` | 最新K线收盘价（对应时间框架） |
+| 新信号入场 | `signal.entry_price` | 策略分析时的价格 |
+| 收益率计算 | `calc_return_pct()` | 基于入场价和当前价 |
+
+**价格链路：**
+```
+Redis K线数据 → market_data.current_price → 关闭旧信号（close_price）
+```
+
+### 收益率计算
+
+```rust
+fn calc_return_pct(direction: &str, entry_price: Decimal, current_price: Decimal) -> Decimal {
+    let pct = (current_price - entry_price) / entry_price * 100;
+    match direction {
+        "bullish" => pct,   // 多头：涨=正收益
+        "bearish" => -pct,  // 空头：跌=正收益
+        _ => Decimal::ZERO,
+    }
+}
+```
+
+### 代码位置
+
+| 文件 | 函数 | 职责 |
+|------|------|------|
+| `strategy-service/src/engine.rs` | `should_skip_signal()` | 信号去重逻辑 |
+| `strategy-service/src/engine.rs` | `process_strategy()` | 方向反转检测 |
+| `strategy-service/src/engine.rs` | `calc_return_pct()` | 收益率计算 |
+| `strategy-service/src/db/signals.rs` | `get_active_signals()` | 查询活跃信号 |
+| `strategy-service/src/db/signals.rs` | `get_last_signal()` | 获取最近信号 |
+| `strategy-service/src/db/signals.rs` | `supersede_signal()` | 关闭旧信号 |
+
+### 数据库验证
+
+```sql
+-- 查看信号状态分布
+SELECT status, COUNT(*) FROM strategy_signals GROUP BY status;
+
+-- 查看被取代的信号及收益率
+SELECT 
+    id, symbol, direction, 
+    entry_price, close_price, 
+    actual_return_pct, closed_at,
+    closed_reason
+FROM strategy_signals 
+WHERE status = 'superseded' 
+ORDER BY closed_at DESC;
+
+-- 查看某个交易对的信号历史
+SELECT 
+    id, direction, status,
+    entry_price, close_price,
+    actual_return_pct, created_at, closed_at
+FROM strategy_signals 
+WHERE symbol = 'BTCUSDT'
+ORDER BY created_at DESC;
+```
+
+---
+
 ## 核心设计原则
 
 ### 1. 职责分离

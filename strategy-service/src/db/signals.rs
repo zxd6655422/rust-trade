@@ -187,3 +187,82 @@ pub async fn mark_signal_executed(
 
     Ok(signal)
 }
+
+/// 获取指定实例和交易对的活跃信号（status='pending' 或 'executed'）
+///
+/// 用于方向反转检测，查询当前仍然活跃的信号
+pub async fn get_active_signals(
+    pool: &PgPool,
+    instance_id: Uuid,
+    symbol: &str,
+) -> Result<Vec<StrategySignal>, sqlx::Error> {
+    let signals = sqlx::query_as::<_, StrategySignal>(
+        r#"
+        SELECT * FROM strategy_signals
+        WHERE instance_id = $1
+          AND symbol = $2
+          AND status IN ('pending', 'executed')
+        ORDER BY created_at DESC
+        LIMIT 10
+        "#
+    )
+    .bind(instance_id)
+    .bind(symbol)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(signals)
+}
+
+/// 获取指定实例和交易对的最近一个信号
+///
+/// 用于去重和方向判断
+pub async fn get_last_signal(
+    pool: &PgPool,
+    instance_id: Uuid,
+    symbol: &str,
+) -> Result<Option<StrategySignal>, sqlx::Error> {
+    let signal = sqlx::query_as::<_, StrategySignal>(
+        r#"
+        SELECT * FROM strategy_signals
+        WHERE instance_id = $1 AND symbol = $2
+        ORDER BY created_at DESC
+        LIMIT 1
+        "#
+    )
+    .bind(instance_id)
+    .bind(symbol)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(signal)
+}
+
+/// 将信号标记为 superseded（被取代）
+///
+/// 当新信号与旧信号方向相反时，关闭旧信号
+pub async fn supersede_signal(
+    pool: &PgPool,
+    signal_id: Uuid,
+    close_price: Decimal,
+    actual_return_pct: Decimal,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        UPDATE strategy_signals
+        SET status = 'superseded',
+            closed_reason = 'direction_changed',
+            closed_at = NOW(),
+            close_price = $2,
+            actual_return_pct = $3
+        WHERE id = $1 AND status IN ('pending', 'executed')
+        "#
+    )
+    .bind(signal_id)
+    .bind(close_price)
+    .bind(actual_return_pct)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}

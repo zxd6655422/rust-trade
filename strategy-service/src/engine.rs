@@ -4,6 +4,7 @@ use std::time::Duration;
 use anyhow::Result;
 use chrono::Utc;
 use redis::aio::ConnectionManager;
+use rust_decimal::Decimal;
 use sqlx::PgPool;
 use tracing::{error, info, warn};
 
@@ -126,7 +127,8 @@ async fn process_strategy(
         && strategy_instance.strategy_type != "bollinger"
         && strategy_instance.strategy_type != "volume";
 
-    let signal = if use_multi_tf {
+    // 获取市场数据和信号（同时保存 current_price 用于信号追踪）
+    let (signal, current_price_f64) = if use_multi_tf {
         // 获取策略需要的时间框架
         let timeframes = strategy.required_timeframes();
 
@@ -146,8 +148,9 @@ async fn process_strategy(
                 return Ok(());
             }
 
-            // 使用多时间框架分析
-            strategy.analyze_multi_tf(&multi_data).await
+            let price = multi_data.primary.current_price;
+            let signal = strategy.analyze_multi_tf(&multi_data).await;
+            (signal, price)
         } else {
             // 单时间框架
             let market_data = redis_reader::get_market_data(
@@ -164,7 +167,9 @@ async fn process_strategy(
                 return Ok(());
             }
 
-            strategy.analyze(&market_data).await
+            let price = market_data.current_price;
+            let signal = strategy.analyze(&market_data).await;
+            (signal, price)
         }
     } else {
         // 传统单时间框架分析
@@ -182,7 +187,9 @@ async fn process_strategy(
             return Ok(());
         }
 
-        strategy.analyze(&market_data).await
+        let price = market_data.current_price;
+        let signal = strategy.analyze(&market_data).await;
+        (signal, price)
     };
 
     let signal = match signal {
@@ -197,6 +204,38 @@ async fn process_strategy(
             symbol, strategy_instance.strategy_type
         );
         return Ok(());
+    }
+
+    // 信号追踪：处理方向反转
+    let current_direction = match signal.signal_type {
+        SignalType::Buy => "bullish",
+        SignalType::Sell => "bearish",
+        SignalType::Hold => "neutral",
+    };
+
+    let active_signals = signals::get_active_signals(pool, strategy_instance.id, symbol).await?;
+    // 使用 market_data.current_price（最新K线收盘价）而不是 signal.entry_price
+    let current_price = rust_decimal::Decimal::try_from(current_price_f64)?;
+
+    for old_signal in active_signals {
+        let old_direction = &old_signal.direction;
+
+        // 检查是否方向反转
+        let is_reversal = (current_direction == "bullish" && old_direction == "bearish")
+            || (current_direction == "bearish" && old_direction == "bullish");
+
+        if is_reversal {
+            // 计算收益率
+            let return_pct = calc_return_pct(old_direction, old_signal.entry_price, current_price);
+
+            // 关闭旧信号
+            signals::supersede_signal(pool, old_signal.id, current_price, return_pct).await?;
+
+            info!(
+                "🔄 Signal superseded: {} -> {} for {} (old_signal_id={}, return={}%)",
+                old_direction, current_direction, symbol, old_signal.id, return_pct
+            );
+        }
     }
 
     // 写入信号到数据库
@@ -352,24 +391,83 @@ fn validate_strategy_data(
 }
 
 /// 检查是否应该跳过信号（避免频繁交易）
+///
+/// 信号去重逻辑：
+/// 1. 5分钟内跳过所有信号（无论方向）
+/// 2. 同方向信号延长冷却期到15分钟
+/// 3. 反向信号允许立即生成（已过基础冷却期）
 async fn should_skip_signal(
     pool: &PgPool,
     instance_id: uuid::Uuid,
     symbol: &str,
-    _signal_type: &SignalType,
+    signal_type: &SignalType,
 ) -> Result<bool> {
-    // 查询最近的信号
-    let recent_signals = signals::get_signals_by_instance(pool, instance_id, Some(10)).await?;
+    // 获取最近一个信号
+    let last_signal = signals::get_last_signal(pool, instance_id, symbol).await?;
 
-    // 检查同一交易对的最近信号时间
-    let now = Utc::now();
-    let min_interval = chrono::Duration::minutes(5); // 最小间隔 5 分钟
+    if let Some(last) = last_signal {
+        let now = Utc::now();
+        let age = now - last.created_at;
 
-    for recent in recent_signals {
-        if recent.symbol == symbol && recent.created_at + min_interval > now {
-            return Ok(true); // 太近了，跳过
+        // 1. 基础冷却期：5分钟内跳过所有信号
+        let base_cooldown = chrono::Duration::minutes(5);
+        if age < base_cooldown {
+            info!(
+                "[{}] 信号冷却中: 距上次信号 {} 分钟 (最小间隔 5 分钟)",
+                symbol,
+                age.num_minutes()
+            );
+            return Ok(true);
+        }
+
+        // 2. 同方向信号：延长冷却期到15分钟
+        let same_direction = match (signal_type, last.direction.as_str()) {
+            (SignalType::Buy, "bullish") => true,
+            (SignalType::Sell, "bearish") => true,
+            _ => false,
+        };
+
+        if same_direction {
+            let extended_cooldown = chrono::Duration::minutes(15);
+            if age < extended_cooldown {
+                info!(
+                    "[{}] 同方向信号冷却中: 距上次同方向信号 {} 分钟 (最小间隔 15 分钟)",
+                    symbol,
+                    age.num_minutes()
+                );
+                return Ok(true);
+            }
+        }
+
+        // 3. 反向信号：允许立即生成（已过基础冷却期）
+        if !same_direction {
+            info!(
+                "[{}] 检测到反向信号: {} -> {}, 允许生成",
+                symbol,
+                last.direction,
+                match signal_type {
+                    SignalType::Buy => "bullish",
+                    SignalType::Sell => "bearish",
+                    SignalType::Hold => "neutral",
+                }
+            );
         }
     }
 
     Ok(false)
+}
+
+/// 计算信号收益率%
+///
+/// 用于方向反转时计算旧信号的盈亏
+fn calc_return_pct(direction: &str, entry_price: Decimal, current_price: Decimal) -> Decimal {
+    if entry_price == Decimal::ZERO {
+        return Decimal::ZERO;
+    }
+    let pct = (current_price - entry_price) / entry_price * Decimal::from(100);
+    match direction {
+        "bullish" => pct,   // 多头：涨=正
+        "bearish" => -pct,  // 空头：跌=正
+        _ => Decimal::ZERO,
+    }
 }
