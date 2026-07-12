@@ -296,6 +296,7 @@ impl MultiTimeframeBacktestEngine {
             profit_factor,
             avg_trade_duration_seconds: avg_trade_duration,
             total_commission: self.portfolio.total_commission(),
+            total_slippage_cost: self.portfolio.total_slippage_cost,
             positions: self.portfolio.positions.clone(),
             trades: self.portfolio.trades.clone(),
             equity_curve,

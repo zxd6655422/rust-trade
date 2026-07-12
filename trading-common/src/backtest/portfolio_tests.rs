@@ -8,10 +8,11 @@ mod tests {
     use rust_decimal::Decimal;
     use std::str::FromStr;
 
-    /// 创建测试用 Portfolio
+    /// 创建测试用 Portfolio（默认无滑点，保持原有测试逻辑）
     fn create_portfolio(initial_capital: &str) -> Portfolio {
         Portfolio::new(Decimal::from_str(initial_capital).unwrap())
             .with_commission_rate(Decimal::from_str("0.001").unwrap()) // 0.1%
+            .with_slippage_pct(Decimal::ZERO)
     }
 
     // ========== 基础功能测试 ==========
@@ -370,5 +371,59 @@ mod tests {
         assert_eq!(portfolio.positions.len(), 2);
         assert!(portfolio.positions.contains_key("BTCUSDT"));
         assert!(portfolio.positions.contains_key("ETHUSDT"));
+    }
+
+    // ========== 滑点测试 ==========
+
+    #[test]
+    fn test_slippage_buy_price_increased() {
+        // 买入滑点：实际成交价高于报价
+        let mut portfolio = Portfolio::new(Decimal::from_str("100000").unwrap())
+            .with_commission_rate(Decimal::ZERO)
+            .with_slippage_pct(Decimal::from_str("0.001").unwrap()); // 0.1%
+
+        portfolio.execute_buy("BTCUSDT".to_string(), Decimal::from(1), Decimal::from(50000)).unwrap();
+
+        // 实际成交价 = 50000 * (1 + 0.001) = 50050
+        let position = portfolio.positions.get("BTCUSDT").unwrap();
+        assert_eq!(position.avg_price, Decimal::from(50050));
+        // 现金 = 100000 - 50050 = 49950
+        assert_eq!(portfolio.cash, Decimal::from(49950));
+        // 滑点成本 = 50 * 1 = 50
+        assert_eq!(portfolio.total_slippage_cost, Decimal::from(50));
+    }
+
+    #[test]
+    fn test_slippage_sell_price_decreased() {
+        // 卖出滑点：实际成交价低于报价
+        let mut portfolio = Portfolio::new(Decimal::from_str("100000").unwrap())
+            .with_commission_rate(Decimal::ZERO)
+            .with_slippage_pct(Decimal::from_str("0.001").unwrap()); // 0.1%
+
+        // 先买入（无滑点影响买入后再卖）
+        portfolio.execute_buy("BTCUSDT".to_string(), Decimal::from(1), Decimal::from(50000)).unwrap();
+        let cash_after_buy = portfolio.cash;
+
+        portfolio.execute_sell("BTCUSDT".to_string(), Decimal::from(1), Decimal::from(60000)).unwrap();
+
+        // 卖出实际成交价 = 60000 * (1 - 0.001) = 59940
+        // 现金 = cash_after_buy + 59940
+        assert_eq!(portfolio.cash, cash_after_buy + Decimal::from(59940));
+        assert!(portfolio.total_slippage_cost > Decimal::ZERO);
+    }
+
+    #[test]
+    fn test_slippage_zero_disabled() {
+        // slippage_pct = 0 时不影响价格
+        let mut portfolio = Portfolio::new(Decimal::from_str("100000").unwrap())
+            .with_commission_rate(Decimal::ZERO)
+            .with_slippage_pct(Decimal::ZERO);
+
+        portfolio.execute_buy("BTCUSDT".to_string(), Decimal::from(1), Decimal::from(50000)).unwrap();
+
+        let position = portfolio.positions.get("BTCUSDT").unwrap();
+        assert_eq!(position.avg_price, Decimal::from(50000));
+        assert_eq!(portfolio.cash, Decimal::from(50000));
+        assert_eq!(portfolio.total_slippage_cost, Decimal::ZERO);
     }
 }

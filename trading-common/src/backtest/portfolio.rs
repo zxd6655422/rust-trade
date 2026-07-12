@@ -42,6 +42,8 @@ pub struct Portfolio {
     pub trades: Vec<Trade>,
     pub current_prices: HashMap<String, Decimal>,
     pub commission_rate: Decimal, // e.g., 0.001 for 0.1%
+    pub slippage_pct: Decimal,    // e.g., 0.0001 for 0.01%
+    pub total_slippage_cost: Decimal,
 }
 
 impl Portfolio {
@@ -53,12 +55,32 @@ impl Portfolio {
             trades: Vec::new(),
             current_prices: HashMap::new(),
             commission_rate: Decimal::from_str("0.001").unwrap_or(Decimal::ZERO), // 0.1% default
+            slippage_pct: Decimal::from_str("0.0001").unwrap_or(Decimal::ZERO), // 0.01% default
+            total_slippage_cost: Decimal::ZERO,
         }
     }
 
     pub fn with_commission_rate(mut self, rate: Decimal) -> Self {
         self.commission_rate = rate;
         self
+    }
+
+    pub fn with_slippage_pct(mut self, slippage_pct: Decimal) -> Self {
+        self.slippage_pct = slippage_pct;
+        self
+    }
+
+    /// 应用滑点：买入时价格上浮，卖出时价格下浮
+    /// 返回 (调整后价格, 每单位滑点成本)
+    fn apply_slippage(&self, price: Decimal, side: &TradeSide) -> Decimal {
+        if self.slippage_pct.is_zero() {
+            return price;
+        }
+        let slippage = price * self.slippage_pct;
+        match side {
+            TradeSide::Buy => price + slippage,
+            TradeSide::Sell => price - slippage,
+        }
     }
 
     pub fn update_price(&mut self, symbol: &str, price: Decimal) {
@@ -86,6 +108,9 @@ impl Portfolio {
         quantity: Decimal,
         price: Decimal,
     ) -> Result<(), String> {
+        let original_price = price;
+        let price = self.apply_slippage(price, &TradeSide::Buy);
+        self.total_slippage_cost += (price - original_price) * quantity;
         let cost = quantity * price;
         let commission = cost * self.commission_rate;
         let total_cost = cost + commission;
@@ -142,6 +167,9 @@ impl Portfolio {
         quantity: Decimal,
         price: Decimal,
     ) -> Result<(), String> {
+        let original_price = price;
+        let price = self.apply_slippage(price, &TradeSide::Sell);
+        self.total_slippage_cost += (original_price - price) * quantity;
         let position = self
             .positions
             .get_mut(&symbol)
@@ -191,6 +219,9 @@ impl Portfolio {
         quantity: Decimal,
         price: Decimal,
     ) -> Result<(), String> {
+        let original_price = price;
+        let price = self.apply_slippage(price, &TradeSide::Sell); // 开空 = 卖出
+        self.total_slippage_cost += (original_price - price) * quantity;
         let proceeds = quantity * price;
         let commission = proceeds * self.commission_rate;
 
@@ -240,6 +271,9 @@ impl Portfolio {
         quantity: Decimal,
         price: Decimal,
     ) -> Result<(), String> {
+        let original_price = price;
+        let price = self.apply_slippage(price, &TradeSide::Buy); // 平空 = 买入
+        self.total_slippage_cost += (price - original_price) * quantity;
         let position = self
             .positions
             .get_mut(&symbol)

@@ -9,6 +9,7 @@ use std::str::FromStr;
 pub struct BacktestConfig {
     pub initial_capital: Decimal,
     pub commission_rate: Decimal,
+    pub slippage_pct: Decimal,
     pub strategy_params: HashMap<String, String>,
 }
 
@@ -17,12 +18,18 @@ impl BacktestConfig {
         Self {
             initial_capital,
             commission_rate: Decimal::from_str("0.001").unwrap_or(Decimal::ZERO), // 0.1% default
+            slippage_pct: Decimal::from_str("0.0001").unwrap_or(Decimal::ZERO), // 0.01% default
             strategy_params: HashMap::new(),
         }
     }
 
     pub fn with_commission_rate(mut self, rate: Decimal) -> Self {
         self.commission_rate = rate;
+        self
+    }
+
+    pub fn with_slippage_pct(mut self, slippage_pct: Decimal) -> Self {
+        self.slippage_pct = slippage_pct;
         self
     }
 
@@ -45,8 +52,9 @@ impl BacktestEngine {
         strategy.reset();
         strategy.initialize(config.strategy_params.clone())?;
 
-        let portfolio =
-            Portfolio::new(config.initial_capital).with_commission_rate(config.commission_rate);
+        let portfolio = Portfolio::new(config.initial_capital)
+            .with_commission_rate(config.commission_rate)
+            .with_slippage_pct(config.slippage_pct);
 
         Ok(Self {
             portfolio,
@@ -63,6 +71,10 @@ impl BacktestEngine {
         println!(
             "Commission rate: {}%",
             self.config.commission_rate * Decimal::from(100)
+        );
+        println!(
+            "Slippage: {}%",
+            self.config.slippage_pct * Decimal::from(100)
         );
         println!("{}", "=".repeat(60));
 
@@ -173,6 +185,7 @@ impl BacktestEngine {
             profit_factor,
             avg_trade_duration_seconds: avg_trade_duration,
             total_commission: self.portfolio.total_commission(),
+            total_slippage_cost: self.portfolio.total_slippage_cost,
             positions: self.portfolio.positions.clone(),
             trades: self.portfolio.trades.clone(),
             equity_curve,
@@ -221,6 +234,10 @@ impl BacktestEngine {
         println!(
             "Commission rate: {}%",
             self.config.commission_rate * Decimal::from(100)
+        );
+        println!(
+            "Slippage: {}%",
+            self.config.slippage_pct * Decimal::from(100)
         );
         println!("{}", "=".repeat(60));
 
@@ -331,6 +348,7 @@ impl BacktestEngine {
             profit_factor,
             avg_trade_duration_seconds: avg_trade_duration,
             total_commission: self.portfolio.total_commission(),
+            total_slippage_cost: self.portfolio.total_slippage_cost,
             positions: self.portfolio.positions.clone(),
             trades: self.portfolio.trades.clone(),
             equity_curve,
@@ -355,6 +373,7 @@ pub struct BacktestResult {
     pub profit_factor: Decimal,
     pub avg_trade_duration_seconds: f64,
     pub total_commission: Decimal,
+    pub total_slippage_cost: Decimal,
     pub positions: HashMap<String, crate::backtest::portfolio::Position>,
     pub trades: Vec<crate::backtest::portfolio::Trade>,
     pub equity_curve: Vec<Decimal>,
@@ -371,6 +390,7 @@ impl BacktestResult {
         println!("Total P&L: ${}", self.total_pnl);
         println!("Return: {:.2}%", self.return_percentage);
         println!("Total Commission: ${}", self.total_commission);
+        println!("Total Slippage Cost: ${}", self.total_slippage_cost);
         println!();
 
         println!("TRADING STATISTICS");
