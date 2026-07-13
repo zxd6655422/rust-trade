@@ -337,13 +337,26 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
                 };
 
                 // Step 0: Redis 预热 - 从 PostgreSQL 加载历史 K 线到 Redis
-                // 确保策略引擎重启后有足够数据计算指标
-                info!("Redis warm-up: loading historical klines from PostgreSQL...");
-                for symbol in &symbols {
-                    if let Err(e) = warm_up_redis_cache(&repo, &mut redis_conn.clone(), symbol).await {
-                        warn!("[{}] Redis warm-up failed: {}", symbol, e);
+                // 异步后台执行，不阻塞 polling loop 立即开始采集新数据
+                let warmup_repo = repo.clone();
+                let warmup_symbols = symbols.clone();
+                let warmup_redis_url = redis_url.clone();
+                tokio::spawn(async move {
+                    info!("Redis warm-up: loading historical klines from PostgreSQL (background)...");
+                    match redis_writer::create_connection_manager(&warmup_redis_url).await {
+                        Ok(mut warmup_conn) => {
+                            for symbol in &warmup_symbols {
+                                if let Err(e) = warm_up_redis_cache(&warmup_repo, &mut warmup_conn, symbol).await {
+                                    warn!("[{}] Redis warm-up failed: {}", symbol, e);
+                                }
+                            }
+                            info!("✅ Redis warm-up completed for all symbols");
+                        }
+                        Err(e) => {
+                            error!("Redis warm-up: failed to create connection: {}", e);
+                        }
                     }
-                }
+                });
 
                 // Step 0.5: 启动市场情绪数据采集（资金费率/持仓量/多空比）
                 let sentiment_conn = redis_conn.clone();
@@ -362,6 +375,7 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
                 info!("📊 Market sentiment collector started");
 
                 // Step 1: Backfill historical data (if enabled)
+                // 异步后台执行，不阻塞 polling loop
                 // API 限制: Binance 20 req/s, OKX 12 req/s
                 // 使用信号量限制并发数，避免超出限制
                 if backfill_enabled {
@@ -375,53 +389,56 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             };
 
-                            // 限制最大并发数为 5，每个 symbol 内部限速 200ms
-                            // 总速率 = 5 * 5 req/s = 25 req/s (远低于 20 req/s 限制)
-                            const MAX_CONCURRENT_BACKFILLS: usize = 5;
-                            let semaphore = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_BACKFILLS));
+                            let bf_symbols = symbols.clone();
+                            let bf_exchange = exchange.clone();
+                            let bf_repo = repo.clone();
+                            let bf_redis_url = redis_url.clone();
 
-                            info!("🚀 Starting backfill for {} symbols (max {} concurrent)", symbols.len(), MAX_CONCURRENT_BACKFILLS);
+                            tokio::spawn(async move {
+                                const MAX_CONCURRENT_BACKFILLS: usize = 5;
+                                let semaphore = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_BACKFILLS));
 
-                            let mut backfill_handles = Vec::new();
-                            for symbol in &symbols {
-                                let ex = exchange.clone();
-                                let repo_clone = repo.clone();
-                                let sym = symbol.clone();
-                                let start = start_dt;
-                                let sem = semaphore.clone();
-                                let redis_url_clone = redis_url.clone();
+                                info!("🚀 Starting backfill for {} symbols (max {} concurrent)", bf_symbols.len(), MAX_CONCURRENT_BACKFILLS);
 
-                                let handle = tokio::spawn(async move {
-                                    // 获取许可，限制并发
-                                    let _permit = match sem.acquire().await {
-                                        Ok(permit) => permit,
-                                        Err(e) => {
-                                            error!("Failed to acquire semaphore for {}: {}", sym, e);
-                                            return;
-                                        }
-                                    };
-                                    info!("📊 Starting backfill for {}", sym);
+                                let mut backfill_handles = Vec::new();
+                                for symbol in &bf_symbols {
+                                    let ex = bf_exchange.clone();
+                                    let repo_clone = bf_repo.clone();
+                                    let sym = symbol.clone();
+                                    let start = start_dt;
+                                    let sem = semaphore.clone();
+                                    let redis_url_clone = bf_redis_url.clone();
 
-                                    let backfill = BackfillService::new(
-                                        ex,
-                                        repo_clone,
-                                        redis_url_clone,
-                                        vec![sym.clone()],
-                                        start,
-                                    );
-                                    backfill.run().await;
-                                    info!("✅ Backfill completed for {}", sym);
-                                });
-                                backfill_handles.push(handle);
-                            }
+                                    let handle = tokio::spawn(async move {
+                                        let _permit = match sem.acquire().await {
+                                            Ok(permit) => permit,
+                                            Err(e) => {
+                                                error!("Failed to acquire semaphore for {}: {}", sym, e);
+                                                return;
+                                            }
+                                        };
+                                        info!("📊 Starting backfill for {}", sym);
 
-                            // 等待所有 backfill 完成
-                            for handle in backfill_handles {
-                                if let Err(e) = handle.await {
-                                    error!("Backfill task failed: {}", e);
+                                        let backfill = BackfillService::new(
+                                            ex,
+                                            repo_clone,
+                                            redis_url_clone,
+                                            vec![sym.clone()],
+                                            start,
+                                        );
+                                        backfill.run().await;
+                                        info!("✅ Backfill completed for {}", sym);
+                                    });
+                                    backfill_handles.push(handle);
                                 }
-                            }
-                            info!("✅ All backfill tasks completed");
+
+                                for handle in backfill_handles {
+                                    if let Err(e) = handle.await {
+                                        error!("Backfill task failed: {}", e);
+                                    }
+                                }
+                                info!("✅ All backfill tasks completed");
+                            });
                         }
                         Err(e) => {
                             error!("Invalid backfill_start_date '{}': {}", backfill_start, e);

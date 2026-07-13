@@ -159,19 +159,31 @@ struct FuturesAssetResponse {
 #[serde(rename_all = "camelCase")]
 struct FuturesPositionResponse {
     symbol: String,
+    #[serde(default)]
     position_amt: String,
+    #[serde(default)]
     entry_price: String,
+    /// positionAmt=0 时 Binance 可能不返回此字段
+    #[serde(default)]
     mark_price: String,
     /// /fapi/v2/account 返回 "unrealizedProfit"（小写 r）
     /// /fapi/v2/positionRisk 返回 "unRealizedProfit"（大写 R）
     #[serde(alias = "unRealizedProfit")]
+    #[serde(default)]
     unrealized_profit: String,
+    #[serde(default)]
     leverage: String,
+    #[serde(default)]
     margin_type: String,
+    #[serde(default)]
     position_side: String,
+    #[serde(default)]
     liquidation_price: String,
+    #[serde(default)]
     notional: String,
+    #[serde(default)]
     initial_margin: String,
+    #[serde(default)]
     maint_margin: String,
     #[serde(default)]
     break_even_price: String,
