@@ -9,6 +9,7 @@ use sqlx::PgPool;
 use tracing::{error, info, warn};
 
 use crate::db::{signals, strategies as db_strategies};
+use crate::exchange;
 use crate::redis_reader::{self, MultiTimeframeData, Timeframe};
 use crate::strategies::{self, SignalType};
 use crate::trade_executor::{TradeExecutor, ExchangeConfig};
@@ -128,7 +129,7 @@ async fn process_strategy(
         && strategy_instance.strategy_type != "volume";
 
     // 获取市场数据和信号（同时保存 current_price 用于信号追踪）
-    let (signal, current_price_f64) = if use_multi_tf {
+    let (signal, kline_price_f64) = if use_multi_tf {
         // 获取策略需要的时间框架
         let timeframes = strategy.required_timeframes();
 
@@ -192,6 +193,20 @@ async fn process_strategy(
         (signal, price)
     };
 
+    // 获取实时 ticker 价格（公开 API，无需 API Key）
+    // 根据 market_type 选择正确的 API（现货/合约）
+    // 用于信号追踪和收益率计算，比 K 线收盘价更准确
+    let current_price_f64 = match exchange::get_ticker_price(symbol, &strategy_instance.market_type).await {
+        Ok(price) => {
+            tracing::debug!("[{}] 实时价格: {} (K线收盘价: {}, 市场: {})", symbol, price, kline_price_f64, strategy_instance.market_type);
+            price
+        }
+        Err(e) => {
+            warn!("[{}] 获取实时价格失败，使用 K 线收盘价: {}", symbol, e);
+            kline_price_f64
+        }
+    };
+
     let signal = match signal {
         Some(signal) => signal,
         None => return Ok(()), // 没有信号
@@ -214,7 +229,7 @@ async fn process_strategy(
     };
 
     let active_signals = signals::get_active_signals(pool, strategy_instance.id, symbol).await?;
-    // 使用 market_data.current_price（最新K线收盘价）而不是 signal.entry_price
+    // 使用实时 ticker 价格（公开 API）而不是 K 线收盘价
     let current_price = rust_decimal::Decimal::try_from(current_price_f64)?;
 
     for old_signal in active_signals {
@@ -255,7 +270,8 @@ async fn process_strategy(
         strategy_id: strategy_instance.strategy_type.clone(),
         symbol: symbol.to_string(),
         direction: direction.to_string(),
-        entry_price: rust_decimal::Decimal::try_from(signal.entry_price)?,
+        // 使用实时 ticker 价格作为入场价，比 K 线收盘价更准确
+        entry_price: rust_decimal::Decimal::try_from(current_price_f64)?,
         overall_confidence: rust_decimal::Decimal::try_from(signal.confidence)?,
         entry_allowed: signal.signal_type != SignalType::Hold,
         entry_direction: entry_direction.map(|s| s.to_string()),
@@ -273,7 +289,7 @@ async fn process_strategy(
         "Signal generated: {} {} at {} (strength={:.2}, reason={})",
         direction,
         symbol,
-        signal.entry_price,
+        current_price_f64,
         signal.signal_strength,
         signal.reason
     );
@@ -287,7 +303,7 @@ async fn process_strategy(
                 "symbol": symbol,
                 "strategy": strategy_instance.strategy_type,
                 "direction": direction,
-                "entry_price": signal.entry_price,
+                "entry_price": current_price_f64,
                 "signal_strength": signal.signal_strength,
                 "confidence": signal.confidence,
                 "reason": signal.reason,
