@@ -600,10 +600,12 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
                         // 等待当前批次完成
                         let results = futures::future::join_all(fetch_futures).await;
 
-                        // 批量插入数据 + 广播最新价格 + 写入 Redis
+                        // 先广播价格 + 写入 Redis（快操作，串行即可）
+                        // 然后并发写入 DB（慢操作，并发以避免阻塞轮询）
+                        let mut db_write_futures = Vec::new();
+
                         for result in results.into_iter().flatten() {
                             let (symbol, ohlc_list) = result;
-                            let count = ohlc_list.len();
 
                             // 广播最新价格给 WebSocket 客户端
                             if let Some(latest) = ohlc_list.last() {
@@ -634,19 +636,27 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             }
 
-                            // 写入 DB
-                            match repo.batch_insert_klines(ohlc_list).await {
-                                Ok(inserted) => {
-                                    debug!(
-                                        "[{}] kline_1m: fetched {}, upserted {}",
-                                        symbol, count, inserted
-                                    );
+                            // 收集 DB 写入任务（并发执行）
+                            let repo_clone = repo.clone();
+                            let sym = symbol.clone();
+                            let count = ohlc_list.len();
+                            db_write_futures.push(async move {
+                                match repo_clone.batch_insert_klines(ohlc_list).await {
+                                    Ok(inserted) => {
+                                        debug!(
+                                            "[{}] kline_1m: fetched {}, upserted {}",
+                                            sym, count, inserted
+                                        );
+                                    }
+                                    Err(e) => {
+                                        error!("[{}] kline_1m 插入失败: {}", sym, e);
+                                    }
                                 }
-                                Err(e) => {
-                                    error!("[{}] kline_1m 插入失败: {}", symbol, e);
-                                }
-                            }
+                            });
                         }
+
+                        // 并发执行所有 DB 写入（5个 symbol 同时写，而非串行等待）
+                        futures::future::join_all(db_write_futures).await;
 
                         // 批次间延迟，避免短时间大量请求
                         tokio::time::sleep(Duration::from_millis(POLL_BATCH_DELAY_MS)).await;
