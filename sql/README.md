@@ -39,7 +39,8 @@ sql/
 │
 ├── indexes/                     # 索引优化脚本
 │   ├── optimize_indexes.sql     # 通用索引优化
-│   └── kline_covering_indexes.sql # K线表覆盖索引
+│   ├── kline_covering_indexes.sql # K线表覆盖索引
+│   └── 20260714_optimize_kline_indexes.sql # K线索引去重优化
 │
 └── migrations/                  # 迁移脚本
     ├── migrate_missing_tables.sql     # 缺失表迁移
@@ -159,3 +160,41 @@ psql -U postgres -d trading_core -f sql/indexes/kline_covering_indexes.sql
 ```bash
 psql -U postgres -d trading_core -f sql/migrations/20260714_remove_foreign_keys.sql
 ```
+
+---
+
+## 索引优化策略
+
+### K线索引设计原则
+
+| 查询模式 | 索引类型 | 说明 |
+|----------|----------|------|
+| `WHERE symbol = $1 ORDER BY timestamp DESC LIMIT $2` | 覆盖索引 | 最常用查询，避免回表 |
+| `SELECT MIN/MAX(timestamp) WHERE symbol = $1` | 单列索引 | 快速定位时间范围 |
+| `SELECT DISTINCT symbol` | 主键索引 | 利用主键的 symbol 前缀 |
+
+### kline_1m 表索引（优化后）
+
+```sql
+-- 主键（自动创建索引）
+PRIMARY KEY (symbol, timestamp)
+
+-- 覆盖索引：避免回表，支持 Index Only Scan
+idx_kline_1m_cover (symbol, timestamp DESC) INCLUDE (open, high, low, close, volume, trade_count)
+
+-- 单列时间索引：用于 MIN/MAX 查询
+idx_kline_1m_timestamp (timestamp)
+```
+
+### 线上索引优化
+
+如需清理重复索引，执行：
+
+```bash
+psql -U postgres -d trading_core -f sql/indexes/20260714_optimize_kline_indexes.sql
+```
+
+**预期效果**：
+- 删除 2 个重复索引（kline_1m）
+- 减少存储空间
+- 提升写入性能
