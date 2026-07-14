@@ -373,7 +373,13 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
                                     match recovery_aggregator.recover_after_downtime(symbol, 60).await {
                                         Ok(recovered) => {
                                             if recovered {
-                                                info!("[{}] ✅ 高TF数据恢复完成", symbol);
+                                                info!("[{}] ✅ 高TF数据恢复完成，全量同步Redis...", symbol);
+                                                // 恢复后全量同步Redis（PG数据已补齐，需要同步到Redis）
+                                                for tf_str in &["5m", "15m", "30m", "1h", "2h", "4h", "1d", "3d", "1w"] {
+                                                    if let Err(e) = recovery_aggregator.full_sync_to_redis(symbol, tf_str).await {
+                                                        warn!("[{}] Redis全量同步{}失败: {}", symbol, tf_str, e);
+                                                    }
+                                                }
                                             }
                                         }
                                         Err(e) => {
@@ -381,7 +387,7 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
                                         }
                                     }
                                 }
-                                info!("✅ 高TF数据恢复全部完成");
+                                info!("✅ 高TF数据恢复+Redis同步全部完成");
                             }
                             Err(e) => {
                                 error!("恢复聚合: Redis连接失败: {}", e);

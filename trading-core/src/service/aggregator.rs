@@ -83,7 +83,10 @@ impl HighTfAggregator {
         Ok(results)
     }
 
-    /// 将单个时间框架的最新数据从 PG 同步到 Redis
+    /// 将单个时间框架的最新数据从 PG 同步到 Redis（增量）
+    ///
+    /// 只同步最新的少量K线（而非全量缓存），避免慢查询。
+    /// 全量缓存由启动时的 warm-up 任务或 full_sync_to_redis 负责填充。
     async fn sync_to_redis(
         &mut self,
         symbol: &str,
@@ -92,7 +95,35 @@ impl HighTfAggregator {
         let tf = Timeframe::from_str(timeframe_str)
             .ok_or_else(|| DataError::Validation(format!("Invalid timeframe: {}", timeframe_str)))?;
 
-        // 读取最新的 N 条数据
+        // 只读取最新的 20 条数据（而非全量缓存8000+条）
+        // Redis ZADD 是幂等的，重复写入相同 timestamp 的数据会覆盖
+        let klines = self.repo.get_high_tf_klines(symbol, timeframe_str, 20).await?;
+
+        if klines.is_empty() {
+            return Ok(());
+        }
+
+        // 写入 Redis（只更新最新20条，全量缓存由 warm-up 填充）
+        redis_writer::load_cache_from_db(&mut self.redis_conn, symbol, &tf, &klines).await
+            .map_err(|e| DataError::Cache(format!("Redis write failed: {}", e)))?;
+
+        debug!("[{}] Redis 增量同步 {}: {} 条", symbol, timeframe_str, klines.len());
+        Ok(())
+    }
+
+    /// 全量同步单个时间框架到 Redis
+    ///
+    /// 用于：
+    /// - Redis 缓存不足时自动补充
+    /// - 长时间停机恢复后
+    pub async fn full_sync_to_redis(
+        &mut self,
+        symbol: &str,
+        timeframe_str: &str,
+    ) -> DataResult<()> {
+        let tf = Timeframe::from_str(timeframe_str)
+            .ok_or_else(|| DataError::Validation(format!("Invalid timeframe: {}", timeframe_str)))?;
+
         let cache_size = redis_writer::get_cache_size(&tf) as u32;
         let klines = self.repo.get_high_tf_klines(symbol, timeframe_str, cache_size).await?;
 
@@ -100,11 +131,10 @@ impl HighTfAggregator {
             return Ok(());
         }
 
-        // 写入 Redis
         redis_writer::load_cache_from_db(&mut self.redis_conn, symbol, &tf, &klines).await
             .map_err(|e| DataError::Cache(format!("Redis write failed: {}", e)))?;
 
-        debug!("[{}] Redis 同步完成 {}: {} 条", symbol, timeframe_str, klines.len());
+        info!("[{}] Redis 全量同步 {}: {} 条", symbol, timeframe_str, klines.len());
         Ok(())
     }
 
@@ -138,6 +168,7 @@ impl HighTfAggregator {
                         symbol, tf_str, gap.num_minutes(),
                         latest.format("%Y-%m-%d %H:%M")
                     );
+                    // 只做聚合（快操作，不阻塞），Redis同步由增量sync处理
                     let results = self.aggregate_range(symbol, latest, now, true).await?;
                     all_results.extend(results);
                 }
