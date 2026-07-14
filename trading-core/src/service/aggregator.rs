@@ -42,7 +42,7 @@ impl HighTfAggregator {
         let end = Utc::now();
         let start = end - Duration::minutes(lookback_minutes);
 
-        self.aggregate_range(symbol, start, end).await
+        self.aggregate_range(symbol, start, end, true).await
     }
 
     /// 聚合指定时间范围的1m数据到所有高TF
@@ -51,11 +51,16 @@ impl HighTfAggregator {
     /// - 增量更新（lookback = 2-10分钟）
     /// - 恢复追赶（lookback = 数小时/数天）
     /// - 间隙填补
+    ///
+    /// `sync_redis`: 是否在聚合后同步到 Redis
+    ///   - true: 增量更新时使用，立即同步
+    ///   - false: 恢复聚合时使用，由主循环的增量聚合自动同步
     pub async fn aggregate_range(
         &mut self,
         symbol: &str,
         start: DateTime<Utc>,
         end: DateTime<Utc>,
+        sync_redis: bool,
     ) -> DataResult<Vec<AggregationResult>> {
         // 使用 PostgreSQL 函数一次性聚合所有时间框架
         let raw_results = self.repo.aggregate_all_timeframes(symbol, start, end).await?;
@@ -65,10 +70,12 @@ impl HighTfAggregator {
             .collect();
 
         // 聚合完成后，将有更新的时间框架同步到 Redis
-        for result in &results {
-            if result.rows_affected > 0 {
-                if let Err(e) = self.sync_to_redis(symbol, &result.timeframe).await {
-                    warn!("[{}] Redis 同步失败 ({}): {}", symbol, result.timeframe, e);
+        if sync_redis {
+            for result in &results {
+                if result.rows_affected > 0 {
+                    if let Err(e) = self.sync_to_redis(symbol, &result.timeframe).await {
+                        warn!("[{}] Redis 同步失败 ({}): {}", symbol, result.timeframe, e);
+                    }
                 }
             }
         }
@@ -131,7 +138,7 @@ impl HighTfAggregator {
                         symbol, tf_str, gap.num_minutes(),
                         latest.format("%Y-%m-%d %H:%M")
                     );
-                    let results = self.aggregate_range(symbol, latest, now).await?;
+                    let results = self.aggregate_range(symbol, latest, now, true).await?;
                     all_results.extend(results);
                 }
             }
@@ -150,7 +157,7 @@ impl HighTfAggregator {
                     gap_end.format("%H:%M"),
                     gap_end.signed_duration_since(gap_start).num_minutes()
                 );
-                let results = self.aggregate_range(symbol, gap_start, gap_end).await?;
+                let results = self.aggregate_range(symbol, gap_start, gap_end, true).await?;
                 all_results.extend(results);
             }
         }
@@ -191,7 +198,7 @@ impl HighTfAggregator {
 
                     while cursor < now {
                         let batch_end = std::cmp::min(cursor + batch_size, now);
-                        let results = self.aggregate_range(symbol, cursor, batch_end).await?;
+                        let results = self.aggregate_range(symbol, cursor, batch_end, false).await?;
 
                         for r in &results {
                             if r.rows_affected > 0 {
@@ -220,7 +227,7 @@ impl HighTfAggregator {
                 info!("[{}] 无高TF数据，执行首次聚合", symbol);
                 let lookback = Duration::days(30); // 默认回填30天
                 let start = now - lookback;
-                self.aggregate_range(symbol, start, now).await?;
+                self.aggregate_range(symbol, start, now, false).await?;
                 Ok(true)
             }
         }

@@ -357,23 +357,37 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
                 // 替代从交易所API单独拉取高TF数据，实现零延迟
                 let mut aggregator = service::HighTfAggregator::new(repo.clone(), redis_conn.clone());
 
-                // 启动时恢复检测：如果高TF数据长时间未更新，自动补齐
+                // 启动时恢复检测：后台执行，不阻塞数据采集
                 {
-                    info!("🔍 检测高TF数据新鲜度...");
-                    for symbol in &symbols {
-                        match aggregator.recover_after_downtime(symbol, 60).await {
-                            Ok(recovered) => {
-                                if recovered {
-                                    info!("[{}] ✅ 高TF数据恢复完成", symbol);
-                                } else {
-                                    debug!("[{}] 高TF数据正常", symbol);
+                    let recovery_repo = repo.clone();
+                    let recovery_redis_url = redis_url.clone();
+                    let recovery_symbols = symbols.clone();
+                    tokio::spawn(async move {
+                        info!("🔍 后台检测高TF数据新鲜度...");
+                        match redis_writer::create_connection_manager(&recovery_redis_url).await {
+                            Ok(mut recovery_conn) => {
+                                let mut recovery_aggregator = service::HighTfAggregator::new(
+                                    recovery_repo, recovery_conn.clone()
+                                );
+                                for symbol in &recovery_symbols {
+                                    match recovery_aggregator.recover_after_downtime(symbol, 60).await {
+                                        Ok(recovered) => {
+                                            if recovered {
+                                                info!("[{}] ✅ 高TF数据恢复完成", symbol);
+                                            }
+                                        }
+                                        Err(e) => {
+                                            warn!("[{}] 高TF恢复检测失败: {}", symbol, e);
+                                        }
+                                    }
                                 }
+                                info!("✅ 高TF数据恢复全部完成");
                             }
                             Err(e) => {
-                                warn!("[{}] 高TF恢复检测失败: {}", symbol, e);
+                                error!("恢复聚合: Redis连接失败: {}", e);
                             }
                         }
-                    }
+                    });
                 }
 
                 // Step 0.5: 启动市场情绪数据采集（资金费率/持仓量/多空比）
