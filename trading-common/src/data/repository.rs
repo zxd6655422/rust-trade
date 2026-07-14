@@ -1575,6 +1575,109 @@ impl TickDataRepository {
         ))
     }
 
+    /// 从 kline_1m 聚合生成所有高时间框架 K线
+    ///
+    /// 调用 PostgreSQL 的聚合函数，一次性生成 5m/15m/30m/1h/2h/4h/1d/3d/1w
+    /// 返回 Vec<(timeframe, rows_affected)>
+    pub async fn aggregate_all_timeframes(
+        &self,
+        symbol: &str,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> DataResult<Vec<(String, i64)>> {
+        let rows = sqlx::query(
+            "SELECT timeframe, rows_affected FROM aggregate_all_timeframes($1, $2, $3)"
+        )
+        .bind(symbol)
+        .bind(start)
+        .bind(end)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let results = rows.into_iter()
+            .map(|row| {
+                let tf: String = row.get("timeframe");
+                let count: i32 = row.get("rows_affected");
+                (tf, count as i64)
+            })
+            .collect();
+
+        Ok(results)
+    }
+
+    /// 从 kline_1m 聚合单个时间框架
+    pub async fn aggregate_single_timeframe(
+        &self,
+        symbol: &str,
+        timeframe: &str,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> DataResult<i64> {
+        let func_name = format!("aggregate_kline_{}", timeframe);
+        let sql = format!("SELECT {}($1, $2, $3) as count", func_name);
+
+        let row = sqlx::query(&sql)
+            .bind(symbol)
+            .bind(start)
+            .bind(end)
+            .fetch_one(&self.pool)
+            .await?;
+
+        let count: i32 = row.get("count");
+        Ok(count as i64)
+    }
+
+    /// 检测高TF数据中的内部间隙
+    ///
+    /// 查找相邻K线之间时间差超过预期的区间，返回 Vec<(gap_start, gap_end)>
+    /// 例如 5m K线，如果 00:10 和 00:25 之间没有 00:15 和 00:20，返回 [(00:10, 00:25)]
+    pub async fn detect_high_tf_gaps(
+        &self,
+        symbol: &str,
+        timeframe: &str,
+        expected_interval_minutes: i64,
+        lookback_hours: i64,
+    ) -> DataResult<Vec<(DateTime<Utc>, DateTime<Utc>)>> {
+        let table_name = get_high_tf_table_name(timeframe)?;
+        let expected_ms = expected_interval_minutes * 60_000;
+        let lookback = Utc::now() - chrono::Duration::hours(lookback_hours);
+
+        // 查找相邻行之间时间差超过 1.5 倍预期间隔的间隙
+        let sql = format!(
+            "WITH ordered AS (\
+             SELECT open_time, LAG(open_time) OVER (ORDER BY open_time) AS prev_time \
+             FROM {} WHERE symbol = $1 AND open_time >= $2 \
+             ) \
+             SELECT prev_time AS gap_start, open_time AS gap_end \
+             FROM ordered \
+             WHERE prev_time IS NOT NULL \
+               AND EXTRACT(EPOCH FROM (open_time - prev_time)) * 1000 > $3 \
+             ORDER BY prev_time",
+            table_name
+        );
+
+        let rows = sqlx::query(&sql)
+            .bind(symbol)
+            .bind(lookback)
+            .bind(expected_ms as f64 * 1.5) // 允许1.5倍容差
+            .fetch_all(&self.pool)
+            .await?;
+
+        let gaps: Vec<(DateTime<Utc>, DateTime<Utc>)> = rows.into_iter()
+            .filter_map(|row| {
+                let start: DateTime<Utc> = row.get("gap_start");
+                let end: DateTime<Utc> = row.get("gap_end");
+                Some((start, end))
+            })
+            .collect();
+
+        if !gaps.is_empty() {
+            debug!("[{}] {} 检测到 {} 个内部间隙", symbol, timeframe, gaps.len());
+        }
+
+        Ok(gaps)
+    }
+
     /// Get klines from kline_1m table
     /// Returns the latest `limit` records in ascending time order (oldest first, newest last)
     pub async fn get_klines(

@@ -1,3 +1,4 @@
+pub mod aggregator;
 pub mod backfill;
 pub mod errors;
 pub mod market_data;
@@ -6,6 +7,7 @@ pub mod strategy_scheduler;
 pub mod types;
 
 // Re-export main interfaces
+pub use aggregator::HighTfAggregator;
 pub use backfill::BackfillService;
 pub use errors::ServiceError;
 pub use market_data::MarketDataService;

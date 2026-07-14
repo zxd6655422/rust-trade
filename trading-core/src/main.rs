@@ -8,26 +8,21 @@ use tokio::signal;
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
-// CLI-specific modules
+// CLI-specific modules (config, exchange, live_trading, redis_writer, service are in lib.rs)
 mod api;
-mod config;
-mod exchange;
-mod live_trading;
-mod redis_writer;
-mod service;
 
-// Import from trading-common
-use trading_common::backtest;
-use trading_common::data;
-
-use config::{CollectorMode, Settings};
-use data::{cache::TieredCache, repository::TickDataRepository};
-use exchange::BinanceExchange;
-use live_trading::PaperTradingProcessor;
-use service::{BackfillService, MarketDataService};
+// Import from trading-core (which re-exports trading-common)
+use trading_core::backtest;
+use trading_core::config;
+use trading_core::config::{CollectorMode, Settings};
+use trading_core::data::cache::{TieredCache, TickDataCache};
+use trading_core::data::repository::TickDataRepository;
+use trading_core::exchange;
+use trading_core::exchange::BinanceExchange;
+use trading_core::live_trading::PaperTradingProcessor;
+use trading_core::redis_writer;
+use trading_core::service::{self, BackfillService, MarketDataService};
 use trading_common::data::types::{OHLCData, Timeframe};
-
-use data::cache::TickDataCache;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -358,6 +353,29 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 });
 
+                // Step 0.3: 高TF聚合器 - 从 kline_1m 聚合生成高时间框架数据
+                // 替代从交易所API单独拉取高TF数据，实现零延迟
+                let mut aggregator = service::HighTfAggregator::new(repo.clone(), redis_conn.clone());
+
+                // 启动时恢复检测：如果高TF数据长时间未更新，自动补齐
+                {
+                    info!("🔍 检测高TF数据新鲜度...");
+                    for symbol in &symbols {
+                        match aggregator.recover_after_downtime(symbol, 60).await {
+                            Ok(recovered) => {
+                                if recovered {
+                                    info!("[{}] ✅ 高TF数据恢复完成", symbol);
+                                } else {
+                                    debug!("[{}] 高TF数据正常", symbol);
+                                }
+                            }
+                            Err(e) => {
+                                warn!("[{}] 高TF恢复检测失败: {}", symbol, e);
+                            }
+                        }
+                    }
+                }
+
                 // Step 0.5: 启动市场情绪数据采集（资金费率/持仓量/多空比）
                 let sentiment_conn = redis_conn.clone();
                 let sentiment_repo = repo.clone();
@@ -522,9 +540,9 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
                 let mut poll_timer = tokio::time::interval(Duration::from_secs(poll_interval));
                 poll_timer.tick().await; // skip first immediate tick
 
-                // 高TF缓存刷新计数器（每60个周期 = 约30分钟刷新一次）
+                // 轮询计数器
                 let mut poll_count: u64 = 0;
-                const HIGH_TF_REFRESH_INTERVAL: u64 = 60;
+                const GAP_CHECK_INTERVAL: u64 = 60; // 每60个周期检查一次间隙
                 // Redis 重连检测：上次 Redis 写入是否失败
                 let mut redis_was_down = false;
 
@@ -532,37 +550,9 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
                     poll_timer.tick().await;
                     poll_count += 1;
 
-                    // 检测 Redis 重连：之前失败 + 本次成功 → 立即刷新高TF缓存
+                    // 检测 Redis 重连：之前失败 + 本次成功 → 立即聚合
                     // 在 poll 结束后更新 redis_was_down 状态
                     let mut redis_write_failed_this_cycle = false;
-
-                    // 定期从 DB 刷新高TF缓存到 Redis（或 Redis 刚重连时立即刷新）
-                    let should_refresh = poll_count % HIGH_TF_REFRESH_INTERVAL == 0 || redis_was_down;
-                    if should_refresh {
-                        for sym in &symbols {
-                            for tf in redis_writer::get_stored_timeframes() {
-                                if tf == Timeframe::OneMinute { continue; }
-                                let cache_size = redis_writer::get_cache_size(&tf) as u32;
-                                match repo.get_high_tf_klines(sym, tf.as_str(), cache_size).await {
-                                    Ok(klines) if !klines.is_empty() => {
-                                        let mut refresh_conn = redis_conn.clone();
-                                        if let Err(e) = redis_writer::load_cache_from_db(&mut refresh_conn, sym, &tf, &klines).await {
-                                            warn!("[{}] Failed to refresh {} cache: {}", sym, tf.as_str(), e);
-                                        }
-                                    }
-                                    Err(e) => {
-                                        warn!("[{}] Failed to query {} klines: {}", sym, tf.as_str(), e);
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-                        if redis_was_down {
-                            info!("Redis reconnection detected - high-TF cache refreshed immediately");
-                        } else {
-                            debug!("High-TF Redis cache refresh completed for all symbols");
-                        }
-                    }
 
                     // 分批获取 symbol 的 kline 数据
                     for chunk in symbols.chunks(POLL_BATCH_SIZE) {
@@ -658,12 +648,29 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
                         // 并发执行所有 DB 写入（5个 symbol 同时写，而非串行等待）
                         futures::future::join_all(db_write_futures).await;
 
+                        // DB 写入完成后，增量聚合高TF数据
+                        // 从最新的 1m 数据聚合生成 5m/15m/30m/1h/2h/4h/1d/3d/1w
+                        for sym in chunk {
+                            if let Err(e) = aggregator.aggregate_incremental(sym, 10).await {
+                                warn!("[{}] 高TF增量聚合失败: {}", sym, e);
+                            }
+                        }
+
                         // 批次间延迟，避免短时间大量请求
                         tokio::time::sleep(Duration::from_millis(POLL_BATCH_DELAY_MS)).await;
                     }
 
                     // 更新 Redis 状态（用于下一轮重连检测）
                     redis_was_down = redis_write_failed_this_cycle;
+
+                    // Redis 重连时或定期检查间隙 → 立即聚合补齐
+                    if redis_was_down || poll_count % GAP_CHECK_INTERVAL == 0 {
+                        for sym in &symbols {
+                            if let Err(e) = aggregator.detect_and_fill_gaps(sym).await {
+                                warn!("[{}] 间隙检测失败: {}", sym, e);
+                            }
+                        }
+                    }
                 }
             }))
         }
