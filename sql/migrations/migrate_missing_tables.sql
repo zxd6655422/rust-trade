@@ -65,30 +65,6 @@ BEGIN
 END $$;
 
 
--- 检查并创建未来 K 线分区的函数（可选，为将来准备）
-CREATE OR REPLACE FUNCTION create_kline_partition(start_date DATE)
-RETURNS VOID AS $$
-DECLARE
-    partition_name TEXT;
-    end_date DATE;
-BEGIN
-    partition_name := 'kline_1m_' || to_char(start_date, 'YYYY_MM');
-    end_date := start_date + INTERVAL '1 month';
-
-    -- 检查分区是否已存在
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_class
-        WHERE relname = partition_name
-    ) THEN
-        -- 注意：当前 kline_1m 是普通表，不是分区表
-        -- 如果未来需要分区，需要先迁移表结构
-        RAISE NOTICE '⚠️ 当前 kline_1m 是普通表，不支持直接创建分区';
-        RAISE NOTICE '💡 如需分区，请参考分区迁移指南';
-    END IF;
-END;
-$$ LANGUAGE plpgsql;
-
-
 -- 完成提示
 DO $$
 BEGIN

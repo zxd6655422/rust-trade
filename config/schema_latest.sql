@@ -1,9 +1,9 @@
 -- =================================================================
 -- Trading System Database Schema (Latest)
--- 统一完整版本 - 2026-07-07
+-- 统一完整版本 - 2026-07-14
 --
 -- 包含所有表的最新结构：
---   1. kline_1m (K线数据，按月分区)
+--   1. kline_1m (K线数据)
 --   2. trading_pairs (交易对配置)
 --   3. symbol_config (监控列表)
 --   4. strategy_instances (策略实例)
@@ -21,10 +21,9 @@
 -- =================================================================
 
 -- =================================================================
--- 1. K线数据表 (kline_1m) - 按月分区
+-- 1. K线数据表 (kline_1m)
 -- =================================================================
 
--- 主表（分区表）
 CREATE TABLE IF NOT EXISTS kline_1m (
     symbol VARCHAR(20) NOT NULL,
     open_time TIMESTAMPTZ NOT NULL,
@@ -37,55 +36,10 @@ CREATE TABLE IF NOT EXISTS kline_1m (
     quote_volume DECIMAL(20,8) NOT NULL DEFAULT 0,
     trades INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (symbol, open_time)
-) PARTITION BY RANGE (open_time);
+);
 
--- 创建分区函数
-CREATE OR REPLACE FUNCTION create_kline_partition(
-    start_date DATE
-) RETURNS VOID AS $$
-DECLARE
-    partition_name TEXT;
-    end_date DATE;
-BEGIN
-    partition_name := 'kline_1m_' || to_char(start_date, 'YYYY_MM');
-    end_date := start_date + INTERVAL '1 month';
-
-    EXECUTE format(
-        'CREATE TABLE IF NOT EXISTS %I PARTITION OF kline_1m FOR VALUES FROM (%L) TO (%L)',
-        partition_name, start_date, end_date
-    );
-
-    -- 创建分区索引
-    EXECUTE format(
-        'CREATE INDEX IF NOT EXISTS %I ON %I (symbol, open_time DESC)',
-        partition_name || '_symbol_time', partition_name
-    );
-END;
-$$ LANGUAGE plpgsql;
-
--- 创建历史分区（2017-2026）
-DO $$
-DECLARE
-    d DATE;
-BEGIN
-    FOR d IN
-        SELECT generate_series(
-            '2017-01-01'::date,
-            date_trunc('month', CURRENT_DATE + INTERVAL '3 months'),
-            INTERVAL '1 month'
-        )::date
-    LOOP
-        PERFORM create_kline_partition(d);
-    END LOOP;
-END $$;
-
--- 创建未来分区的定时任务（每月执行）
-CREATE OR REPLACE FUNCTION auto_create_kline_partition()
-RETURNS VOID AS $$
-BEGIN
-    PERFORM create_kline_partition(date_trunc('month', CURRENT_DATE + INTERVAL '3 months')::date);
-END;
-$$ LANGUAGE plpgsql;
+CREATE INDEX IF NOT EXISTS idx_kline_1m_symbol_time ON kline_1m(symbol, open_time DESC);
+CREATE INDEX IF NOT EXISTS idx_kline_1m_time ON kline_1m(open_time);
 
 
 -- =================================================================
@@ -164,8 +118,8 @@ CREATE TABLE IF NOT EXISTS strategy_signals (
     entry_direction VARCHAR(10),
     timeframe_details JSONB NOT NULL DEFAULT '{}',
 
-    -- V6 新增：策略实例关联
-    instance_id UUID REFERENCES strategy_instances(id),
+    -- V6 新增：策略实例关联（无外键，应用层保证完整性）
+    instance_id UUID,
     signal_strength DECIMAL(5,4),
     market_context JSONB,
     stop_loss DECIMAL(20,8),
@@ -237,7 +191,7 @@ CREATE INDEX IF NOT EXISTS idx_analysis_status ON strategy_analysis_log(status, 
 
 CREATE TABLE IF NOT EXISTS strategy_performance (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    instance_id UUID NOT NULL REFERENCES strategy_instances(id) ON DELETE CASCADE,
+    instance_id UUID NOT NULL,
     period_start TIMESTAMPTZ NOT NULL,
     period_end TIMESTAMPTZ NOT NULL,
     total_signals INTEGER NOT NULL DEFAULT 0,
@@ -281,8 +235,8 @@ CREATE TABLE IF NOT EXISTS trades (
     market_type VARCHAR(10) NOT NULL DEFAULT 'futures'
         CHECK (market_type IN ('spot', 'futures')),
 
-    -- V6 新增
-    signal_id UUID REFERENCES strategy_signals(id),
+    -- V6 新增（无外键，应用层保证完整性）
+    signal_id UUID,
     order_status VARCHAR(20) DEFAULT 'filled',
     order_type VARCHAR(20) DEFAULT 'market',
     leverage INTEGER DEFAULT 1,
@@ -416,7 +370,7 @@ DO $$
 BEGIN
     RAISE NOTICE '========================================';
     RAISE NOTICE 'Schema Latest 迁移完成';
-    RAISE NOTICE '  - kline_1m (分区表，2017-至今)';
+    RAISE NOTICE '  - kline_1m (K线数据)';
     RAISE NOTICE '  - trading_pairs (交易对配置)';
     RAISE NOTICE '  - symbol_config (监控列表)';
     RAISE NOTICE '  - strategy_instances (策略实例)';

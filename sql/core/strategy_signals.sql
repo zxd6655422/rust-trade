@@ -34,8 +34,8 @@ CREATE TABLE public.strategy_signals (
 	CONSTRAINT chk_engine_direction CHECK ((((direction)::text = ANY ((ARRAY['bullish'::character varying, 'bearish'::character varying, 'neutral'::character varying])::text[])))),
 	CONSTRAINT chk_engine_entry_dir CHECK ((((entry_direction IS NULL) OR ((entry_direction)::text = ANY ((ARRAY['long'::character varying, 'short'::character varying])::text[]))))),
 	CONSTRAINT chk_engine_status CHECK ((((status)::text = ANY ((ARRAY['pending'::character varying, 'confirmed'::character varying, 'invalidated'::character varying, 'expired'::character varying, 'superseded'::character varying])::text[])))),
-	CONSTRAINT strategy_signals_pkey1 PRIMARY KEY (id),
-	CONSTRAINT strategy_signals_instance_id_fkey FOREIGN KEY (instance_id) REFERENCES public.strategy_instances(id)
+	CONSTRAINT strategy_signals_pkey1 PRIMARY KEY (id)
+	-- 外键已移除，应用层保证数据完整性
 );
 CREATE INDEX idx_engine_signals_order ON public.strategy_signals (order_id);
 CREATE INDEX idx_engine_signals_pending ON public.strategy_signals (symbol,strategy_id);

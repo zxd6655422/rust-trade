@@ -65,11 +65,29 @@ pub struct SignalQuery {
     pub limit: Option<i64>,
 }
 
+/// 校验策略实例是否存在
+async fn validate_instance_exists(pool: &PgPool, instance_id: Uuid) -> Result<bool, sqlx::Error> {
+    let exists = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM strategy_instances WHERE id = $1)"
+    )
+    .bind(instance_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(exists)
+}
+
 /// 创建信号
 pub async fn create_signal(
     pool: &PgPool,
     req: CreateSignalRequest,
 ) -> Result<StrategySignal, sqlx::Error> {
+    // 校验 instance_id 是否存在（如果提供了的话）
+    if let Some(instance_id) = req.instance_id {
+        if !validate_instance_exists(pool, instance_id).await? {
+            return Err(sqlx::Error::RowNotFound);
+        }
+    }
+
     let signal = sqlx::query_as::<_, StrategySignal>(
         r#"
         INSERT INTO strategy_signals (

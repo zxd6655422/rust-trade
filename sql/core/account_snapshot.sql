@@ -102,13 +102,4 @@ CREATE INDEX IF NOT EXISTS idx_position_snapshot_exchange_time
 CREATE INDEX IF NOT EXISTS idx_position_snapshot_symbol_time
     ON position_snapshot(symbol, snapshot_at DESC);
 
--- =================================================================
--- 清理旧快照的函数（保留7天）
--- =================================================================
-CREATE OR REPLACE FUNCTION cleanup_old_account_snapshots() RETURNS void AS $$
-BEGIN
-    DELETE FROM account_snapshot WHERE snapshot_at < NOW() - INTERVAL '7 days';
-    DELETE FROM asset_balance WHERE snapshot_at < NOW() - INTERVAL '7 days';
-    DELETE FROM position_snapshot WHERE snapshot_at < NOW() - INTERVAL '7 days';
-END;
-$$ LANGUAGE plpgsql;
+-- 注意：清理旧快照的逻辑已移至应用层实现（Rust 代码）

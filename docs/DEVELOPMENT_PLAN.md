@@ -4,7 +4,7 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  trading-core (数据采集 + 指标计算 + Redis 写入)                   │
+│  Layer 1: trading-core (数据采集 + 指标计算 + Redis 写入)        │
 │  ├── 连接交易所（Binance/OKX）                                    │
 │  ├── REST 轮询采集 K线数据                                       │
 │  ├── 计算技术指标 (MA/RSI/MACD)                                  │
@@ -23,22 +23,39 @@
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  strategy-service (策略分析 + 信号生成)                            │
+│  Layer 2: strategy-service (策略分析 + 信号生成)                  │
 │  ├── 从 PostgreSQL 加载策略实例配置                               │
 │  ├── 从 Redis 读取指标数据（毫秒级）                              │
 │  ├── 运行策略逻辑（RSI/MACD/布林/趋势/多时间框架）                │
-│  ├── 信号写入 PostgreSQL（关联策略实例）                          │
-│  └── 触发交易执行（如果 auto_trade=true）                         │
+│  ├── 信号写入 PostgreSQL（strategy_signals 表）                   │
+│  └── WebSocket 推送 + 告警通知                                   │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  trading-engine (交易执行)                                       │
-│  ├── 接收交易执行请求（HTTP API）                                 │
-│  ├── 风控检查                                                   │
-│  ├── 调用交易所 API 下单                                        │
-│  └── 交易结果写入 trades 表（关联 signal_id）                     │
+│  Layer 3: trading-engine (交易执行)                               │
+│  ├── 从 strategy_signals 表轮询待执行信号                        │
+│  ├── 风控检查（持仓数量/金额/杠杆）                               │
+│  ├── 调用交易所 API 下单（支持多交易所）                          │
+│  ├── 订单状态同步                                                │
+│  ├── 止损止盈管理                                                │
+│  └── 持仓同步与对账                                              │
 └─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 职责边界（重要）
+
+| 层级 | 服务 | 职责 | 不负责 |
+|------|------|------|--------|
+| Layer 1 | trading-core | 数据采集、指标预计算、Redis缓存 | 交易执行、信号生成 |
+| Layer 2 | strategy-service | 策略分析、信号生成、指标动态计算 | 下单、订单同步、账户同步 |
+| Layer 3 | trading-engine | 交易执行、订单管理、持仓同步、风控 | 策略分析、信号生成 |
+
+**数据流：**
+```
+trading-core → Redis → strategy-service → strategy_signals表 → trading-engine
 ```
 
 ---
@@ -49,7 +66,7 @@
 |------|------|------|
 | trading-core | 8080 | 数据采集 + 指标计算 + HTTP API + WebSocket |
 | strategy-service | 8082 | 策略分析 + 信号生成 |
-| trading-engine | - | 交易执行 |
+| trading-engine | - | 交易执行（无 HTTP API，从数据库轮询） |
 | PostgreSQL | 5432 | 数据存储 |
 | Redis | 6379 | 指标缓存 |
 
@@ -74,18 +91,25 @@
 |------|------|------|
 | 策略实例管理 | ✅ | PostgreSQL CRUD，支持多策略实例 |
 | Redis 读取器 | ✅ | 从 Redis 读取 K线和指标数据 |
-| 6 个策略实现 | ✅ | RSI/MACD/布林带/成交量/趋势/多时间框架 |
+| 7 个策略实现 | ✅ | RSI/MACD/布林带/成交量/趋势/多时间框架/大周期 |
 | 策略执行引擎 | ✅ | 定时轮询 PostgreSQL + Redis |
 | 信号生成 | ✅ | 信号写入 PostgreSQL（含完整上下文） |
 | HTTP API | ✅ | 策略管理/信号查询/交易记录/统计 |
+| 告警系统 | ✅ | 信号触发告警通知 |
 
 ### ✅ Layer 3: 交易执行层 (trading-engine)
 
 | 模块 | 状态 | 说明 |
 |------|------|------|
-| 交易所适配器 | ✅ | Binance (现货+合约) / OKX / Bybit |
-| 统一交易接口 | ✅ | Exchange trait (MarketDataProvider + TradingOperations) |
-| Paper Trading | ✅ | 模拟交易引擎 |
+| 信号轮询器 | ✅ | 从 strategy_signals 表轮询信号执行 |
+| 多交易所支持 | ✅ | Binance (现货+合约) / OKX / Bybit |
+| TradingUnit | ✅ | 独立的交易所+模式交易实例 |
+| 订单管理器 | ✅ | 下单、撤单、订单状态查询 |
+| 止损止盈 | ✅ | StopLossManager，支持追踪止损 |
+| 风控引擎 | ✅ | RiskEngine，持仓数量/金额/杠杆检查 |
+| 持仓同步 | ✅ | 每5分钟同步交易所持仓 |
+| 持仓对账 | ✅ | PositionReconciler，对比系统与交易所持仓 |
+| 多交易所模式 | ✅ | 支持同时运行多个交易所实例 |
 
 ### ✅ 回测引擎
 
@@ -113,20 +137,32 @@
 
 ## 数据库表结构
 
-### 现有表
+### 核心表
+
+| 表名 | 说明 | 所属服务 |
+|------|------|----------|
+| `kline_1m` | 1分钟K线数据 | trading-core |
+| `trading_pairs` | 交易对配置 | trading-core |
+| `symbol_config` | 监控列表 | trading-core |
+| `strategy_instances` | 策略实例配置 | strategy-service |
+| `strategy_signals` | 策略信号 | strategy-service → trading-engine |
+| `strategy_analysis_log` | 分析日志（前端用） | strategy-service |
+| `strategy_performance` | 策略性能统计 | strategy-service |
+| `trades` | 交易记录 | trading-engine |
+| `positions` | 当前持仓 | trading-engine |
+| `system_config` | 系统配置 | 共享 |
+
+### 交易引擎相关表
 
 | 表名 | 说明 |
 |------|------|
-| `kline_1m` | 1分钟K线数据 |
-| `trading_pairs` | 交易对配置 |
-| `symbol_config` | 监控列表 |
-| `strategy_instances` | 策略实例配置 |
-| `strategy_signals` | 策略信号 |
-| `strategy_analysis_log` | 分析日志（前端用） |
-| `strategy_performance` | 策略性能统计 |
-| `trades` | 交易记录 |
-| `positions` | 当前持仓 |
-| `system_config` | 系统配置 |
+| `exchange_config` | 交易所实例配置（前端管理） |
+| `trading_orders` | 交易订单详情 |
+| `trading_positions` | 交易持仓详情 |
+| `stop_orders` | 止损止盈订单 |
+| `account_snapshot` | 账户余额快照 |
+| `risk_logs` | 风控日志 |
+| `trade_logs` | 交易日志 |
 
 ### Schema 文件
 
@@ -170,6 +206,15 @@
 | `/api/signals` | GET | 查询信号（按策略/交易对/时间） |
 | `/api/trades` | GET | 查询交易记录 |
 | `/api/strategies/{id}/performance` | GET | 策略收益统计 |
+| `/ws/signals` | WebSocket | 实时信号推送 |
+
+### trading-engine
+
+| 接口 | 说明 |
+|------|------|
+| 无 HTTP API | 从数据库轮询执行 |
+| `strategy_signals` 表 | 信号输入 |
+| `exchange_config` 表 | 交易所配置（前端管理） |
 
 ---
 
@@ -234,6 +279,15 @@ indicator:{symbol}:bollinger         → {upper, middle, lower}
   "weight_d1": 0.3,
   "weight_h1": 0.2
 }
+
+// 大周期策略
+{
+  "primary_timeframe": "1w",
+  "ma_periods": [20, 50, 100, 200],
+  "proximity_threshold": 5.0,
+  "adx_threshold": 25.0,
+  "lookback_periods": 52
+}
 ```
 
 ---
@@ -288,3 +342,4 @@ indicator:{symbol}:bollinger         → {upper, middle, lower}
 | 回测引擎 | ✅ 已完成 | 2026-07-01 |
 | 监控桌面应用 | ✅ 已完成 | 2026-07-06 |
 | i18n 国际化 | ✅ 已完成 | 2026-07-07 |
+| 职责边界重构 | ✅ 已完成 | 2026-07-14 |

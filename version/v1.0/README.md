@@ -10,6 +10,7 @@
 |------|------|------|
 | **完整交易** | 支持多交易所（Binance、OKX）现货/合约交易 | ✅ |
 | **数据采集** | 自动采集 K线数据，支持历史回填 | ✅ |
+| **策略分析** | 7种内置策略，支持动态参数 | ✅ |
 | **策略回测** | 多时间框架回测、抗过拟合验证 | ✅ |
 | **交易统计** | 完整的盈亏分析、胜率统计、资金曲线 | ✅ |
 | **便捷部署** | systemd 服务化，一键部署脚本 | ✅ |
@@ -21,7 +22,7 @@
 | **策略易开发** | 统一的 Strategy trait，支持多时间框架 | ✅ |
 | **策略易测试** | MockExchange 本地测试，不依赖网络 | ✅ |
 | **回测易验证** | 样本外测试、滚动前进测试、过拟合检测 | ✅ |
-| **代码质量** | 47 个单元测试，覆盖核心逻辑 | ✅ |
+| **代码质量** | 完整的单元测试覆盖核心逻辑 | ✅ |
 
 ### 📊 系统架构
 
@@ -31,13 +32,13 @@
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                  │
 │  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────┐ │
-│  │  数据采集服务     │    │   交易引擎服务    │    │  监控应用    │ │
-│  │  (trading-core)  │    │ (trading-engine) │    │ (frontend)  │ │
+│  │  Layer 1         │    │  Layer 2         │    │  Layer 3     │ │
+│  │  trading-core    │    │ strategy-service │    │trading-engine│ │
 │  │                  │    │                  │    │             │ │
-│  │  • K线数据采集   │    │  • 策略执行      │    │  • 行情图表  │ │
-│  │  • 历史数据回填   │    │  • 风控检查      │    │  • 持仓监控  │ │
-│  │  • HTTP API      │    │  • 订单管理      │    │  • 交易记录  │ │
-│  │  • WebSocket     │    │  • 止损止盈      │    │  • 统计分析  │ │
+│  │  • K线数据采集   │    │  • 策略分析      │    │  • 交易执行  │ │
+│  │  • 指标预计算    │    │  • 信号生成      │    │  • 订单管理  │ │
+│  │  • Redis 缓存    │    │  • 指标计算      │    │  • 风控检查  │ │
+│  │  • HTTP API      │    │  • WebSocket     │    │  • 止损止盈  │ │
 │  └────────┬─────────┘    └────────┬─────────┘    └──────┬──────┘ │
 │           │                       │                      │       │
 │           └───────────────────────┼──────────────────────┘       │
@@ -47,467 +48,213 @@
 │                    │  (数据存储 + 缓存)           │               │
 │                    └──────────────────────────────┘               │
 │                                                                  │
+│  ┌─────────────────────────────────────────────────────────────┐│
+│  │  监控应用 (frontend + src-tauri)                             ││
+│  │  • 行情图表  • 持仓监控  • 交易记录  • 统计分析              ││
+│  └─────────────────────────────────────────────────────────────┘│
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 架构设计 - 服务分离方案
+## 职责边界
 
-### 设计理念
+| 层级 | 服务 | 职责 | 不负责 |
+|------|------|------|--------|
+| Layer 1 | trading-core | 数据采集、指标预计算、Redis缓存 | 交易执行、信号生成 |
+| Layer 2 | strategy-service | 策略分析、信号生成、指标动态计算 | 下单、订单同步、账户同步 |
+| Layer 3 | trading-engine | 交易执行、订单管理、持仓同步、风控 | 策略分析、信号生成 |
 
-将**数据采集服务**与**交易引擎服务**分离，原因：
-
-1. **风险隔离**：交易服务崩溃不影响数据采集
-2. **安全隔离**：API Key 只存在于交易服务
-3. **独立部署**：可独立更新、重启、扩展
-4. **故障隔离**：数据采集是只读操作，交易涉及资金安全
-
-### 整体架构
-
+**数据流：**
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        云服务器 (systemd)                         │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  ┌───────────────────────────────────────────────────────────┐  │
-│  │  Service 1: Data Collector (trading-core)                 │  │
-│  │  ──────────────────────────────────────────────────────── │  │
-│  │  • WebSocket 行情订阅 (Binance Public)                    │  │
-│  │  • 数据写入 PostgreSQL (tick_data 表)                      │  │
-│  │  • Redis 缓存行情数据                                      │  │
-│  │  • 无需 API Key，只读操作                                  │  │
-│  │  • systemd: trading-collector.service                     │  │
-│  └───────────────────────────────────────────────────────────┘  │
-│                              │                                   │
-│                              │ (PostgreSQL + Redis)               │
-│                              ▼                                   │
-│  ┌───────────────────────────────────────────────────────────┐  │
-│  │  Service 2: Trading Engine (trading-engine) [新增]        │  │
-│  │  ──────────────────────────────────────────────────────── │  │
-│  │  • 读取实时行情 (从 Redis 缓存)                            │  │
-│  │  • 策略计算信号                                            │  │
-│  │  • 风控检查 (Kelly 仓位、黑天鹅保护等)                      │  │
-│  │  • 真实下单 (Binance/OKX REST API)                        │  │
-│  │  • 订单状态追踪 (WebSocket 用户数据流)                     │  │
-│  │  • 止损止盈管理                                            │  │
-│  │  • 需要 API Key，涉及资金操作                              │  │
-│  │  • systemd: trading-engine.service                        │  │
-│  └───────────────────────────────────────────────────────────┘  │
-│                              │                                   │
-│                              │ (PostgreSQL)                      │
-│                              ▼                                   │
-│  ┌───────────────────────────────────────────────────────────┐  │
-│  │  Service 3: PostgreSQL + Redis                            │  │
-│  │  ──────────────────────────────────────────────────────── │  │
-│  │  • tick_data (行情数据)                                    │  │
-│  │  • orders (订单记录)                                       │  │
-│  │  • positions (持仓记录)                                    │  │
-│  │  • risk_logs (风控日志)                                    │  │
-│  │  • live_strategy_log (策略日志)                            │  │
-│  └───────────────────────────────────────────────────────────┘  │
-│                                                                  │
-│  ┌───────────────────────────────────────────────────────────┐  │
-│  │  Service 4: Monitor Dashboard (可选)                      │  │
-│  │  ──────────────────────────────────────────────────────── │  │
-│  │  • src-tauri 桌面应用 (本地电脑)                           │  │
-│  │  • 或 Web 仪表盘 (部署在服务器)                            │  │
-│  └───────────────────────────────────────────────────────────┘  │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
+trading-core → Redis → strategy-service → strategy_signals表 → trading-engine
 ```
-
-### 服务间通信
-
-```
-Data Collector ──写入──▶ PostgreSQL (tick_data)
-                              │
-Trading Engine ◀──读取──┘
-      │
-      ├──写入──▶ PostgreSQL (orders, positions, risk_logs)
-      │
-      └──写入──▶ Redis (实时持仓状态)
-```
-
-**通信方式**：通过数据库（PostgreSQL）和缓存（Redis）解耦，不直接调用。
 
 ---
 
 ## 模块详细设计
 
-### Module 1: Data Collector (现有 trading-core)
+### Module 1: Data Collector (trading-core)
 
 **职责**：
-- 订阅 Binance 公共 WebSocket 行情流
-- 将 tick 数据批量写入 PostgreSQL
-- 维护 Redis 缓存
-
-**状态**：已完成，无需大改
+- REST 轮询采集 K线数据
+- 计算技术指标，写入 Redis 缓存
+- 历史数据回填 + 缺失补齐
+- HTTP API + WebSocket 服务
 
 **文件**：
 ```
 trading-core/src/
-├── main.rs           # 保持现有
-├── exchange/         # Binance WebSocket (只读)
-├── service/          # MarketDataService
+├── main.rs           # 入口
+├── exchange/         # 交易所接口
+├── service/          # 数据采集服务
+├── api/              # HTTP API + WebSocket
+├── redis_writer.rs   # Redis 写入
 └── config.rs
 ```
 
-**部署**：
-```bash
-# systemd service
-[Service]
-ExecStart=/opt/trading/trading-core live
-Restart=always
+---
+
+### Module 2: Strategy Service (strategy-service)
+
+**职责**：
+- 从 PostgreSQL 加载策略实例配置
+- 从 Redis 读取指标数据（毫秒级）
+- 运行策略逻辑，生成交易信号
+- 信号写入 `strategy_signals` 表
+- WebSocket 推送 + 告警通知
+
+**文件**：
+```
+strategy-service/src/
+├── main.rs           # 入口
+├── config.rs         # 配置
+├── engine.rs         # 策略执行引擎
+├── strategies/       # 7个策略实现
+├── indicators.rs     # 指标计算
+├── redis_reader.rs   # Redis 数据读取
+├── exchange.rs       # 公开 API（实时价格）
+├── websocket.rs      # WebSocket 推送
+├── alert.rs          # 告警系统
+└── api.rs            # HTTP API
 ```
 
 ---
 
-### Module 2: Trading Engine (新增 trading-engine)
+### Module 3: Trading Engine (trading-engine)
 
 **职责**：
-- 从 Redis 读取实时行情
-- 运行策略计算交易信号
-- 执行风控检查
-- 调用交易所 API 下单
-- 管理订单状态
-- 执行止损止盈
+- 从 `strategy_signals` 表轮询待执行信号
+- 风控检查（持仓数量/金额/杠杆）
+- 调用交易所 API 下单（支持多交易所）
+- 订单状态同步
+- 止损止盈管理
+- 持仓同步与对账
 
-**新增文件**：
+**文件**：
 ```
 trading-engine/src/
 ├── main.rs                    # 入口
-├── config.rs                  # 配置（含 API Key）
+├── config.rs                  # 配置
 ├── engine/
-│   ├── mod.rs
-│   ├── strategy_engine.rs     # 策略引擎
-│   └── trading_loop.rs        # 主交易循环
+│   ├── signal_poller.rs       # 信号轮询器（主循环）
+│   └── trading_unit.rs        # 交易单元
 ├── exchange/
-│   ├── mod.rs
-│   ├── traits.rs              # 扩展的 Exchange trait
-│   ├── adapters/
-│   │   ├── mod.rs
-│   │   ├── binance_adapter.rs # Binance REST + WebSocket
-│   │   └── okx_adapter.rs     # OKX REST + WebSocket
-│   ├── order_types.rs         # 订单类型定义
-│   └── factory.rs             # 交易所工厂
+│   ├── traits.rs              # Exchange trait
+│   └── adapters/              # 交易所适配器
 ├── risk/
-│   ├── mod.rs
-│   ├── config.rs              # 风控配置
 │   ├── engine.rs              # 风控引擎
-│   ├── kelly.rs               # Kelly 仓位计算
-│   ├── volatility.rs          # 波动率计算
-│   ├── stop_loss.rs           # 止损止盈管理
-│   └── circuit_breaker.rs     # 熔断机制
+│   └── stop_loss.rs           # 止损止盈
 ├── order/
-│   ├── mod.rs
-│   ├── manager.rs             # 订单管理器
-│   ├── executor.rs            # 订单执行器
-│   └── tracker.rs             # 订单状态追踪
-├── portfolio/
-│   ├── mod.rs
-│   ├── manager.rs             # 持仓管理
-│   └── reconciler.rs          # 持仓对账
-└── utils/
-    ├── mod.rs
-    ├── logger.rs              # 日志工具
-    └── metrics.rs             # 指标收集
+│   └── manager.rs             # 订单管理器
+└── portfolio/
+    ├── manager.rs             # 持仓管理
+    └── reconciler.rs          # 持仓对账
 ```
 
 ---
 
-### Module 3: Shared Library (现有 trading-common)
+## 数据库表结构
 
-**职责**：
-- 共享数据类型
-- 共享策略逻辑
-- 共享工具函数
+### 核心表
 
-**扩展内容**：
-```
-trading-common/src/
-├── data/
-│   ├── types.rs          # 添加 Order, Position 类型
-│   ├── repository.rs     # 添加订单、持仓查询方法
-│   └── cache.rs          # 保持现有
-├── backtest/
-│   └── strategy/         # 策略逻辑 (两服务共用)
-└── exchange/             # 新增：通用交易所类型
-    ├── types.rs          # OrderRequest, OrderResult, AccountInfo
-    └── traits.rs         # Exchange trait 定义
-```
+| 表名 | 说明 | 所属服务 |
+|------|------|----------|
+| `kline_1m` | 1分钟K线数据 | trading-core |
+| `trading_pairs` | 交易对配置 | trading-core |
+| `symbol_config` | 监控列表 | trading-core |
+| `strategy_instances` | 策略实例配置 | strategy-service |
+| `strategy_signals` | 策略信号 | strategy-service → trading-engine |
+| `strategy_analysis_log` | 分析日志（前端用） | strategy-service |
+| `strategy_performance` | 策略性能统计 | strategy-service |
+| `trades` | 交易记录 | trading-engine |
+| `positions` | 当前持仓 | trading-engine |
+| `system_config` | 系统配置 | 共享 |
 
----
+### 交易引擎相关表
 
-## 配置文件设计
-
-### Data Collector 配置
-**文件**: `config/collector-production.toml`
-
-```toml
-[database]
-url = ""  # 从环境变量 DATABASE_URL
-max_connections = 5
-min_connections = 2
-max_lifetime = 1800
-
-[cache.redis]
-url = ""  # 从环境变量 REDIS_URL
-ttl_seconds = 300
-max_ticks_per_symbol = 1000
-
-[symbols]
-list = ["BTCUSDT", "ETHUSDT"]
-```
-
-### Trading Engine 配置
-**文件**: `config/engine-production.toml`
-
-```toml
-[exchange]
-id = "binance"
-testnet = false
-
-[exchange.api]
-# 从环境变量加载，不写入配置文件
-# BINANCE_API_KEY
-# BINANCE_API_SECRET
-
-[trading]
-mode = "live"                    # testnet / live
-strategy = "rsi"
-symbols = ["BTCUSDT", "ETHUSDT"]
-poll_interval_ms = 100           # 行情轮询间隔
-
-[risk_control]
-# 基础风控
-max_position_size = 1000.0
-max_order_size = 0.01
-stop_loss_pct = 0.02
-take_profit_pct = 0.04
-
-# 中级风控
-max_daily_loss = 200.0
-max_drawdown_pct = 0.15
-max_exposure_pct = 0.8
-
-# 高级风控
-kelly_fraction = 0.25
-volatility_lookback = 20
-volatility_target = 0.15
-black_swan_threshold = 0.05
-circuit_breaker_cooldown = 3600
-```
-
-### 环境变量
-**文件**: `.env`
-
-```bash
-# 数据库
-DATABASE_URL=postgresql://mydb:password@localhost:5432/trading_core
-REDIS_URL=redis://:password@localhost:6379
-
-# Binance API
-BINANCE_API_KEY=your_api_key_here
-BINANCE_API_SECRET=your_api_secret_here
-BINANCE_TESTNET=true
-
-# OKX API (可选)
-OKX_API_KEY=your_api_key_here
-OKX_API_SECRET=your_api_secret_here
-OKX_PASSPHRASE=your_passphrase_here
-OKX_SIMULATED=true
-```
+| 表名 | 说明 |
+|------|------|
+| `exchange_config` | 交易所实例配置（前端管理） |
+| `trading_orders` | 交易订单详情 |
+| `trading_positions` | 交易持仓详情 |
+| `stop_orders` | 止损止盈订单 |
+| `account_snapshot` | 账户余额快照 |
+| `risk_logs` | 风控日志 |
+| `trade_logs` | 交易日志 |
 
 ---
 
-## 开发计划
+## API 端点
 
-### Phase 1: 基础框架搭建 ✅
+### trading-core (端口 8080)
 
-**任务**：
-- [x] 创建 trading-engine crate
-- [x] 设计并实现 Exchange trait (扩展版)
-- [x] 实现 Binance Adapter (REST API)
-- [x] 实现 API Key 管理
-- [x] 基础配置系统
+| 端点 | 方法 | 功能 |
+|------|------|------|
+| `/health` | GET | 健康检查 |
+| `/api/data/info` | GET | 数据信息 |
+| `/api/strategies` | GET | 策略列表 |
+| `/api/backtest` | POST | 单时间框架回测 |
+| `/api/backtest/multi-timeframe` | POST | 多时间框架回测 |
+| `/api/backtest/walk-forward` | POST | 滚动前进测试 |
+| `/api/backtest/out-of-sample` | POST | 样本外测试 |
+| `/api/backtest/multi-symbol` | POST | 多交易对回测 |
+| `/api/analysis/market-state` | POST | 市场状态分析 |
 
-**产出**：
-- trading-engine 可编译
-- 能连接 Binance Testnet
-- 能查询账户余额
+### strategy-service (端口 8082)
 
----
+| 端点 | 方法 | 功能 |
+|------|------|------|
+| `/api/strategies` | GET | 列出所有策略实例 |
+| `/api/strategies/{id}` | GET | 获取策略详情 |
+| `/api/strategies` | POST | 创建策略实例 |
+| `/api/strategies/{id}` | PUT | 更新策略参数 |
+| `/api/strategies/{id}` | DELETE | 删除策略 |
+| `/api/signals` | GET | 查询信号 |
+| `/api/trades` | GET | 查询交易记录 |
+| `/ws/signals` | WebSocket | 实时信号推送 |
 
-### Phase 2: 订单管理系统 ✅
+### trading-engine
 
-**任务**：
-- [x] 实现 OrderManager
-- [x] 实现订单状态机
-- [x] Binance 下单/撤单 API
-- [x] OKX Adapter 实现
-- [x] WebSocket 用户数据流（订单状态更新）
-
-**产出**：
-- 能在 Testnet 下单
-- 能追踪订单状态
-- 支持 Binance + OKX
-
----
-
-### Phase 3: 风控系统 ✅
-
-**任务**：
-- [x] 实现 RiskEngine 基础框架
-- [x] 基础风控规则（单笔限额、止损止盈）
-- [x] 中级风控（日亏损、最大回撤）
-- [x] 高级风控（Kelly 公式、波动率自适应）
-- [x] 黑天鹅检测 + 熔断机制
-
-**产出**：
-- 完整风控系统
-- 风控日志记录
-
----
-
-### Phase 4: 策略集成 + 实盘对接 ✅
-
-**任务**：
-- [x] 策略引擎与交易引擎集成
-- [x] 从 Redis 读取实时行情
-- [x] 信号 → 风控 → 下单 完整流程
-- [x] 止损止盈自动执行
-- [x] 持仓管理 + 对账
-
-**产出**：
-- 完整自动交易流程
-- Testnet 24 小时稳定运行
-
----
-
-### Phase 5: 监控 API + 服务器部署 ✅
-
-**任务**：
-- [x] 实时行情 API (P8)
-- [x] 持仓/交易记录 API (P9)
-- [x] 统计分析 API (P10)
-- [x] 服务器部署 (Ubuntu)
-- [x] 启动脚本和日志配置
-
-**产出**：
-- 9 个监控 API 端点
-- 服务器已部署运行
-
----
-
-### Phase 6: 监控桌面应用前端 📋
-
-**任务**：
-- [ ] 实时行情图表界面
-- [ ] 持仓监控界面
-- [ ] 交易历史界面
-- [ ] 统计分析界面
-- [ ] 资金曲线图表
-
-**产出**：
-- 完整监控桌面应用
+| 接口 | 说明 |
+|------|------|
+| 无 HTTP API | 从数据库轮询执行 |
+| `strategy_signals` 表 | 信号输入 |
+| `exchange_config` 表 | 交易所配置（前端管理） |
 
 ---
 
 ## 部署方案
 
-### 当前服务器部署结构
-```
-~/apps/
-├── trading-core/
-│   ├── trading-core           # 数据采集服务
-│   ├── start.sh               # 启动脚本
-│   ├── config/
-│   │   └── production.toml
-│   └── logs/
-│       └── trading-core_*.log
-└── trading-engine/
-    ├── trading-engine          # 交易引擎服务
-    ├── start.sh                # 启动脚本
-    ├── config/
-    │   └── engine-production.toml
-    └── logs/
-        └── trading-engine_*.log
-```
-
-### 启动命令
-```bash
-# 启动数据采集
-cd ~/apps/trading-core && ./start.sh
-
-# 启动交易引擎
-cd ~/apps/trading-engine && ./start.sh
-
-# 查看日志
-tail -f ~/apps/trading-core/logs/trading-core_*.log
-tail -f ~/apps/trading-engine/logs/trading-engine_*.log
-```
-
 ### systemd 服务
 
-**trading-collector.service**
-```ini
-[Unit]
-Description=Trading Data Collector
-After=network.target postgresql.service redis.service
+```bash
+# 启动服务
+sudo systemctl start trading-collector
+sudo systemctl start trading-engine
 
-[Service]
-Type=simple
-User=trading
-WorkingDirectory=/opt/trading
-ExecStart=/opt/trading/bin/trading-collector live
-Restart=always
-RestartSec=10
+# 查看状态
+sudo systemctl status trading-collector
+sudo systemctl status trading-engine
 
-[Install]
-WantedBy=multi-user.target
+# 查看日志
+journalctl -u trading-collector -f
+journalctl -u trading-engine -f
 ```
 
-**trading-engine.service**
-```ini
-[Unit]
-Description=Trading Engine
-After=network.target trading-collector.service
+### 目录结构
 
-[Service]
-Type=simple
-User=trading
-WorkingDirectory=/opt/trading
-ExecStart=/opt/trading/bin/trading-engine live
-Restart=always
-RestartSec=10
-EnvironmentFile=/opt/trading/.env
-
-[Install]
-WantedBy=multi-user.target
 ```
-
----
-
-## 风险控制
-
-### 资金安全
-1. API Key 只在交易服务中使用
-2. API Key 权限限制：只允许交易，不允许提币
-3. IP 白名单限制
-4. 所有交易记录到数据库
-
-### 故障恢复
-1. 服务崩溃自动重启 (systemd)
-2. 订单状态与交易所对账
-3. 持仓状态定期同步
-4. 异常交易自动停止
-
-### 监控告警
-1. 交易失败告警
-2. 风控触发告警
-3. 服务异常告警
-4. 每日交易汇总报告
+~/apps/
+├── trading-core/           # 数据采集服务
+│   ├── trading-core
+│   ├── config/
+│   └── logs/
+└── trading-engine/         # 交易引擎
+    ├── trading-engine
+    ├── config/
+    └── logs/
+```
 
 ---
 
@@ -519,21 +266,15 @@ WantedBy=multi-user.target
 - [x] 订单状态实时更新
 - [x] 止损止盈自动触发
 - [x] 风控规则正确执行
-- [x] Kelly 仓位计算正确
-- [x] 黑天鹅检测触发熔断
 - [x] 持仓对账正确
+- [x] 策略信号生成正确
+- [x] 信号生命周期管理正确
 
 ### 性能验证
 - [x] 行情延迟 < 100ms
 - [x] 下单延迟 < 500ms
 - [x] 风控检查 < 10ms
 - [x] 内存占用稳定
-
-### 稳定性验证
-- [ ] Testnet 运行 7 天无崩溃
-- [ ] 网络断线自动重连
-- [ ] 交易所 API 限流处理
-- [ ] 异常数据容错处理
 
 ### 监控 API 验证
 - [x] 实时价格查询正常
@@ -543,81 +284,6 @@ WantedBy=multi-user.target
 - [x] 统计指标准确
 - [x] 资金曲线数据正确
 
-### 开发体验验证
-- [x] 策略接口统一易用（Strategy trait）
-- [x] 本地测试不依赖网络（MockExchange）
-- [x] 回测结果可验证（抗过拟合测试）
-- [x] 单元测试覆盖核心逻辑（47 个测试）
-- [x] 错误处理完善（重试机制、超时控制）
-
----
-
-## 策略开发指南
-
-### 策略接口
-
-```rust
-#[async_trait]
-pub trait Strategy: Send + Sync {
-    /// 策略名称
-    fn name(&self) -> &str;
-
-    /// 分析数据并生成信号
-    fn analyze(&mut self, data: &[OHLCData]) -> Option<Signal>;
-
-    /// 是否应该入场
-    fn should_enter(&self) -> bool;
-
-    /// 是否应该出场
-    fn should_exit(&self) -> bool;
-
-    /// 获取入场方向
-    fn entry_direction(&self) -> EntryDirection;
-}
-```
-
-### 多时间框架策略
-
-```rust
-#[async_trait]
-pub trait MultiTimeframeStrategy: Strategy {
-    /// 需要哪些时间框架
-    fn required_timeframes(&self) -> Vec<Timeframe>;
-
-    /// 多时间框架数据回调
-    fn on_multi_timeframe(
-        &mut self,
-        data: &HashMap<Timeframe, Vec<OHLCData>>,
-    ) -> Signal;
-}
-```
-
-### 本地测试
-
-```toml
-# config/engine-development.toml
-[exchange]
-id = "mock"  # 使用 Mock 交易所
-```
-
-```rust
-// 测试策略
-#[tokio::test]
-async fn test_my_strategy() {
-    let mut exchange = MockExchange::new(MockExchangeConfig::default());
-
-    // 加载历史数据
-    exchange.load_klines("BTCUSDT", historical_klines).await;
-
-    // 设置当前价格
-    exchange.set_price("BTCUSDT", dec!(50000)).await;
-
-    // 执行交易逻辑
-    let result = exchange.place_order(OrderRequest { ... }).await;
-    assert!(result.is_ok());
-}
-```
-
 ---
 
 ## 快速开始
@@ -625,12 +291,12 @@ async fn test_my_strategy() {
 ### 1. 环境准备
 
 ```bash
-# 安装依赖
+# 编译
 cargo build --release
 
 # 配置环境变量
-cp .env.example .env.development
-# 编辑 .env.development 填入数据库和 API 配置
+cp config/.env.example config/.env.development
+# 编辑填入数据库和 API 配置
 ```
 
 ### 2. 数据库初始化
@@ -640,10 +306,7 @@ cp .env.example .env.development
 psql -U postgres -c "CREATE DATABASE trading_core;"
 
 # 初始化表结构
-psql -U postgres -d trading_core -f config/schema_v2.sql
-
-# 优化索引
-psql -U postgres -d trading_core -f version/v1.0/optimize_indexes.sql
+psql -U postgres -d trading_core -f config/schema_v6.sql
 ```
 
 ### 3. 启动服务
@@ -652,33 +315,11 @@ psql -U postgres -d trading_core -f version/v1.0/optimize_indexes.sql
 # 启动数据采集服务
 cargo run -p trading-core --release -- service
 
+# 启动策略服务（另一个终端）
+cargo run -p strategy-service --release
+
 # 启动交易引擎（另一个终端）
 cargo run -p trading-engine --release
-```
-
-### 4. 运行测试
-
-```bash
-# 运行所有单元测试
-cargo test -p trading-common --lib
-cargo test -p trading-engine
-
-# 运行特定测试
-cargo test -p trading-common --lib -- portfolio_tests
-cargo test -p trading-common --lib -- aggregator_tests
-```
-
-### 5. 本地开发（无需网络）
-
-```toml
-# config/engine-development.toml
-[exchange]
-id = "mock"
-```
-
-```bash
-# 使用 Mock 交易所进行本地开发
-cargo run -p trading-engine
 ```
 
 ---
@@ -692,16 +333,21 @@ rust-trade/
 │       ├── backtest/        # 回测引擎
 │       ├── data/            # 数据类型和聚合器
 │       ├── pricing/         # 期权定价
-│       ├── simulation/      # 蒙特卡洛模拟
-│       └── paper/           # 模拟交易
+│       └── simulation/      # 蒙特卡洛模拟
 │
-├── trading-core/            # 数据采集服务
+├── trading-core/            # Layer 1: 数据采集服务
 │   └── src/
 │       ├── api/             # HTTP API + WebSocket
 │       ├── exchange/        # 交易所接口
 │       └── service/         # 数据采集服务
 │
-├── trading-engine/          # 交易引擎
+├── strategy-service/        # Layer 2: 策略分析服务
+│   └── src/
+│       ├── strategies/      # 策略实现
+│       ├── engine.rs        # 策略执行引擎
+│       └── api.rs           # HTTP API
+│
+├── trading-engine/          # Layer 3: 交易引擎
 │   └── src/
 │       ├── engine/          # 交易循环
 │       ├── exchange/        # 交易所适配器
@@ -710,13 +356,9 @@ rust-trade/
 │       └── portfolio/       # 持仓管理
 │
 ├── frontend/                # 前端应用
-│   └── src/
-│       ├── app/             # 页面
-│       └── components/      # 组件
-│
 ├── src-tauri/               # Tauri 桌面应用
 │
 └── config/                  # 配置文件
-    ├── schema.sql           # 数据库表结构
+    ├── schema*.sql          # 数据库表结构
     └── *.toml               # 应用配置
 ```

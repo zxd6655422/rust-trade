@@ -5,15 +5,9 @@ mod strategies;
 mod engine;
 mod api;
 pub mod indicators;
-pub mod trade_executor;
 pub mod websocket;
 pub mod alert;
-pub mod account_sync;
 pub mod exchange;
-pub mod order_sync;
-pub mod okx_client;
-pub mod binance_account;
-pub mod okx_account;
 
 use std::sync::Arc;
 use anyhow::Result;
@@ -81,49 +75,6 @@ async fn main() -> Result<()> {
         })
     };
 
-    // 启动订单同步任务
-    let order_sync_handle = {
-        let pool = db_pool.clone();
-        let sync_interval = 10; // 每10秒同步一次
-        tokio::spawn(async move {
-            let sync = Arc::new(order_sync::OrderSync::new(pool, sync_interval));
-            sync.start().await;
-        })
-    };
-    info!("Order sync task started (interval: {}s)", 10);
-
-    // 启动账户余额快照同步任务
-    let account_sync_handle = {
-        let pool = db_pool.clone();
-        let sync_interval = 300; // 每5分钟同步一次
-        let redis_url = std::env::var("REDIS_URL").unwrap_or_default();
-        tokio::spawn(async move {
-            // 创建一个简单的缓存配置用于账户同步
-            let cache_config = (10, 60); // (max_ticks, ttl)
-            let cache_result = trading_common::data::cache::TieredCache::new(
-                cache_config,
-                (&redis_url, 100, 3600)
-            ).await;
-
-            let cache = match cache_result {
-                Ok(c) => c,
-                Err(e) => {
-                    warn!("Failed to create cache for account sync: {}", e);
-                    // 创建一个最小的缓存
-                    trading_common::data::cache::TieredCache::new(
-                        (10, 60),
-                        ("redis://localhost:6379", 100, 3600)
-                    ).await.expect("Failed to create fallback cache")
-                }
-            };
-
-            let repo = Arc::new(trading_common::data::repository::TickDataRepository::new(pool, cache));
-            let sync = Arc::new(account_sync::AccountSync::new(repo, sync_interval));
-            sync.start().await;
-        })
-    };
-    info!("Account snapshot sync started (interval: {}s)", 300);
-
     // 启动 HTTP + WebSocket 服务
     let ws_router = websocket::create_ws_router(ws_state.clone());
     let app = api::create_router(db_pool.clone()).merge(ws_router);
@@ -143,12 +94,6 @@ async fn main() -> Result<()> {
             if let Err(e) = result {
                 error!("Engine task error: {}", e);
             }
-        }
-        _ = order_sync_handle => {
-            info!("Order sync task stopped");
-        }
-        _ = account_sync_handle => {
-            info!("Account snapshot sync stopped");
         }
     }
 

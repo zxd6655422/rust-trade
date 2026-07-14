@@ -22,8 +22,8 @@ CREATE TABLE public.strategy_performance (
     max_drawdown numeric(10, 4) NULL,
     updated_at timestamptz DEFAULT now() NOT NULL,
     CONSTRAINT strategy_performance_pkey PRIMARY KEY (id),
-    CONSTRAINT strategy_performance_instance_id_period_start_period_end_key UNIQUE (instance_id, period_start, period_end),
-    CONSTRAINT strategy_performance_instance_id_fkey FOREIGN KEY (instance_id) REFERENCES public.strategy_instances(id) ON DELETE CASCADE
+    CONSTRAINT strategy_performance_instance_id_period_start_period_end_key UNIQUE (instance_id, period_start, period_end)
+    -- 外键已移除，应用层保证数据完整性
 );
 
 CREATE INDEX idx_performance_instance ON public.strategy_performance USING btree (instance_id, period_start DESC);

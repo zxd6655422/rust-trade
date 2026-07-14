@@ -26,8 +26,8 @@ CREATE TABLE public.trades (
 	metadata jsonb NULL,
 	CONSTRAINT trades_market_type_check CHECK (((market_type)::text = ANY ((ARRAY['spot'::character varying, 'futures'::character varying])::text[]))),
 	CONSTRAINT trades_pkey PRIMARY KEY (id),
-	CONSTRAINT trades_side_check CHECK (((side)::text = ANY ((ARRAY['BUY'::character varying, 'SELL'::character varying])::text[]))),
-	CONSTRAINT trades_signal_id_fkey FOREIGN KEY (signal_id) REFERENCES public.strategy_signals(id)
+	CONSTRAINT trades_side_check CHECK (((side)::text = ANY ((ARRAY['BUY'::character varying, 'SELL'::character varying])::text[])))
+	-- 外键已移除，应用层保证数据完整性
 );
 CREATE INDEX idx_trades_exchange ON public.trades USING btree (exchange);
 CREATE INDEX idx_trades_exchange_symbol ON public.trades USING btree (exchange, symbol);

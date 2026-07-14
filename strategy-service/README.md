@@ -1,6 +1,29 @@
 # strategy-service
 
-策略分析服务，负责加载策略配置、运行策略逻辑、生成交易信号、执行自动交易。
+策略分析服务，负责加载策略配置、运行策略逻辑、生成交易信号。
+
+## 职责边界
+
+**strategy-service (Layer 2) 只负责：**
+- 策略分析和信号生成
+- 技术指标计算
+- 信号写入 PostgreSQL (`strategy_signals` 表)
+
+**trading-engine (Layer 3) 负责：**
+- 从 `strategy_signals` 表轮询信号并执行交易
+- 订单管理和状态同步
+- 账户余额和持仓同步
+- 风控检查
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  数据流                                                          │
+├─────────────────────────────────────────────────────────────────┤
+│  trading-core → Redis → strategy-service → strategy_signals表  │
+│                                                    ↓            │
+│                                         trading-engine 轮询执行 │
+└─────────────────────────────────────────────────────────────────┘
+```
 
 ## 功能特性
 
@@ -8,10 +31,8 @@
 - 🔄 策略实例管理（动态创建、配置、启停）
 - 📈 技术指标计算（动态参数）
 - 🔔 信号生成与验证
-- 💹 自动交易执行
 - 📡 WebSocket 实时推送
 - 🔔 告警系统
-- 🔄 订单状态同步
 
 ## 模块结构
 
@@ -23,7 +44,7 @@ src/
 │   ├── mod.rs
 │   ├── strategies.rs      # 策略实例 CRUD
 │   ├── signals.rs         # 信号写入/查询
-│   ├── trades.rs          # 交易记录查询
+│   ├── trades.rs          # 交易记录查询（只读）
 │   └── performance.rs     # 策略性能统计
 ├── strategies/            # 策略实现
 │   ├── mod.rs             # Strategy trait
@@ -37,10 +58,7 @@ src/
 ├── indicators.rs          # 指标计算模块
 ├── redis_reader.rs        # Redis 数据读取
 ├── engine.rs              # 策略执行引擎
-├── trade_executor.rs      # 交易执行器
-├── exchange.rs            # Binance API 客户端
-├── okx_client.rs          # OKX API 客户端
-├── order_sync.rs          # 订单状态同步
+├── exchange.rs            # 公开 API（获取实时价格）
 ├── websocket.rs           # WebSocket 推送
 ├── alert.rs               # 告警系统
 └── api.rs                 # HTTP API
@@ -60,16 +78,6 @@ cargo run -p strategy-service
 # 数据库
 DATABASE_URL=postgresql://localhost/trading_core
 REDIS_URL=redis://localhost:6379
-
-# Binance（用于自动交易）
-BINANCE_API_KEY=your_api_key
-BINANCE_API_SECRET=your_api_secret
-BINANCE_TESTNET=false
-
-# OKX（可选）
-OKX_API_KEY=your_api_key
-OKX_API_SECRET=your_api_secret
-OKX_PASSPHRASE=your_passphrase
 ```
 
 ### API 端点
@@ -147,25 +155,22 @@ let atr = indicators::calculate_atr(&klines, 14);
 let adx = indicators::calculate_adx(&klines, 14);
 ```
 
-## 自动交易流程
+## 信号生成流程
 
 ```
-1. 策略信号触发
+1. 策略引擎轮询活跃策略实例
    ↓
-2. 创建订单组（主订单 + 止损单 + 止盈单）
+2. 从 Redis 读取 K线和指标数据
    ↓
-3. 验证订单
-   - 交易类型检查
-   - 订单重复检查
-   - 仓位阈值检查
-   - 账户余额检查
-   - 交易对精度检查
+3. 运行策略逻辑分析
    ↓
-4. 提交订单到交易所
+4. 生成信号（包含方向、价格、止损止盈）
    ↓
-5. 订单状态同步（每10秒）
+5. 写入 strategy_signals 表
    ↓
-6. 订单成交后自动更新持仓
+6. WebSocket 推送 + 告警通知
+   ↓
+7. trading-engine 轮询执行交易（由 trading-engine 负责）
 ```
 
 ## WebSocket 消息格式
@@ -200,8 +205,6 @@ axum = { version = "0.7", features = ["ws"] }
 sqlx = "0.7"
 redis = "0.23"
 reqwest = "0.11"
-hmac = "0.12"
-sha2 = "0.10"
 serde = "1.0"
 tracing = "0.1"
 ```

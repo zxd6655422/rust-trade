@@ -12,7 +12,6 @@ use crate::db::{signals, strategies as db_strategies};
 use crate::exchange;
 use crate::redis_reader::{self, MultiTimeframeData, Timeframe};
 use crate::strategies::{self, SignalType};
-use crate::trade_executor::{TradeExecutor, ExchangeConfig};
 use crate::websocket::{WsMessage, WsState};
 use crate::alert::{AlertManager, AlertConfig, create_signal_alert, create_trade_alert};
 

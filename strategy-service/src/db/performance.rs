@@ -93,6 +93,17 @@ pub async fn get_summary(
     }
 }
 
+/// 校验策略实例是否存在
+async fn validate_instance_exists(pool: &PgPool, instance_id: Uuid) -> Result<bool, sqlx::Error> {
+    let exists = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM strategy_instances WHERE id = $1)"
+    )
+    .bind(instance_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(exists)
+}
+
 /// 计算并更新策略性能统计
 pub async fn update_performance(
     pool: &PgPool,
@@ -100,6 +111,11 @@ pub async fn update_performance(
     period_start: DateTime<Utc>,
     period_end: DateTime<Utc>,
 ) -> Result<StrategyPerformance, sqlx::Error> {
+    // 校验 instance_id 是否存在
+    if !validate_instance_exists(pool, instance_id).await? {
+        return Err(sqlx::Error::RowNotFound);
+    }
+
     // 计算信号统计
     let signal_stats = sqlx::query_as::<_, (i64, i64, i64)>(
         r#"
