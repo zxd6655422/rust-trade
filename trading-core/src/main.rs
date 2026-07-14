@@ -556,6 +556,7 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
 
                 // 轮询计数器
                 let mut poll_count: u64 = 0;
+                const AGGREGATE_INTERVAL: u64 = 3; // 每3个周期聚合一次（约90秒）
                 const GAP_CHECK_INTERVAL: u64 = 60; // 每60个周期检查一次间隙
                 // Redis 重连检测：上次 Redis 写入是否失败
                 let mut redis_was_down = false;
@@ -662,11 +663,12 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
                         // 并发执行所有 DB 写入（5个 symbol 同时写，而非串行等待）
                         futures::future::join_all(db_write_futures).await;
 
-                        // DB 写入完成后，增量聚合高TF数据
-                        // 从最新的 1m 数据聚合生成 5m/15m/30m/1h/2h/4h/1d/3d/1w
-                        for sym in chunk {
-                            if let Err(e) = aggregator.aggregate_incremental(sym, 10).await {
-                                warn!("[{}] 高TF增量聚合失败: {}", sym, e);
+                        // 定期增量聚合高TF数据（每N个周期执行一次，避免频繁SQL查询）
+                        if poll_count % AGGREGATE_INTERVAL == 0 {
+                            for sym in chunk {
+                                if let Err(e) = aggregator.aggregate_incremental(sym, 10).await {
+                                    warn!("[{}] 高TF增量聚合失败: {}", sym, e);
+                                }
                             }
                         }
 
