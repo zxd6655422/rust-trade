@@ -1,5 +1,59 @@
 # Changelog
 
+## [2025-07-15] 策略管理优化
+
+### 优化目标
+- 统一策略管理，支持回测/模拟交易绑定策略实例
+- 新增默认策略配置功能，支持多场景默认策略
+- 完善策略选择和历史查询 API
+
+### 数据库变更
+
+| 表名 | 变更 | 说明 |
+|------|------|------|
+| strategy_instances | 新增字段 | `is_default` (bool), `default_for` (varchar) |
+| backtest_results | 新增字段 | `instance_id` (uuid) 关联策略实例 |
+| live_strategy_log | 新增字段 | `instance_id` (uuid) 关联策略实例 |
+| paper_trading_sessions | 新增表 | 模拟交易会话记录 |
+
+**SQL 脚本**: `version/v1.0/sql/20250715_策略管理优化.sql`
+
+### 新增 API 端点
+
+| 服务 | 端点 | 方法 | 说明 |
+|------|------|------|------|
+| strategy-service | /api/strategies/selectable | GET | 获取可选策略列表（支持 market_type 过滤） |
+| strategy-service | /api/strategies/defaults | GET | 获取所有默认策略配置 |
+| strategy-service | /api/strategies/defaults/{scenario} | GET | 获取指定场景默认策略 |
+| strategy-service | /api/strategies/{id}/set-default/{scenario} | PUT | 设置策略为默认 |
+| strategy-service | /api/strategies/{id}/unset-default | PUT | 取消默认设置 |
+| trading-core | /api/backtest/history/{instance_id} | GET | 查询策略回测历史 |
+| trading-core | /api/backtest/detail/{id} | GET | 查询回测结果详情 |
+| trading-core | /api/backtest/stats/{instance_id} | GET | 查询策略回测统计 |
+
+### 代码变更
+
+| 文件 | 变更说明 |
+|------|----------|
+| strategy-service/src/db/strategies.rs | 新增默认策略相关 CRUD 方法 |
+| strategy-service/src/api.rs | 新增策略选择和默认策略 API |
+| trading-core/src/api/handlers.rs | 回测 API 支持 instance_id，新增历史查询 API |
+| trading-core/src/service/backtest_service.rs | 新增回测结果存储服务 |
+| trading-common/src/paper/trader.rs | PaperTrader 配置支持 instance_id |
+| trading-common/src/data/types.rs | LiveStrategyLog 新增 instance_id 字段 |
+| trading-common/src/data/repository.rs | insert_live_strategy_log 支持 instance_id |
+| trading-core/src/live_trading/paper_trading.rs | PaperTradingProcessor 支持 instance_id |
+| trading-core/src/api/server.rs | 注册新的 API 路由 |
+
+### 设计说明
+
+1. **策略实例统一管理**: 所有策略配置存储在 `strategy_instances` 表，通过 `is_default` 和 `default_for` 字段标记默认策略
+2. **回测/模拟交易绑定**: 回测结果和模拟交易日志都通过 `instance_id` 关联到具体策略实例
+3. **向后兼容**: 保留 `strategy_id` 字段存储策略类型名称，`instance_id` 为可选字段
+4. **默认策略场景**: 支持 `dashboard`、`paper_trading`、`backtest` 等场景的默认策略配置
+
+---
+
 ## [2026-07-08] 统一账户快照系统（v2）
 
 ### 设计目标

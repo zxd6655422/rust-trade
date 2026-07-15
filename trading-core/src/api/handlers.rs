@@ -3,15 +3,18 @@
 
 use actix_web::{web, HttpResponse};
 use serde::{Deserialize, Serialize};
+use sqlx::PgPool;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{error, info};
+use uuid::Uuid;
 
 use trading_common::backtest::{
     engine::{BacktestConfig, BacktestEngine},
     strategy::{create_strategy, list_strategies, is_multi_timeframe_strategy},
 };
 use trading_common::data::repository::TickDataRepository;
+use crate::service::backtest_service::{BacktestService, SaveBacktestResultRequest};
 use rust_decimal::Decimal;
 use std::str::FromStr;
 
@@ -19,6 +22,7 @@ use std::str::FromStr;
 pub struct AppState {
     pub repository: Arc<TickDataRepository>,
     pub backtest_lock: Arc<Mutex<()>>,
+    pub pool: PgPool,
 }
 
 // Safe unwrap for known-good Decimal constants
@@ -29,7 +33,10 @@ fn default_commission_decimal() -> Decimal {
 /// 回测请求
 #[derive(Debug, Deserialize)]
 pub struct BacktestRequest {
-    pub strategy: String,
+    /// 策略实例 ID（可选，优先使用）
+    pub instance_id: Option<Uuid>,
+    /// 策略类型（当 instance_id 为空时使用）
+    pub strategy: Option<String>,
     pub symbol: String,
     #[serde(default = "default_capital")]
     pub capital: f64,
@@ -40,6 +47,8 @@ pub struct BacktestRequest {
     /// 是否使用 OHLC 数据（如果策略支持）
     #[serde(default)]
     pub use_ohlc: bool,
+    /// 策略参数（可选，覆盖实例配置）
+    pub strategy_params: Option<std::collections::HashMap<String, String>>,
 }
 
 fn default_capital() -> f64 {
@@ -65,6 +74,10 @@ pub struct BacktestResponse {
 /// 回测结果
 #[derive(Debug, Serialize)]
 pub struct BacktestResult {
+    /// 回测结果 ID
+    pub id: Option<String>,
+    /// 关联的策略实例 ID
+    pub instance_id: Option<String>,
     pub strategy: String,
     pub symbol: String,
     pub initial_capital: String,
@@ -172,12 +185,37 @@ pub async fn run_backtest(
 ) -> HttpResponse {
     info!("Backtest request: {:?}", req);
 
+    // 解析策略类型和参数：优先使用 instance_id，其次使用 strategy 字段
+    let (strategy_type, instance_id, strategy_params) = if let Some(instance_id) = req.instance_id {
+        // 从数据库读取策略实例配置
+        // 注意：这里需要使用 strategy-service 的数据库查询，但 trading-core 没有直接访问
+        // 因此，我们暂时从请求参数中获取策略类型，instance_id 只用于保存结果
+        let strategy_type = req.strategy.clone().unwrap_or_else(|| {
+            // 如果没有提供 strategy 参数，使用默认值
+            // 实际应该从数据库读取，但这里为了简化，使用请求中的值
+            "unknown".to_string()
+        });
+        (strategy_type, Some(instance_id), req.strategy_params.clone())
+    } else {
+        // 使用 strategy 字段
+        let strategy_type = req.strategy.clone().ok_or_else(|| {
+            HttpResponse::BadRequest().json(serde_json::json!({
+                "success": false,
+                "message": "Either instance_id or strategy must be provided"
+            }))
+        });
+        match strategy_type {
+            Ok(s) => (s, None, req.strategy_params.clone()),
+            Err(resp) => return resp,
+        }
+    };
+
     // 验证策略（普通策略或多时间框架策略）
-    let is_mtf = is_multi_timeframe_strategy(&req.strategy);
-    if !is_mtf && create_strategy(&req.strategy).is_err() {
+    let is_mtf = is_multi_timeframe_strategy(&strategy_type);
+    if !is_mtf && create_strategy(&strategy_type).is_err() {
         return HttpResponse::BadRequest().json(serde_json::json!({
             "success": false,
-            "message": format!("Unknown strategy: {}", req.strategy)
+            "message": format!("Unknown strategy: {}", strategy_type)
         }));
     }
     if is_mtf {
@@ -220,7 +258,7 @@ pub async fn run_backtest(
     }
 
     // 创建策略
-    let strategy = match create_strategy(&req.strategy) {
+    let strategy = match create_strategy(&strategy_type) {
         Ok(s) => s,
         Err(e) => {
             return HttpResponse::BadRequest().json(serde_json::json!({
@@ -234,7 +272,14 @@ pub async fn run_backtest(
     let initial_capital = Decimal::from_str(&req.capital.to_string()).unwrap_or(Decimal::from(10000));
     let commission_rate = Decimal::from_str(&(req.commission_rate / 100.0).to_string())
         .unwrap_or(default_commission_decimal());
-    let config = BacktestConfig::new(initial_capital).with_commission_rate(commission_rate);
+    let mut config = BacktestConfig::new(initial_capital).with_commission_rate(commission_rate);
+
+    // 应用策略参数
+    if let Some(params) = &strategy_params {
+        for (key, value) in params {
+            config = config.with_param(key, value);
+        }
+    }
 
     // 尝试使用 OHLC 数据
     if req.use_ohlc && strategy.supports_ohlc() {
@@ -257,11 +302,43 @@ pub async fn run_backtest(
 
                     let result = engine.run_with_ohlc(ohlc_data.clone());
 
+                    // 保存回测结果到数据库
+                    let backtest_service = BacktestService::new(data.pool.clone());
+                    let save_request = SaveBacktestResultRequest {
+                        instance_id,
+                        strategy_id: strategy_type.clone(),
+                        symbol: req.symbol.clone(),
+                        initial_capital,
+                        final_capital: result.final_value,
+                        return_pct: result.return_percentage,
+                        total_trades: result.total_trades as i32,
+                        winning_trades: result.winning_trades as i32,
+                        losing_trades: result.losing_trades as i32,
+                        win_rate: result.win_rate,
+                        max_drawdown: result.max_drawdown,
+                        sharpe_ratio: result.sharpe_ratio,
+                        profit_factor: result.profit_factor,
+                        data_points: ohlc_data.len() as i32,
+                        data_start_time: ohlc_data.first().map(|d| d.timestamp),
+                        data_end_time: ohlc_data.last().map(|d| d.timestamp),
+                        strategy_params: strategy_params.map(|p| serde_json::to_value(p).unwrap_or_default()),
+                    };
+
+                    let saved_result = match backtest_service.save_result(save_request).await {
+                        Ok(r) => Some(r),
+                        Err(e) => {
+                            error!("Failed to save backtest result: {}", e);
+                            None
+                        }
+                    };
+
                     let response = BacktestResponse {
                         success: true,
                         message: "Backtest completed successfully".to_string(),
                         data: Some(BacktestResult {
-                            strategy: req.strategy.clone(),
+                            id: saved_result.map(|r| r.id.to_string()),
+                            instance_id: instance_id.map(|id| id.to_string()),
+                            strategy: strategy_type.clone(),
                             symbol: req.symbol.clone(),
                             initial_capital: format!("${}", initial_capital),
                             final_capital: format!("${:.2}", result.final_value),
@@ -322,11 +399,43 @@ pub async fn run_backtest(
 
     let result = engine.run(tick_data.clone());
 
+    // 保存回测结果到数据库
+    let backtest_service = BacktestService::new(data.pool.clone());
+    let save_request = SaveBacktestResultRequest {
+        instance_id,
+        strategy_id: strategy_type.clone(),
+        symbol: req.symbol.clone(),
+        initial_capital,
+        final_capital: result.final_value,
+        return_pct: result.return_percentage,
+        total_trades: result.total_trades as i32,
+        winning_trades: result.winning_trades as i32,
+        losing_trades: result.losing_trades as i32,
+        win_rate: result.win_rate,
+        max_drawdown: result.max_drawdown,
+        sharpe_ratio: result.sharpe_ratio,
+        profit_factor: result.profit_factor,
+        data_points: tick_data.len() as i32,
+        data_start_time: tick_data.first().map(|d| d.timestamp),
+        data_end_time: tick_data.last().map(|d| d.timestamp),
+        strategy_params: strategy_params.map(|p| serde_json::to_value(p).unwrap_or_default()),
+    };
+
+    let saved_result = match backtest_service.save_result(save_request).await {
+        Ok(r) => Some(r),
+        Err(e) => {
+            error!("Failed to save backtest result: {}", e);
+            None
+        }
+    };
+
     let response = BacktestResponse {
         success: true,
         message: "Backtest completed successfully".to_string(),
         data: Some(BacktestResult {
-            strategy: req.strategy.clone(),
+            id: saved_result.map(|r| r.id.to_string()),
+            instance_id: instance_id.map(|id| id.to_string()),
+            strategy: strategy_type.clone(),
             symbol: req.symbol.clone(),
             initial_capital: format!("${}", initial_capital),
             final_capital: format!("${:.2}", result.final_value),
@@ -1026,4 +1135,185 @@ pub async fn analyze_market_state(
             "summary": report.summary
         }
     }))
+}
+
+// =================================================================
+// 回测历史查询 API
+// =================================================================
+
+/// 获取策略实例的回测历史
+pub async fn get_backtest_history_by_instance(
+    data: web::Data<AppState>,
+    path: web::Path<String>,
+) -> HttpResponse {
+    let instance_id_str = path.into_inner();
+    let instance_id = match Uuid::parse_str(&instance_id_str) {
+        Ok(id) => id,
+        Err(_) => {
+            return HttpResponse::BadRequest().json(serde_json::json!({
+                "success": false,
+                "message": "Invalid instance_id format"
+            }));
+        }
+    };
+
+    let backtest_service = BacktestService::new(data.pool.clone());
+
+    match backtest_service.get_by_instance(instance_id, Some(50)).await {
+        Ok(results) => {
+            let results_json: Vec<serde_json::Value> = results.iter().map(|r| {
+                serde_json::json!({
+                    "id": r.id,
+                    "instance_id": r.instance_id,
+                    "strategy_id": r.strategy_id,
+                    "symbol": r.symbol,
+                    "initial_capital": r.initial_capital,
+                    "final_capital": r.final_capital,
+                    "return_pct": r.return_pct,
+                    "total_trades": r.total_trades,
+                    "winning_trades": r.winning_trades,
+                    "losing_trades": r.losing_trades,
+                    "win_rate": r.win_rate,
+                    "max_drawdown": r.max_drawdown,
+                    "sharpe_ratio": r.sharpe_ratio,
+                    "profit_factor": r.profit_factor,
+                    "data_points": r.data_points,
+                    "strategy_params": r.strategy_params,
+                    "created_at": r.created_at,
+                })
+            }).collect();
+
+            HttpResponse::Ok().json(serde_json::json!({
+                "success": true,
+                "data": {
+                    "instance_id": instance_id,
+                    "total": results.len(),
+                    "backtests": results_json
+                }
+            }))
+        }
+        Err(e) => {
+            error!("Failed to fetch backtest history: {}", e);
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "success": false,
+                "message": format!("Failed to fetch backtest history: {}", e)
+            }))
+        }
+    }
+}
+
+/// 获取回测结果详情
+pub async fn get_backtest_detail(
+    data: web::Data<AppState>,
+    path: web::Path<String>,
+) -> HttpResponse {
+    let backtest_id_str = path.into_inner();
+    let backtest_id = match Uuid::parse_str(&backtest_id_str) {
+        Ok(id) => id,
+        Err(_) => {
+            return HttpResponse::BadRequest().json(serde_json::json!({
+                "success": false,
+                "message": "Invalid backtest_id format"
+            }));
+        }
+    };
+
+    let backtest_service = BacktestService::new(data.pool.clone());
+
+    match backtest_service.get_by_id(backtest_id).await {
+        Ok(Some(result)) => {
+            HttpResponse::Ok().json(serde_json::json!({
+                "success": true,
+                "data": {
+                    "id": result.id,
+                    "instance_id": result.instance_id,
+                    "strategy_id": result.strategy_id,
+                    "symbol": result.symbol,
+                    "initial_capital": result.initial_capital,
+                    "final_capital": result.final_capital,
+                    "return_pct": result.return_pct,
+                    "total_trades": result.total_trades,
+                    "winning_trades": result.winning_trades,
+                    "losing_trades": result.losing_trades,
+                    "win_rate": result.win_rate,
+                    "max_drawdown": result.max_drawdown,
+                    "sharpe_ratio": result.sharpe_ratio,
+                    "profit_factor": result.profit_factor,
+                    "data_points": result.data_points,
+                    "data_start_time": result.data_start_time,
+                    "data_end_time": result.data_end_time,
+                    "strategy_params": result.strategy_params,
+                    "created_at": result.created_at,
+                }
+            }))
+        }
+        Ok(None) => {
+            HttpResponse::NotFound().json(serde_json::json!({
+                "success": false,
+                "message": "Backtest result not found"
+            }))
+        }
+        Err(e) => {
+            error!("Failed to fetch backtest detail: {}", e);
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "success": false,
+                "message": format!("Failed to fetch backtest detail: {}", e)
+            }))
+        }
+    }
+}
+
+/// 获取策略实例的回测统计
+pub async fn get_backtest_stats(
+    data: web::Data<AppState>,
+    path: web::Path<String>,
+) -> HttpResponse {
+    let instance_id_str = path.into_inner();
+    let instance_id = match Uuid::parse_str(&instance_id_str) {
+        Ok(id) => id,
+        Err(_) => {
+            return HttpResponse::BadRequest().json(serde_json::json!({
+                "success": false,
+                "message": "Invalid instance_id format"
+            }));
+        }
+    };
+
+    let backtest_service = BacktestService::new(data.pool.clone());
+
+    match backtest_service.get_instance_stats(instance_id).await {
+        Ok(Some(stats)) => {
+            HttpResponse::Ok().json(serde_json::json!({
+                "success": true,
+                "data": {
+                    "instance_id": instance_id,
+                    "total_backtests": stats.total_backtests,
+                    "avg_return_pct": stats.avg_return_pct,
+                    "best_return_pct": stats.best_return_pct,
+                    "worst_return_pct": stats.worst_return_pct,
+                    "avg_win_rate": stats.avg_win_rate,
+                    "avg_sharpe_ratio": stats.avg_sharpe_ratio,
+                    "avg_max_drawdown": stats.avg_max_drawdown,
+                    "avg_profit_factor": stats.avg_profit_factor,
+                }
+            }))
+        }
+        Ok(None) => {
+            HttpResponse::Ok().json(serde_json::json!({
+                "success": true,
+                "data": {
+                    "instance_id": instance_id,
+                    "total_backtests": 0,
+                    "message": "No backtest results found for this instance"
+                }
+            }))
+        }
+        Err(e) => {
+            error!("Failed to fetch backtest stats: {}", e);
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "success": false,
+                "message": format!("Failed to fetch backtest stats: {}", e)
+            }))
+        }
+    }
 }

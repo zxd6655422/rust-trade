@@ -196,6 +196,8 @@ impl BacktestDataInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LiveStrategyLog {
     pub timestamp: DateTime<Utc>,
+    /// 关联的策略实例 ID（可选）
+    pub instance_id: Option<uuid::Uuid>,
     pub strategy_id: String,
     pub symbol: String,
     pub current_price: Decimal,

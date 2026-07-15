@@ -3,6 +3,7 @@
 
 use actix_web::{web, App, HttpServer, middleware};
 use actix_cors::Cors;
+use sqlx::PgPool;
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex};
 use tracing::{error, info};
@@ -33,6 +34,7 @@ pub struct ApiServer {
     config: ApiServerConfig,
     repository: Arc<TickDataRepository>,
     tick_tx: broadcast::Sender<TickData>,
+    pool: PgPool,
 }
 
 impl ApiServer {
@@ -40,11 +42,13 @@ impl ApiServer {
         config: ApiServerConfig,
         repository: Arc<TickDataRepository>,
         tick_tx: broadcast::Sender<TickData>,
+        pool: PgPool,
     ) -> Self {
         Self {
             config,
             repository,
             tick_tx,
+            pool,
         }
     }
 
@@ -52,6 +56,7 @@ impl ApiServer {
     pub async fn start(&self) -> std::io::Result<()> {
         let repository = self.repository.clone();
         let tick_tx = self.tick_tx.clone();
+        let pool = self.pool.clone();
         let host = self.config.host.clone();
         let port = self.config.port;
 
@@ -60,6 +65,7 @@ impl ApiServer {
         let app_state = web::Data::new(AppState {
             repository,
             backtest_lock: Arc::new(Mutex::new(())),
+            pool,
         });
 
         let tick_tx_data = web::Data::new(tick_tx);
@@ -84,11 +90,17 @@ impl ApiServer {
                     web::scope("/api")
                         .route("/data/info", web::get().to(handlers::get_data_info))
                         .route("/strategies", web::get().to(handlers::get_strategies))
+                        // 回测相关 API
                         .route("/backtest", web::post().to(handlers::run_backtest))
                         .route("/backtest/multi-timeframe", web::post().to(handlers::run_multi_timeframe_backtest))
                         .route("/backtest/walk-forward", web::post().to(handlers::run_walk_forward_backtest))
                         .route("/backtest/out-of-sample", web::post().to(handlers::run_out_of_sample_backtest))
                         .route("/backtest/multi-symbol", web::post().to(handlers::run_multi_symbol_backtest))
+                        // 回测历史查询 API
+                        .route("/backtest/history/{instance_id}", web::get().to(handlers::get_backtest_history_by_instance))
+                        .route("/backtest/detail/{id}", web::get().to(handlers::get_backtest_detail))
+                        .route("/backtest/stats/{instance_id}", web::get().to(handlers::get_backtest_stats))
+                        // 市场分析 API
                         .route("/analysis/market-state", web::post().to(handlers::analyze_market_state)),
                 )
                 // WebSocket

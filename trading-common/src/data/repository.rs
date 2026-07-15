@@ -1297,11 +1297,12 @@ impl TickDataRepository {
     pub async fn insert_live_strategy_log(&self, log: &LiveStrategyLog) -> DataResult<()> {
         sqlx::query(
             "INSERT INTO live_strategy_log \
-             (timestamp, strategy_id, symbol, current_price, signal_type, \
+             (timestamp, instance_id, strategy_id, symbol, current_price, signal_type, \
               portfolio_value, total_pnl, cache_hit, processing_time_us) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"
         )
         .bind(log.timestamp)
+        .bind(log.instance_id)
         .bind(&log.strategy_id)
         .bind(&log.symbol)
         .bind(log.current_price)

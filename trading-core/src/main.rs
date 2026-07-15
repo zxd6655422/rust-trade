@@ -736,7 +736,8 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
         host: "0.0.0.0".to_string(),
         port: 8080,
     };
-    let api_server = api::ApiServer::new(api_config, repository.clone(), tick_tx.clone());
+    let api_pool = create_database_pool(&settings).await?;
+    let api_server = api::ApiServer::new(api_config, repository.clone(), tick_tx.clone(), api_pool);
 
     info!("🌐 Starting API server on port 8080");
     info!("📡 WebSocket available at ws://0.0.0.0:8080/ws");

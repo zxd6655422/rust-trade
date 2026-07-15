@@ -3,6 +3,7 @@ use rust_decimal::Decimal;
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::debug;
+use uuid::Uuid;
 
 use trading_common::backtest::strategy::{Signal, Strategy};
 use trading_common::data::cache::TickDataCache;
@@ -13,6 +14,8 @@ pub struct PaperTradingProcessor {
     strategy: Box<dyn Strategy + Send>,
     repository: Arc<TickDataRepository>,
     initial_capital: Decimal,
+    /// 关联的策略实例 ID（可选）
+    instance_id: Option<Uuid>,
 
     //Simple status tracking
     cash: Decimal,
@@ -31,11 +34,23 @@ impl PaperTradingProcessor {
             strategy,
             repository,
             initial_capital,
+            instance_id: None,
             cash: initial_capital,
             position: Decimal::ZERO,
             avg_cost: Decimal::ZERO,
             total_trades: 0,
         }
+    }
+
+    /// 设置关联的策略实例 ID
+    pub fn with_instance_id(mut self, instance_id: Uuid) -> Self {
+        self.instance_id = Some(instance_id);
+        self
+    }
+
+    /// 获取关联的策略实例 ID
+    pub fn instance_id(&self) -> Option<Uuid> {
+        self.instance_id
     }
 
     pub async fn process_tick(&mut self, tick: &TickData) -> Result<(), String> {
@@ -66,6 +81,7 @@ impl PaperTradingProcessor {
         let processing_time = start_time.elapsed().as_micros() as u64;
         let log = LiveStrategyLog {
             timestamp: tick.timestamp,
+            instance_id: self.instance_id,
             strategy_id: self.strategy.name().to_string(),
             symbol: tick.symbol.clone(),
             current_price: tick.price,

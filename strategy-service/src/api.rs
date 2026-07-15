@@ -20,6 +20,12 @@ pub fn create_router(pool: PgPool) -> Router {
             get(get_strategy).put(update_strategy).delete(delete_strategy),
         )
         .route("/api/strategies/:id/status", put(update_strategy_status))
+        // 策略选择和默认策略
+        .route("/api/strategies/selectable", get(get_selectable_strategies))
+        .route("/api/strategies/defaults", get(get_all_defaults))
+        .route("/api/strategies/defaults/:default_for", get(get_default_by_scenario))
+        .route("/api/strategies/:id/set-default/:default_for", put(set_default_strategy))
+        .route("/api/strategies/:id/unset-default", put(unset_default_strategy))
         // 信号查询
         .route("/api/signals", get(query_signals))
         .route("/api/strategies/:id/signals", get(get_strategy_signals))
@@ -286,6 +292,115 @@ async fn get_summary(
         }))),
         Err(e) => {
             tracing::error!("Failed to get summary: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+// ==================== 策略选择和默认策略 ====================
+
+#[derive(Debug, Deserialize)]
+struct SelectableQueryParams {
+    market_type: Option<String>,
+}
+
+/// 获取可用于选择的策略列表（活跃状态）
+async fn get_selectable_strategies(
+    axum::extract::State(pool): axum::extract::State<PgPool>,
+    Query(params): Query<SelectableQueryParams>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    match strategies::list_selectable_strategies(&pool, params.market_type.as_deref()).await {
+        Ok(strategies) => Ok(Json(serde_json::json!({
+            "success": true,
+            "data": strategies
+        }))),
+        Err(e) => {
+            tracing::error!("Failed to list selectable strategies: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+/// 获取所有默认策略配置
+async fn get_all_defaults(
+    axum::extract::State(pool): axum::extract::State<PgPool>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    match strategies::get_all_default_strategies(&pool).await {
+        Ok(strategies) => {
+            // 按场景分组
+            let mut defaults = serde_json::Map::new();
+            for strategy in strategies {
+                if let Some(ref default_for) = strategy.default_for {
+                    defaults.insert(default_for.clone(), serde_json::json!(strategy));
+                }
+            }
+            Ok(Json(serde_json::json!({
+                "success": true,
+                "data": defaults
+            })))
+        }
+        Err(e) => {
+            tracing::error!("Failed to get default strategies: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+/// 获取指定场景的默认策略
+async fn get_default_by_scenario(
+    axum::extract::State(pool): axum::extract::State<PgPool>,
+    Path(default_for): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    match strategies::get_default_strategy(&pool, &default_for).await {
+        Ok(Some(strategy)) => Ok(Json(serde_json::json!({
+            "success": true,
+            "data": strategy
+        }))),
+        Ok(None) => Ok(Json(serde_json::json!({
+            "success": true,
+            "data": null,
+            "message": format!("No default strategy configured for '{}'", default_for)
+        }))),
+        Err(e) => {
+            tracing::error!("Failed to get default strategy: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+/// 设置策略为某个场景的默认策略
+async fn set_default_strategy(
+    axum::extract::State(pool): axum::extract::State<PgPool>,
+    Path((id, default_for)): Path<(Uuid, String)>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    match strategies::set_default_strategy(&pool, id, &default_for).await {
+        Ok(Some(strategy)) => Ok(Json(serde_json::json!({
+            "success": true,
+            "data": strategy,
+            "message": format!("Strategy set as default for '{}'", default_for)
+        }))),
+        Ok(None) => Err(StatusCode::NOT_FOUND),
+        Err(e) => {
+            tracing::error!("Failed to set default strategy: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+/// 取消策略的默认设置
+async fn unset_default_strategy(
+    axum::extract::State(pool): axum::extract::State<PgPool>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    match strategies::unset_default_strategy(&pool, id).await {
+        Ok(Some(strategy)) => Ok(Json(serde_json::json!({
+            "success": true,
+            "data": strategy,
+            "message": "Default strategy unset"
+        }))),
+        Ok(None) => Err(StatusCode::NOT_FOUND),
+        Err(e) => {
+            tracing::error!("Failed to unset default strategy: {}", e);
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }

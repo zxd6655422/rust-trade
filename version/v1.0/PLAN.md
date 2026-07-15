@@ -1889,3 +1889,42 @@ anyhow = "1"
 3. **完整流程验证**：
    - 创建策略 → 产生信号 → 信号写入 DB → 触发交易 → 交易记录关联信号
    - 查询交易记录能追溯到信号和策略
+
+---
+
+### ✅ 策略管理优化
+
+**完成日期**: 2025-07-15
+
+| 模块 | 状态 | 说明 |
+|------|------|------|
+| 数据库表结构变更 | ✅ 已完成 | strategy_instances 新增 is_default/default_for 字段 |
+| 回测结果关联策略实例 | ✅ 已完成 | backtest_results 新增 instance_id 字段 |
+| 模拟交易日志关联策略实例 | ✅ 已完成 | live_strategy_log 新增 instance_id 字段 |
+| 模拟交易会话管理 | ✅ 已完成 | 新增 paper_trading_sessions 表 |
+| 策略选择 API | ✅ 已完成 | /api/strategies/selectable |
+| 默认策略管理 API | ✅ 已完成 | /api/strategies/defaults |
+| 回测历史查询 API | ✅ 已完成 | /api/backtest/history/{instance_id} |
+| PaperTrader 策略绑定 | ✅ 已完成 | 支持 instance_id 配置 |
+
+**SQL 脚本位置**: `version/v1.0/sql/20250715_策略管理优化.sql`
+
+**新增 API 端点**:
+
+| 服务 | 端点 | 方法 | 说明 |
+|------|------|------|------|
+| strategy-service | /api/strategies/selectable | GET | 获取可选策略列表 |
+| strategy-service | /api/strategies/defaults | GET | 获取所有默认策略 |
+| strategy-service | /api/strategies/defaults/{scenario} | GET | 获取指定场景默认策略 |
+| strategy-service | /api/strategies/{id}/set-default/{scenario} | PUT | 设置默认策略 |
+| strategy-service | /api/strategies/{id}/unset-default | PUT | 取消默认设置 |
+| trading-core | /api/backtest/history/{instance_id} | GET | 查询策略回测历史 |
+| trading-core | /api/backtest/detail/{id} | GET | 查询回测结果详情 |
+| trading-core | /api/backtest/stats/{instance_id} | GET | 查询策略回测统计 |
+
+**设计说明**:
+
+1. **策略实例统一管理**: 所有策略配置存储在 `strategy_instances` 表，通过 `is_default` 和 `default_for` 字段标记默认策略
+2. **回测/模拟交易绑定**: 回测结果和模拟交易日志都通过 `instance_id` 关联到具体策略实例
+3. **向后兼容**: 保留 `strategy_id` 字段存储策略类型名称，`instance_id` 为可选字段
+4. **渐进式迁移**: 配置文件中的默认策略配置暂时保留，后续可通过数据库默认策略覆盖

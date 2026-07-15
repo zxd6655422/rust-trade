@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use uuid::Uuid;
 
 use crate::backtest::portfolio::{Portfolio, PositionSide as PortfolioPositionSide};
 use crate::data::types::TradeSide;
@@ -18,6 +19,12 @@ use crate::data::types::TradeSide;
 /// Paper Trader 配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaperTraderConfig {
+    /// 关联的策略实例 ID（可选）
+    pub instance_id: Option<Uuid>,
+    /// 策略类型名称
+    pub strategy_type: Option<String>,
+    /// 策略显示名称
+    pub display_name: Option<String>,
     /// 初始资金 (USDT)
     pub initial_capital: Decimal,
     /// 手续费率 (如 0.001 = 0.1%)
@@ -31,6 +38,9 @@ pub struct PaperTraderConfig {
 impl Default for PaperTraderConfig {
     fn default() -> Self {
         Self {
+            instance_id: None,
+            strategy_type: None,
+            display_name: None,
             initial_capital: Decimal::from(10000),
             commission_rate: Decimal::from_str("0.001").unwrap_or(Decimal::ZERO),
             slippage_pct: Decimal::from_str("0.0001").unwrap_or(Decimal::ZERO),
@@ -116,6 +126,12 @@ pub struct PaperPosition {
 pub struct PaperTraderStatus {
     /// 是否运行中
     pub running: bool,
+    /// 关联的策略实例 ID
+    pub instance_id: Option<Uuid>,
+    /// 策略类型名称
+    pub strategy_type: Option<String>,
+    /// 策略显示名称
+    pub display_name: Option<String>,
     /// 初始资金
     pub initial_capital: Decimal,
     /// 可用余额
@@ -200,6 +216,21 @@ impl PaperTrader {
     /// 是否运行中
     pub fn is_running(&self) -> bool {
         self.running
+    }
+
+    /// 获取关联的策略实例 ID
+    pub fn instance_id(&self) -> Option<Uuid> {
+        self.config.instance_id
+    }
+
+    /// 获取策略类型名称
+    pub fn strategy_type(&self) -> Option<&str> {
+        self.config.strategy_type.as_deref()
+    }
+
+    /// 获取策略显示名称
+    pub fn display_name(&self) -> Option<&str> {
+        self.config.display_name.as_deref()
     }
 
     /// 生成下一个订单 ID
@@ -594,6 +625,9 @@ impl PaperTrader {
 
         PaperTraderStatus {
             running: self.running,
+            instance_id: self.config.instance_id,
+            strategy_type: self.config.strategy_type.clone(),
+            display_name: self.config.display_name.clone(),
             initial_capital: self.portfolio.initial_capital,
             cash: self.portfolio.cash,
             total_value,
