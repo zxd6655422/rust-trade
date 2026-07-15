@@ -271,6 +271,9 @@ impl BinanceSpotAdapter {
         // 现货总权益 = 所有资产 free + locked 之和 (简化)
         let total_equity: Decimal = balances.iter().map(|b| b.free + b.locked).sum();
 
+        // 提取 uid（交易所返回的用户唯一标识）
+        let uid = data["uid"].as_i64().map(|id| id.to_string());
+
         Ok(AccountInfo {
             balances,
             total_equity,
@@ -278,6 +281,7 @@ impl BinanceSpotAdapter {
             unrealized_pnl: Decimal::ZERO,
             margin_used: Decimal::ZERO,
             margin_ratio: None,
+            uid,
         })
     }
 
@@ -1105,6 +1109,77 @@ impl TradingOperations for BinanceSpotAdapter {
         // 现货没有 income 接口，使用 myTrades 计算
         // 暂时返回空，后续可以通过 myTrades 接口实现
         Ok(vec![])
+    }
+}
+
+// ===== AccountProvider 实现 =====
+
+#[async_trait]
+impl trading_common::data::account_types::AccountProvider for BinanceSpotAdapter {
+    async fn get_account_snapshot(
+        &self,
+        market_type: &str,
+    ) -> trading_common::data::types::DataResult<trading_common::data::account_types::AccountSnapshot> {
+        let account = TradingOperations::get_account(self).await
+            .map_err(|e| trading_common::data::types::DataError::InvalidFormat(e.to_string()))?;
+
+        Ok(trading_common::data::account_types::AccountSnapshot {
+            exchange: "binance".to_string(),
+            market_type: market_type.to_string(),
+            uid: account.uid.clone(),
+            snapshot_at: chrono::Utc::now(),
+            total_equity: account.total_equity,
+            total_balance: account.total_equity,
+            available_balance: account.available_balance,
+            frozen_balance: account.total_equity - account.available_balance,
+            unrealized_pnl: account.unrealized_pnl,
+            initial_margin: None,
+            maint_margin: None,
+            margin_ratio: account.margin_ratio,
+            position_count: 0,
+            raw_data: None,
+        })
+    }
+
+    async fn get_asset_balances(
+        &self,
+        market_type: &str,
+    ) -> trading_common::data::types::DataResult<Vec<trading_common::data::account_types::AssetBalance>> {
+        let account = TradingOperations::get_account(self).await
+            .map_err(|e| trading_common::data::types::DataError::InvalidFormat(e.to_string()))?;
+
+        let now = chrono::Utc::now();
+        Ok(account.balances.iter().map(|b| {
+            trading_common::data::account_types::AssetBalance {
+                exchange: "binance".to_string(),
+                market_type: market_type.to_string(),
+                uid: account.uid.clone(),
+                asset: b.asset.clone(),
+                snapshot_at: now,
+                total: b.free + b.locked,
+                available: b.free,
+                frozen: b.locked,
+                unrealized_pnl: Decimal::ZERO,
+                usd_value: None,
+            }
+        }).collect())
+    }
+
+    async fn get_positions(&self) -> trading_common::data::types::DataResult<Vec<trading_common::data::account_types::PositionInfo>> {
+        // 现货没有持仓概念，返回空
+        Ok(vec![])
+    }
+
+    fn normalize_symbol(&self, raw_symbol: &str) -> String {
+        raw_symbol.to_string()
+    }
+}
+
+// ===== Exchange trait 实现 =====
+
+impl crate::exchange::traits::Exchange for BinanceSpotAdapter {
+    fn as_account_provider(&self) -> &dyn trading_common::data::account_types::AccountProvider {
+        self
     }
 }
 

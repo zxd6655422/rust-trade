@@ -23,6 +23,7 @@ pub struct AppState {
     pub repository: Arc<TickDataRepository>,
     pub backtest_lock: Arc<Mutex<()>>,
     pub pool: PgPool,
+    pub account_repo: Option<Arc<trading_common::data::account_repository::AccountRepository>>,
 }
 
 // Safe unwrap for known-good Decimal constants
@@ -1315,6 +1316,255 @@ pub async fn get_backtest_stats(
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "success": false,
                 "message": format!("Failed to fetch backtest stats: {}", e)
+            }))
+        }
+    }
+}
+
+// ============================================================
+//  账户信息 API
+// ============================================================
+
+/// 获取账户总览（所有交易所汇总）
+pub async fn get_account_overview(state: web::Data<AppState>) -> HttpResponse {
+    let account_repo = match &state.account_repo {
+        Some(repo) => repo,
+        None => {
+            return HttpResponse::ServiceUnavailable().json(serde_json::json!({
+                "success": false,
+                "message": "Account repository not initialized"
+            }));
+        }
+    };
+
+    match account_repo.get_latest_snapshots(None).await {
+        Ok(snapshots) => {
+            let total_equity: rust_decimal::Decimal = snapshots.iter()
+                .map(|s| s.total_equity)
+                .sum();
+
+            HttpResponse::Ok().json(serde_json::json!({
+                "success": true,
+                "data": {
+                    "total_equity_usd": total_equity,
+                    "accounts": snapshots,
+                    "updated_at": snapshots.first().map(|s| s.snapshot_at)
+                }
+            }))
+        }
+        Err(e) => {
+            error!("Failed to fetch account overview: {}", e);
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "success": false,
+                "message": format!("Failed to fetch account overview: {}", e)
+            }))
+        }
+    }
+}
+
+/// 查询账户快照
+#[derive(Debug, Deserialize)]
+pub struct AccountQuery {
+    pub exchange: Option<String>,
+    pub market_type: Option<String>,
+    pub uid: Option<String>,
+}
+
+pub async fn get_account_snapshot(
+    state: web::Data<AppState>,
+    query: web::Query<AccountQuery>,
+) -> HttpResponse {
+    let account_repo = match &state.account_repo {
+        Some(repo) => repo,
+        None => {
+            return HttpResponse::ServiceUnavailable().json(serde_json::json!({
+                "success": false,
+                "message": "Account repository not initialized"
+            }));
+        }
+    };
+
+    match account_repo.get_latest_snapshots(query.uid.as_deref()).await {
+        Ok(snapshots) => {
+            // 按 exchange 和 market_type 过滤
+            let filtered: Vec<_> = snapshots.into_iter()
+                .filter(|s| {
+                    if let Some(ref exchange) = query.exchange {
+                        if s.exchange != *exchange { return false; }
+                    }
+                    if let Some(ref market_type) = query.market_type {
+                        if s.market_type != *market_type { return false; }
+                    }
+                    true
+                })
+                .collect();
+
+            HttpResponse::Ok().json(serde_json::json!({
+                "success": true,
+                "data": filtered
+            }))
+        }
+        Err(e) => {
+            error!("Failed to fetch account snapshots: {}", e);
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "success": false,
+                "message": format!("Failed to fetch account snapshots: {}", e)
+            }))
+        }
+    }
+}
+
+/// 查询资产余额
+pub async fn get_account_balances(
+    state: web::Data<AppState>,
+    query: web::Query<AccountQuery>,
+) -> HttpResponse {
+    let account_repo = match &state.account_repo {
+        Some(repo) => repo,
+        None => {
+            return HttpResponse::ServiceUnavailable().json(serde_json::json!({
+                "success": false,
+                "message": "Account repository not initialized"
+            }));
+        }
+    };
+
+    let exchange = query.exchange.as_deref().unwrap_or("binance");
+    let market_type = query.market_type.as_deref().unwrap_or("spot");
+
+    match account_repo.get_latest_balances(exchange, market_type, query.uid.as_deref()).await {
+        Ok(balances) => {
+            HttpResponse::Ok().json(serde_json::json!({
+                "success": true,
+                "data": balances
+            }))
+        }
+        Err(e) => {
+            error!("Failed to fetch account balances: {}", e);
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "success": false,
+                "message": format!("Failed to fetch account balances: {}", e)
+            }))
+        }
+    }
+}
+
+/// 查询持仓
+pub async fn get_account_positions(
+    state: web::Data<AppState>,
+    query: web::Query<AccountQuery>,
+) -> HttpResponse {
+    let account_repo = match &state.account_repo {
+        Some(repo) => repo,
+        None => {
+            return HttpResponse::ServiceUnavailable().json(serde_json::json!({
+                "success": false,
+                "message": "Account repository not initialized"
+            }));
+        }
+    };
+
+    let exchange = query.exchange.as_deref().unwrap_or("binance");
+
+    match account_repo.get_latest_positions(exchange, query.uid.as_deref()).await {
+        Ok(positions) => {
+            HttpResponse::Ok().json(serde_json::json!({
+                "success": true,
+                "data": positions
+            }))
+        }
+        Err(e) => {
+            error!("Failed to fetch account positions: {}", e);
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "success": false,
+                "message": format!("Failed to fetch account positions: {}", e)
+            }))
+        }
+    }
+}
+
+/// 查询历史快照
+#[derive(Debug, Deserialize)]
+pub struct AccountHistoryQuery {
+    pub exchange: String,
+    pub market_type: Option<String>,
+    pub uid: Option<String>,
+    pub start: Option<String>,
+    pub end: Option<String>,
+}
+
+pub async fn get_account_history(
+    state: web::Data<AppState>,
+    query: web::Query<AccountHistoryQuery>,
+) -> HttpResponse {
+    let account_repo = match &state.account_repo {
+        Some(repo) => repo,
+        None => {
+            return HttpResponse::ServiceUnavailable().json(serde_json::json!({
+                "success": false,
+                "message": "Account repository not initialized"
+            }));
+        }
+    };
+
+    let market_type = query.market_type.as_deref().unwrap_or("futures");
+    let now = chrono::Utc::now();
+    let start = query.start.as_ref()
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .unwrap_or(now - chrono::Duration::days(7));
+    let end = query.end.as_ref()
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .unwrap_or(now);
+
+    match account_repo.get_snapshot_history(
+        &query.exchange,
+        market_type,
+        query.uid.as_deref(),
+        start,
+        end,
+    ).await {
+        Ok(history) => {
+            HttpResponse::Ok().json(serde_json::json!({
+                "success": true,
+                "data": history
+            }))
+        }
+        Err(e) => {
+            error!("Failed to fetch account history: {}", e);
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "success": false,
+                "message": format!("Failed to fetch account history: {}", e)
+            }))
+        }
+    }
+}
+
+/// 获取所有已知 uid 列表
+pub async fn get_account_uids(state: web::Data<AppState>) -> HttpResponse {
+    let account_repo = match &state.account_repo {
+        Some(repo) => repo,
+        None => {
+            return HttpResponse::ServiceUnavailable().json(serde_json::json!({
+                "success": false,
+                "message": "Account repository not initialized"
+            }));
+        }
+    };
+
+    match account_repo.get_known_uids().await {
+        Ok(uids) => {
+            HttpResponse::Ok().json(serde_json::json!({
+                "success": true,
+                "data": uids
+            }))
+        }
+        Err(e) => {
+            error!("Failed to fetch account uids: {}", e);
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "success": false,
+                "message": format!("Failed to fetch account uids: {}", e)
             }))
         }
     }

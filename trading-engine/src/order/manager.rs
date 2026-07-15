@@ -12,7 +12,7 @@ use uuid::Uuid;
 use crate::exchange::traits::Exchange;
 use crate::exchange::types::*;
 use crate::risk::{RiskDecision, RiskEngine, RiskAction, StopLossConfig, StopLossManager, StopAction};
-use crate::storage::StopOrderRepository;
+use crate::storage::{OrderRepository, OrderSource, StopOrderRepository};
 use trading_common::backtest::strategy::Signal;
 
 /// 将数量截断到 step_size 精度
@@ -30,6 +30,7 @@ pub struct OrderManager {
     risk_engine: Arc<RiskEngine>,
     stop_loss_manager: Arc<StopLossManager>,
     stop_order_repo: Option<Arc<StopOrderRepository>>,
+    order_repo: Option<Arc<OrderRepository>>,
     active_orders: Arc<Mutex<HashMap<String, OrderInfo>>>,
     /// 交易所标识（用于日志和记录）
     exchange_id: String,
@@ -41,6 +42,8 @@ pub struct OrderManager {
     margin_type: MarginType,
     /// 止损止盈配置（用于计算止损止盈价格）
     stop_loss_config: StopLossConfig,
+    /// 交易所用户 uid
+    uid: Option<String>,
 }
 
 impl OrderManager {
@@ -55,12 +58,14 @@ impl OrderManager {
             risk_engine,
             stop_loss_manager: Arc::new(StopLossManager::new(stop_loss_config.clone())),
             stop_order_repo: None,
+            order_repo: None,
             active_orders: Arc::new(Mutex::new(HashMap::new())),
             exchange_id: "unknown".to_string(),
             market_type: "futures".to_string(),
             leverage: 10,  // 默认 10x 杠杆
             margin_type: MarginType::Isolated,  // 默认逐仓
             stop_loss_config,
+            uid: None,
         }
     }
 
@@ -78,18 +83,30 @@ impl OrderManager {
             risk_engine,
             stop_loss_manager: Arc::new(StopLossManager::new(stop_loss_config.clone())),
             stop_order_repo: None,
+            order_repo: None,
             active_orders: Arc::new(Mutex::new(HashMap::new())),
             exchange_id,
             market_type,
             leverage,
             margin_type: MarginType::Isolated,
             stop_loss_config,
+            uid: None,
         }
     }
 
     /// 设置止损止盈订单仓储（启用 DB 持久化）
     pub fn set_stop_order_repo(&mut self, repo: Arc<StopOrderRepository>) {
         self.stop_order_repo = Some(repo);
+    }
+
+    /// 设置订单仓储（启用订单持久化）
+    pub fn set_order_repo(&mut self, repo: Arc<OrderRepository>) {
+        self.order_repo = Some(repo);
+    }
+
+    /// 设置用户 uid
+    pub fn set_uid(&mut self, uid: String) {
+        self.uid = Some(uid);
     }
 
     /// 获取交易所标识
@@ -229,6 +246,48 @@ impl OrderManager {
 
         let mut active_orders = self.active_orders.lock().await;
         active_orders.insert(result.order_id.clone(), order_info);
+
+        // 保存到数据库（自动交易标记）
+        if let Some(order_repo) = &self.order_repo {
+            let side_str = match result.side {
+                OrderSide::Buy => "BUY",
+                OrderSide::Sell => "SELL",
+            };
+            let order_type_str = match result.order_type {
+                OrderType::Market => "MARKET",
+                OrderType::Limit => "LIMIT",
+                OrderType::StopLoss => "STOP_LOSS",
+                OrderType::TakeProfit => "TAKE_PROFIT",
+                _ => "MARKET",
+            };
+
+            match order_repo.create_order_full(
+                &result.order_id,
+                &self.exchange_id,
+                &self.market_type,
+                &result.symbol,
+                side_str,
+                order_type_str,
+                result.quantity,
+                result.price,
+                result.client_order_id.clone(),
+                OrderSource::Auto,
+                self.uid.clone(),
+                Some("BOTH".to_string()), // 默认双向持仓
+                None, // signal_id
+                None, // strategy_id
+                Some("GTC".to_string()),
+                order.stop_price,
+            ).await {
+                Ok(_) => {
+                    info!("Order saved to DB: {} ({})", result.order_id, self.exchange_id);
+                }
+                Err(e) => {
+                    // 不阻断交易，只记录警告
+                    warn!("Failed to save order to DB: {}", e);
+                }
+            }
+        }
 
         info!(
             "Order placed: {} {} {} @ {:?} | ID: {}",

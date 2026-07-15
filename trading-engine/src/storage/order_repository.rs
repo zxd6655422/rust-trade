@@ -8,6 +8,35 @@ use uuid::Uuid;
 
 use crate::exchange::types::{OrderInfo, OrderSide, OrderStatus, OrderType, TimeInForce};
 
+/// 订单来源
+#[derive(Debug, Clone, PartialEq)]
+pub enum OrderSource {
+    /// 程序自动下单
+    Auto,
+    /// 手动下单（交易所 APP/网页/API 手动调用）
+    Manual,
+    /// 未知
+    Unknown,
+}
+
+impl OrderSource {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            OrderSource::Auto => "auto",
+            OrderSource::Manual => "manual",
+            OrderSource::Unknown => "unknown",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "auto" => OrderSource::Auto,
+            "manual" => OrderSource::Manual,
+            _ => OrderSource::Unknown,
+        }
+    }
+}
+
 /// 订单记录
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct OrderRecord {
@@ -27,6 +56,15 @@ pub struct OrderRecord {
     pub client_order_id: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    // 新增字段
+    pub market_type: String,
+    pub uid: Option<String>,
+    pub position_side: Option<String>,
+    pub source: String,
+    pub signal_id: Option<Uuid>,
+    pub strategy_id: Option<String>,
+    pub time_in_force: Option<String>,
+    pub stop_price: Option<Decimal>,
 }
 
 /// 订单仓储
@@ -67,6 +105,61 @@ impl OrderRepository {
         .bind(quantity)
         .bind(price)
         .bind(client_order_id)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(record)
+    }
+
+    /// 创建订单（带完整信息，用于自动交易）
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_order_full(
+        &self,
+        order_id: &str,
+        exchange: &str,
+        market_type: &str,
+        symbol: &str,
+        side: &str,
+        order_type: &str,
+        quantity: Decimal,
+        price: Option<Decimal>,
+        client_order_id: Option<String>,
+        source: OrderSource,
+        uid: Option<String>,
+        position_side: Option<String>,
+        signal_id: Option<Uuid>,
+        strategy_id: Option<String>,
+        time_in_force: Option<String>,
+        stop_price: Option<Decimal>,
+    ) -> Result<OrderRecord, sqlx::Error> {
+        let record = sqlx::query_as::<_, OrderRecord>(
+            r#"
+            INSERT INTO trading_orders (
+                order_id, exchange, market_type, symbol, side, order_type,
+                quantity, price, status, client_order_id,
+                source, uid, position_side, signal_id, strategy_id,
+                time_in_force, stop_price
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'NEW', $9, $10, $11, $12, $13, $14, $15, $16)
+            RETURNING *
+            "#,
+        )
+        .bind(order_id)
+        .bind(exchange)
+        .bind(market_type)
+        .bind(symbol)
+        .bind(side)
+        .bind(order_type)
+        .bind(quantity)
+        .bind(price)
+        .bind(client_order_id)
+        .bind(source.as_str())
+        .bind(uid)
+        .bind(position_side)
+        .bind(signal_id)
+        .bind(strategy_id)
+        .bind(time_in_force)
+        .bind(stop_price)
         .fetch_one(&self.pool)
         .await?;
 
@@ -250,10 +343,53 @@ impl OrderRepository {
             filled_quantity: record.filled_quantity,
             remaining_quantity: record.quantity - record.filled_quantity,
             price: record.price,
-            stop_price: None,
+            stop_price: record.stop_price,
             time_in_force: TimeInForce::Gtc,
             created_at: record.created_at,
             updated_at: record.updated_at,
         }
+    }
+
+    /// 检查订单是否已存在
+    pub async fn order_exists(
+        &self,
+        order_id: &str,
+        exchange: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let exists: bool = sqlx::query_scalar(
+            r#"
+            SELECT EXISTS(SELECT 1 FROM trading_orders WHERE order_id = $1 AND exchange = $2)
+            "#,
+        )
+        .bind(order_id)
+        .bind(exchange)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(exists)
+    }
+
+    /// 批量检查订单是否存在（用于识别手动订单）
+    pub async fn filter_existing_orders(
+        &self,
+        order_ids: &[String],
+        exchange: &str,
+    ) -> Result<Vec<String>, sqlx::Error> {
+        if order_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let existing: Vec<(String,)> = sqlx::query_as(
+            r#"
+            SELECT order_id FROM trading_orders
+            WHERE exchange = $1 AND order_id = ANY($2)
+            "#,
+        )
+        .bind(exchange)
+        .bind(order_ids)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(existing.into_iter().map(|(id,)| id).collect())
     }
 }

@@ -324,6 +324,7 @@ impl TradingOperations for MockExchange {
             unrealized_pnl,
             margin_used: Decimal::ZERO,
             margin_ratio: None,
+            uid: Some("mock_user".to_string()),
         })
     }
 
@@ -696,5 +697,105 @@ impl TradingOperations for MockExchange {
         _limit: Option<u32>,
     ) -> Result<Vec<IncomeRecord>, ExchangeError> {
         Ok(vec![])
+    }
+}
+
+// ===== AccountProvider 实现 =====
+
+#[async_trait]
+impl trading_common::data::account_types::AccountProvider for MockExchange {
+    async fn get_account_snapshot(
+        &self,
+        market_type: &str,
+    ) -> trading_common::data::types::DataResult<trading_common::data::account_types::AccountSnapshot> {
+        let account = TradingOperations::get_account(self).await
+            .map_err(|e| trading_common::data::types::DataError::InvalidFormat(e.to_string()))?;
+
+        Ok(trading_common::data::account_types::AccountSnapshot {
+            exchange: "mock".to_string(),
+            market_type: market_type.to_string(),
+            uid: account.uid.clone(),
+            snapshot_at: chrono::Utc::now(),
+            total_equity: account.total_equity,
+            total_balance: account.total_equity,
+            available_balance: account.available_balance,
+            frozen_balance: Decimal::ZERO,
+            unrealized_pnl: account.unrealized_pnl,
+            initial_margin: None,
+            maint_margin: None,
+            margin_ratio: account.margin_ratio,
+            position_count: 0,
+            raw_data: None,
+        })
+    }
+
+    async fn get_asset_balances(
+        &self,
+        market_type: &str,
+    ) -> trading_common::data::types::DataResult<Vec<trading_common::data::account_types::AssetBalance>> {
+        let account = TradingOperations::get_account(self).await
+            .map_err(|e| trading_common::data::types::DataError::InvalidFormat(e.to_string()))?;
+
+        let now = chrono::Utc::now();
+        Ok(account.balances.iter().map(|b| {
+            trading_common::data::account_types::AssetBalance {
+                exchange: "mock".to_string(),
+                market_type: market_type.to_string(),
+                uid: account.uid.clone(),
+                asset: b.asset.clone(),
+                snapshot_at: now,
+                total: b.free + b.locked,
+                available: b.free,
+                frozen: b.locked,
+                unrealized_pnl: Decimal::ZERO,
+                usd_value: None,
+            }
+        }).collect())
+    }
+
+    async fn get_positions(&self) -> trading_common::data::types::DataResult<Vec<trading_common::data::account_types::PositionInfo>> {
+        let positions = TradingOperations::get_positions(self).await
+            .map_err(|e| trading_common::data::types::DataError::InvalidFormat(e.to_string()))?;
+
+        let now = chrono::Utc::now();
+        Ok(positions.iter().map(|p| {
+            trading_common::data::account_types::PositionInfo {
+                exchange: "mock".to_string(),
+                uid: None,
+                symbol: p.symbol.clone(),
+                raw_symbol: p.symbol.clone(),
+                snapshot_at: now,
+                position_side: match p.side {
+                    crate::exchange::types::PositionSide::Long => trading_common::data::account_types::PositionSide::Long,
+                    crate::exchange::types::PositionSide::Short => trading_common::data::account_types::PositionSide::Short,
+                    crate::exchange::types::PositionSide::None => trading_common::data::account_types::PositionSide::Net,
+                },
+                position_amt: p.quantity,
+                entry_price: p.avg_entry_price,
+                mark_price: p.mark_price.unwrap_or_default(),
+                unrealized_pnl: p.unrealized_pnl,
+                leverage: p.leverage,
+                margin_type: trading_common::data::account_types::MarginType::Cross,
+                initial_margin: p.margin,
+                maint_margin: Decimal::ZERO,
+                liquidation_price: p.liquidation_price,
+                notional: p.quantity * p.mark_price.unwrap_or_default(),
+                break_even_price: None,
+                isolated_wallet: None,
+                raw_data: None,
+            }
+        }).collect())
+    }
+
+    fn normalize_symbol(&self, raw_symbol: &str) -> String {
+        raw_symbol.to_string()
+    }
+}
+
+// ===== Exchange trait 实现 =====
+
+impl crate::exchange::traits::Exchange for MockExchange {
+    fn as_account_provider(&self) -> &dyn trading_common::data::account_types::AccountProvider {
+        self
     }
 }

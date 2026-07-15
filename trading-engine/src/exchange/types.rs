@@ -220,6 +220,8 @@ pub struct AccountInfo {
     pub unrealized_pnl: Decimal,
     pub margin_used: Decimal,
     pub margin_ratio: Option<Decimal>,
+    /// 交易所返回的用户唯一标识（Binance: uid, OKX: uid）
+    pub uid: Option<String>,
 }
 
 /// 持仓信息

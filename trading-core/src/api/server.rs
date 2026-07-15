@@ -62,10 +62,13 @@ impl ApiServer {
 
         info!("Starting API server on {}:{}", host, port);
 
+        let account_repo = Arc::new(trading_common::data::account_repository::AccountRepository::new(pool.clone()));
+
         let app_state = web::Data::new(AppState {
             repository,
             backtest_lock: Arc::new(Mutex::new(())),
             pool,
+            account_repo: Some(account_repo),
         });
 
         let tick_tx_data = web::Data::new(tick_tx);
@@ -101,7 +104,14 @@ impl ApiServer {
                         .route("/backtest/detail/{id}", web::get().to(handlers::get_backtest_detail))
                         .route("/backtest/stats/{instance_id}", web::get().to(handlers::get_backtest_stats))
                         // 市场分析 API
-                        .route("/analysis/market-state", web::post().to(handlers::analyze_market_state)),
+                        .route("/analysis/market-state", web::post().to(handlers::analyze_market_state))
+                        // 账户信息 API
+                        .route("/account/overview", web::get().to(handlers::get_account_overview))
+                        .route("/account/snapshot", web::get().to(handlers::get_account_snapshot))
+                        .route("/account/balances", web::get().to(handlers::get_account_balances))
+                        .route("/account/positions", web::get().to(handlers::get_account_positions))
+                        .route("/account/history", web::get().to(handlers::get_account_history))
+                        .route("/account/uids", web::get().to(handlers::get_account_uids)),
                 )
                 // WebSocket
                 .route("/ws", web::get().to(websocket::ws_handler))

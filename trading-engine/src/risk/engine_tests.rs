@@ -38,6 +38,7 @@ mod tests {
             unrealized_pnl: Decimal::ZERO,
             margin_used: Decimal::ZERO,
             margin_ratio: None,
+            uid: None,
         }
     }
 

@@ -185,10 +185,12 @@ pub trait TradingOperations: Send + Sync {
 /// 同时实现 MarketDataProvider 和 TradingOperations 的类型自动实现此 trait
 /// 用于需要完整交易所功能的场景（如交易引擎）
 #[async_trait]
-pub trait Exchange: MarketDataProvider + TradingOperations {}
+pub trait Exchange: MarketDataProvider + TradingOperations {
+    /// 获取 AccountProvider 引用，用于账户信息查询
+    fn as_account_provider(&self) -> &dyn trading_common::data::account_types::AccountProvider;
+}
 
-// 自动为同时实现两个 trait 的类型实现 Exchange
-impl<T: MarketDataProvider + TradingOperations> Exchange for T {}
+// 注意：Exchange 实现在各适配器中手动提供（因为需要 as_account_provider 方法）
 
 /// 交易对精度信息
 #[derive(Debug, Clone)]

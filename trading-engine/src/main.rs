@@ -13,6 +13,7 @@ mod exchange;
 mod order;
 mod portfolio;
 mod risk;
+mod service;
 mod storage;
 mod utils;
 
@@ -20,7 +21,7 @@ use config::Settings;
 use engine::signal_poller::{SignalPoller, SignalPollerConfig};
 use engine::trading_unit::TradingUnit;
 use risk::RiskEngine;
-use storage::{Database, ExchangeRepository, PositionRepository, RedisCache, StopOrderRepository};
+use storage::{Database, ExchangeRepository, OrderRepository, PositionRepository, RedisCache, StopOrderRepository};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -38,6 +39,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match args.get(1).map(|s| s.as_str()) {
         Some("live") => run_live_mode(&args).await,
+        Some("account") => run_account_mode(&args).await,
         Some("--help") | Some("-h") => {
             print_usage();
             Ok(())
@@ -55,8 +57,9 @@ fn print_usage() {
     println!("Trading Engine - Automated Trading System");
     println!();
     println!("Usage:");
-    println!("  cargo run                 # Run in live mode");
-    println!("  cargo run live            # Run in live mode");
+    println!("  cargo run                 # Run in live mode (trading + account polling)");
+    println!("  cargo run live            # Run in live mode (trading + account polling)");
+    println!("  cargo run account         # Run account polling only (no trading)");
     println!("  cargo run --help          # Show this help message");
     println!();
     println!("Configuration:");
@@ -112,6 +115,10 @@ async fn run_live_mode(_args: &[String]) -> Result<(), Box<dyn std::error::Error
     let stop_order_repo = Arc::new(StopOrderRepository::new(pool.clone()));
     info!("✅ Stop order repository created");
 
+    // 创建订单仓储（持久化）
+    let order_repo = Arc::new(OrderRepository::new(pool.clone()));
+    info!("✅ Order repository created");
+
     // 创建风控引擎（所有 TradingUnit 共享）
     let risk_engine = Arc::new(RiskEngine::new(settings.risk_control.clone()));
     info!("✅ Risk engine created");
@@ -125,6 +132,7 @@ async fn run_live_mode(_args: &[String]) -> Result<(), Box<dyn std::error::Error
             position_repo.clone(),
             cache.clone(),
             Some(stop_order_repo.clone()),
+            Some(order_repo.clone()),
         ) {
             Ok(unit) => {
                 trading_units.push(Arc::new(unit));
@@ -159,6 +167,54 @@ async fn run_live_mode(_args: &[String]) -> Result<(), Box<dyn std::error::Error
 
     database.close().await;
     info!("👋 Trading Engine stopped");
+
+    Ok(())
+}
+
+/// 账户信息轮询模式（不启动自动交易）
+///
+/// 只采集账户信息（余额、持仓等），不执行交易信号
+/// 适合只做监控、不想开自动交易的场景
+async fn run_account_mode(_args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    info!("Starting Trading Engine in account-only mode (no trading)");
+
+    let settings = Settings::new()?;
+    info!("✅ Configuration loaded");
+
+    // 创建数据库连接
+    let database = Database::new(&settings.database).await?;
+    let pool = database.pool().clone();
+    info!("✅ Database connected");
+
+    // 从数据库加载交易所配置
+    let exchange_repo = ExchangeRepository::new(pool.clone());
+    let exchange_configs = exchange_repo.load_enabled().await?;
+
+    if exchange_configs.is_empty() {
+        error!("❌ No enabled exchanges in database!");
+        return Err("No enabled exchanges configured".into());
+    }
+
+    info!("📋 Loaded {} enabled exchange configs", exchange_configs.len());
+
+    // 创建账户仓储
+    let account_repo = Arc::new(trading_common::data::account_repository::AccountRepository::new(pool.clone()));
+
+    // 创建账户轮询器
+    let poller = service::account_poller::AccountPoller::new(
+        exchange_configs,
+        account_repo,
+        service::account_poller::AccountPollerConfig::default(),
+    );
+
+    info!("📊 Account Poller starting...");
+    info!("   Press Ctrl+C to stop");
+
+    // 启动轮询（无限循环）
+    poller.start().await;
+
+    database.close().await;
+    info!("👋 Account Poller stopped");
 
     Ok(())
 }

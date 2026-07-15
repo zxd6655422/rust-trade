@@ -18,7 +18,7 @@ use crate::exchange::ExchangeFactory;
 use crate::order::OrderManager;
 use crate::portfolio::PortfolioManager;
 use crate::risk::{RiskEngine, StopLossConfig, StopLossManager};
-use crate::storage::{PositionRepository, RedisCache, StopOrderRepository};
+use crate::storage::{OrderRepository, PositionRepository, RedisCache, StopOrderRepository};
 
 /// 一个交易所+交易模式的独立交易单元
 ///
@@ -52,6 +52,7 @@ impl TradingUnit {
         position_repo: Arc<PositionRepository>,
         cache: Arc<RedisCache>,
         stop_order_repo: Option<Arc<StopOrderRepository>>,
+        order_repo: Option<Arc<OrderRepository>>,
     ) -> Result<Self, String> {
         // 从环境变量获取 API Key
         let api_key = config.api_key()?;
@@ -74,15 +75,23 @@ impl TradingUnit {
         let stop_loss_config = StopLossConfig::default();
 
         // 创建订单管理器
-        let mut order_manager = OrderManager::new(
+        let mut order_manager = OrderManager::with_identity(
             exchange.clone(),
             risk_engine.clone(),
             stop_loss_config.clone(),
+            config.id.clone(),
+            config.market_type.clone(),
+            config.leverage,
         );
 
         // 设置止损止盈仓储（启用 DB 持久化）
         if let Some(repo) = stop_order_repo {
             order_manager.set_stop_order_repo(repo);
+        }
+
+        // 设置订单仓储（启用订单持久化）
+        if let Some(repo) = order_repo {
+            order_manager.set_order_repo(repo);
         }
 
         let order_manager = Arc::new(order_manager);

@@ -20,6 +20,8 @@ use super::types::DataResult;
 pub struct AccountSnapshot {
     pub exchange: String,           // "binance" / "okx"
     pub market_type: String,        // "spot" / "futures" / "swap"
+    /// 交易所返回的用户唯一标识（Binance: uid, OKX: uid/mainUid）
+    pub uid: Option<String>,
     pub snapshot_at: DateTime<Utc>,
 
     // ============ 余额相关 ============
@@ -107,6 +109,8 @@ impl AccountSnapshot {
 pub struct AssetBalance {
     pub exchange: String,
     pub market_type: String,
+    /// 交易所返回的用户唯一标识
+    pub uid: Option<String>,
     pub asset: String,              // "USDT" / "BTC"
     pub snapshot_at: DateTime<Utc>,
 
@@ -205,6 +209,8 @@ impl MarginType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PositionInfo {
     pub exchange: String,
+    /// 交易所返回的用户唯一标识
+    pub uid: Option<String>,
     /// 统一格式: "BTCUSDT"
     pub symbol: String,
     /// 原始格式: "BTCUSDT" / "BTC-USDT-SWAP"

@@ -2903,6 +2903,7 @@ impl TickDataRepository {
         Ok(row.map(|r| crate::data::account_types::AccountSnapshot {
             exchange: r.get("exchange"),
             market_type: r.get("market_type"),
+            uid: r.get("uid"),
             snapshot_at: r.get("snapshot_at"),
             total_equity: r.get("total_equity"),
             total_balance: r.get("total_balance"),
@@ -2947,6 +2948,7 @@ impl TickDataRepository {
 
         Ok(rows.iter().map(|r| crate::data::account_types::PositionInfo {
             exchange: r.get("exchange"),
+            uid: r.get("uid"),
             symbol: r.get("symbol"),
             raw_symbol: r.get("raw_symbol"),
             snapshot_at: r.get("snapshot_at"),
