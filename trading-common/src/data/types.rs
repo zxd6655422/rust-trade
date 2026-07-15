@@ -285,6 +285,22 @@ impl Timeframe {
         }
     }
 
+    /// 获取该时间框架需要的最小 K 线数量（用于指标预热和缓存完整性检查）
+    pub fn min_warmup_bars(&self) -> usize {
+        match self {
+            Timeframe::OneMinute => 500,
+            Timeframe::FiveMinutes => 500,
+            Timeframe::FifteenMinutes => 300,
+            Timeframe::ThirtyMinutes => 200,
+            Timeframe::OneHour => 200,
+            Timeframe::TwoHour => 150,
+            Timeframe::FourHour => 150,
+            Timeframe::OneDay => 100,
+            Timeframe::ThreeDay => 50,
+            Timeframe::OneWeek => 50,
+        }
+    }
+
     /// Get the start of the time window for a given timestamp
     pub fn align_timestamp(&self, timestamp: DateTime<Utc>) -> DateTime<Utc> {
         match self {

@@ -564,6 +564,7 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
                 let mut poll_count: u64 = 0;
                 const AGGREGATE_INTERVAL: u64 = 3; // 每3个周期聚合一次（约90秒）
                 const GAP_CHECK_INTERVAL: u64 = 60; // 每60个周期检查一次间隙
+                const CACHE_INTEGRITY_CHECK_INTERVAL: u64 = 180; // 每180个周期检查一次缓存完整性（约30分钟）
                 // Redis 重连检测：上次 Redis 写入是否失败
                 let mut redis_was_down = false;
 
@@ -690,6 +691,15 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
                         for sym in &symbols {
                             if let Err(e) = aggregator.detect_and_fill_gaps(sym).await {
                                 warn!("[{}] 间隙检测失败: {}", sym, e);
+                            }
+                        }
+                    }
+
+                    // 定期检查Redis缓存完整性，不足时自动全量同步
+                    if poll_count % CACHE_INTEGRITY_CHECK_INTERVAL == 0 {
+                        for sym in &symbols {
+                            if let Err(e) = aggregator.check_and_restore_redis_cache(sym).await {
+                                warn!("[{}] 缓存完整性检查失败: {}", sym, e);
                             }
                         }
                     }

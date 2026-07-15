@@ -175,9 +175,9 @@ impl HighTfAggregator {
             }
 
             // === 检查2：内部间隙（相邻K线之间的断档）===
-            // 只检查最近24小时的数据，避免历史数据中的正常间隙被误报
+            // 检查最近7天的数据，覆盖更多历史间隙
             let internal_gaps = self.repo.detect_high_tf_gaps(
-                symbol, tf_str, tf_minutes, 24,
+                symbol, tf_str, tf_minutes, 168,  // 7天 = 168小时
             ).await?;
 
             for (gap_start, gap_end) in internal_gaps {
@@ -262,5 +262,34 @@ impl HighTfAggregator {
                 Ok(true)
             }
         }
+    }
+
+    /// 检查并恢复Redis缓存完整性
+    ///
+    /// 定期调用，检查每个时间框架的缓存数量是否满足策略最低预热要求
+    /// 不足时自动触发全量同步，确保策略服务始终有足够的数据进行指标计算
+    pub async fn check_and_restore_redis_cache(
+        &mut self,
+        symbol: &str,
+    ) -> DataResult<()> {
+        let timeframes = redis_writer::get_stored_timeframes();
+        let need_sync = redis_writer::check_cache_integrity(
+            &mut self.redis_conn,
+            symbol,
+            &timeframes,
+        ).await.map_err(|e| DataError::Cache(format!("Cache integrity check failed: {}", e)))?;
+
+        if need_sync.is_empty() {
+            return Ok(());
+        }
+
+        for tf in need_sync {
+            info!("[{}:{}] 触发全量同步到Redis", symbol, tf.as_str());
+            if let Err(e) = self.full_sync_to_redis(symbol, tf.as_str()).await {
+                warn!("[{}:{}] 全量同步失败: {}", symbol, tf.as_str(), e);
+            }
+        }
+
+        Ok(())
     }
 }

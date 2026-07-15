@@ -46,9 +46,10 @@ const KLINE_3D_CACHE_SIZE: usize = 610;
 const KLINE_1W_CACHE_SIZE: usize = 500;
 
 /// Redis 缓存 TTL（秒）
-const KLINE_TTL_SHORT: usize = 604800;     // 7天（1m，与缓存容量14天对齐，poll loop每30s刷新）
-const KLINE_TTL_MEDIUM: usize = 604800;    // 7天（5m/15m/30m）
-const KLINE_TTL_LONG: usize = 604800;      // 7天（小时级及以上）
+/// TTL 与缓存容量对齐，确保数据在缓存容量范围内不会过期
+const KLINE_TTL_SHORT: usize = 1209600;    // 14天（与1m缓存容量对齐）
+const KLINE_TTL_MEDIUM: usize = 2592000;   // 30天（与5m/15m/30m缓存容量对齐）
+const KLINE_TTL_LONG: usize = 15552000;    // 180天（与1h/2h/4h缓存容量对齐，1d/3d/1w也用此值）
 
 // =================================================================
 // Data structures
@@ -410,6 +411,30 @@ pub async fn get_cache_count(
     Ok(count)
 }
 
+/// 检查Redis缓存完整性，返回需要全量同步的时间框架列表
+///
+/// 遍历所有时间框架，检查缓存数量是否满足策略最低预热要求
+/// 返回数量不足的时间框架列表，调用方应触发全量同步
+pub async fn check_cache_integrity(
+    conn: &mut ConnectionManager,
+    symbol: &str,
+    timeframes: &[Timeframe],
+) -> anyhow::Result<Vec<Timeframe>> {
+    let mut need_sync = Vec::new();
+    for tf in timeframes {
+        let count = get_cache_count(conn, symbol, tf).await?;
+        let min_required = tf.min_warmup_bars();
+        if count < min_required {
+            warn!(
+                "[{}:{}] Redis缓存不足: {}条 < {}条",
+                symbol, tf.as_str(), count, min_required
+            );
+            need_sync.push(*tf);
+        }
+    }
+    Ok(need_sync)
+}
+
 // =================================================================
 // Legacy compatibility
 // =================================================================
@@ -457,9 +482,15 @@ mod tests {
 
     #[test]
     fn test_ttl_config() {
-        assert_eq!(timeframe_ttl(&Timeframe::OneMinute), 3600);
-        assert_eq!(timeframe_ttl(&Timeframe::FiveMinutes), 86400);
-        assert_eq!(timeframe_ttl(&Timeframe::OneHour), 604800);
-        assert_eq!(timeframe_ttl(&Timeframe::OneDay), 604800);
+        assert_eq!(timeframe_ttl(&Timeframe::OneMinute), 1209600);      // 14天
+        assert_eq!(timeframe_ttl(&Timeframe::FiveMinutes), 2592000);    // 30天
+        assert_eq!(timeframe_ttl(&Timeframe::FifteenMinutes), 2592000); // 30天
+        assert_eq!(timeframe_ttl(&Timeframe::ThirtyMinutes), 2592000);  // 30天
+        assert_eq!(timeframe_ttl(&Timeframe::OneHour), 15552000);       // 180天
+        assert_eq!(timeframe_ttl(&Timeframe::TwoHour), 15552000);       // 180天
+        assert_eq!(timeframe_ttl(&Timeframe::FourHour), 15552000);      // 180天
+        assert_eq!(timeframe_ttl(&Timeframe::OneDay), 15552000);        // 180天
+        assert_eq!(timeframe_ttl(&Timeframe::ThreeDay), 15552000);      // 180天
+        assert_eq!(timeframe_ttl(&Timeframe::OneWeek), 15552000);       // 180天
     }
 }
