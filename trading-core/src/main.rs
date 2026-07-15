@@ -304,6 +304,9 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
             let symbols = settings.symbols.clone();
             let redis_url = settings.cache.redis.url.clone();
             let price_tx = tick_tx.clone();
+            let stored_timeframes = settings.collector.stored_timeframes.clone();
+            let multi_tf_backfill_enabled = settings.collector.multi_tf_backfill_enabled;
+            let multi_tf_backfill_interval_hours = settings.collector.multi_tf_backfill_interval_hours;
 
             Some(tokio::spawn(async move {
                 let pool = match create_database_pool_for_service().await {
@@ -487,10 +490,10 @@ async fn run_service_mode() -> Result<(), Box<dyn std::error::Error>> {
 
                 // Step 1.5: Multi-timeframe backfill (if enabled)
                 // 在 1m 回填完成后，回填高时间框架数据（5m/15m/30m/1h/2h/4h/1d/3d/1w）
-                let multi_tf_enabled = settings.collector.multi_tf_backfill_enabled;
-                let multi_tf_interval_hours = settings.collector.multi_tf_backfill_interval_hours;
+                let multi_tf_enabled = multi_tf_backfill_enabled;
+                let multi_tf_interval_hours = multi_tf_backfill_interval_hours;
                 if multi_tf_enabled && backfill_enabled {
-                    let stored_tfs: Vec<String> = settings.collector.stored_timeframes.iter()
+                    let stored_tfs: Vec<String> = stored_timeframes.iter()
                         .filter(|tf| *tf != "1m")
                         .cloned()
                         .collect();

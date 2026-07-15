@@ -604,6 +604,8 @@ pub async fn run_multi_timeframe_backtest(
         success: true,
         message: "Multi-timeframe backtest completed successfully".to_string(),
         data: Some(BacktestResult {
+            id: None,
+            instance_id: None,
             strategy: req.strategy.clone(),
             symbol: req.symbol.clone(),
             initial_capital: format!("${}", initial_capital),
