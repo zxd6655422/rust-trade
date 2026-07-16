@@ -220,35 +220,34 @@ impl ExchangeInstanceConfig {
     }
 }
 
-/// 加载环境变量
-pub fn load_env() {
-    let env_file = determine_env_file();
-
-    if std::env::var("DATABASE_URL").is_err() {
-        if let Err(_) = dotenvy::from_filename(&env_file) {
-            println!("Warning: {} not found, trying .env", env_file);
-            if let Err(_) = dotenvy::dotenv() {
-                println!("Warning: No .env file found");
-            }
-        }
-    }
+/// 确定环境文件名
+fn determine_env_filename() -> String {
+    let run_mode = std::env::var("RUN_MODE").unwrap_or_else(|_| "development".into());
+    format!(".env.{}", run_mode)
 }
 
-/// 确定环境文件
-fn determine_env_file() -> String {
-    // 检查 RUN_MODE 环境变量
-    if let Ok(mode) = std::env::var("RUN_MODE") {
-        match mode.as_str() {
-            "test" => return ".env.development".to_string(),
-            "development" => return ".env.development".to_string(),
-            "production" => return ".env.production".to_string(),
-            _ => {}
+/// 加载环境变量（支持 config/ 目录）
+pub fn load_env() {
+    let run_mode = std::env::var("RUN_MODE").unwrap_or_else(|_| {
+        if cfg!(debug_assertions) { "development".into() } else { "production".into() }
+    });
+
+    let env_filename = format!(".env.{}", run_mode);
+
+    // 优先从 config/ 目录加载
+    let config_env_path = format!("config/{}", env_filename);
+    if std::path::Path::new(&config_env_path).exists() {
+        if let Ok(_) = dotenvy::from_filename(&config_env_path) {
+            tracing::info!("✅ Loaded env from: {}", config_env_path);
+            return;
         }
     }
 
-    if cfg!(debug_assertions) {
-        ".env.development".to_string()
-    } else {
-        ".env.production".to_string()
+    // 回退到当前目录
+    if let Err(_) = dotenvy::from_filename(&env_filename) {
+        tracing::warn!("⚠️ {} not found, trying .env", env_filename);
+        if let Err(_) = dotenvy::dotenv() {
+            tracing::warn!("⚠️ No .env file found");
+        }
     }
 }
