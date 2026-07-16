@@ -1486,7 +1486,7 @@ impl trading_common::data::account_types::AccountProvider for BinanceAdapter {
             initial_margin: Some(account.total_initial_margin),
             maint_margin: Some(account.total_maint_margin),
             margin_ratio: account.account_info.margin_ratio,
-            position_count: account.account_info.positions.len() as u32,
+            position_count: account.account_info.positions.len() as i32,
         })
     }
 
