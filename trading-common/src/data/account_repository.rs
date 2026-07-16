@@ -107,9 +107,11 @@ impl AccountRepository {
     /// 批量保存持仓快照（带 uid）
     pub async fn save_positions(&self, positions: &[PositionInfo], uid: &str) -> DataResult<()> {
         if positions.is_empty() {
+            tracing::info!("[save_positions] 持仓为空，跳过保存");
             return Ok(());
         }
 
+        tracing::info!("[save_positions] 开始保存 {} 个持仓, uid={}", positions.len(), uid);
         let mut tx = self.pool.begin().await?;
 
         for pos in positions {
@@ -118,6 +120,9 @@ impl AccountRepository {
             } else {
                 None
             };
+
+            tracing::debug!("[save_positions] 保存 {} side={} amt={} entry={}",
+                pos.symbol, pos.position_side.as_str(), pos.position_amt, pos.entry_price);
 
             sqlx::query(
                 "INSERT INTO position_snapshot \
@@ -165,11 +170,15 @@ impl AccountRepository {
             .bind(pos.isolated_wallet)
             .bind(pnl_ratio)
             .execute(&mut *tx)
-            .await?;
+            .await
+            .map_err(|e| {
+                tracing::error!("[save_positions] SQL 执行失败 {}: {:#}", pos.symbol, e);
+                e
+            })?;
         }
 
         tx.commit().await?;
-        debug!("Saved {} positions uid={}", positions.len(), uid);
+        tracing::info!("[save_positions] 保存完成 {} 个持仓", positions.len());
         Ok(())
     }
 

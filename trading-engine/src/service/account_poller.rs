@@ -160,15 +160,17 @@ impl AccountPoller {
         if config.market_type == "futures" || config.market_type == "swap" {
             match account_provider.get_positions().await {
                 Ok(mut positions) => {
+                    tracing::info!("[持仓保存] {} 获取到 {} 个持仓", config.id, positions.len());
                     for p in &mut positions {
                         p.uid = Some(uid.clone());
                     }
-                    if let Err(e) = self.account_repo.save_positions(&positions, &uid).await {
-                        error!("Failed to save positions for {}: {}", config.id, e);
+                    match self.account_repo.save_positions(&positions, &uid).await {
+                        Ok(_) => tracing::info!("[持仓保存] {} 保存成功", config.id),
+                        Err(e) => error!("❌ [持仓保存] {} 失败: {:#?}", config.id, e),
                     }
                 }
                 Err(e) => {
-                    error!("❌ Failed to get positions for {}: {}", config.id, e);
+                    error!("❌ Failed to get positions for {}: {:#?}", config.id, e);
                     self.log_api_error_hint(config, &e);
                 }
             }
