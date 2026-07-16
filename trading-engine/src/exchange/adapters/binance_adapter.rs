@@ -335,13 +335,17 @@ impl BinanceAdapter {
         let positions: Vec<PositionInfo> = data["positions"]
             .as_array()
             .map(|arr| {
+                tracing::info!("[parse_futures_account] positions 数组长度: {}", arr.len());
                 arr.iter()
                     .filter_map(|p| {
                         let symbol = p["symbol"].as_str()?.to_string();
                         let position_amt = Decimal::from_str(p["positionAmt"].as_str()?).ok()?;
 
+                        tracing::info!("[parse_futures_account] {} positionAmt={}", symbol, position_amt);
+
                         // 跳过空仓位
                         if position_amt == Decimal::ZERO {
+                            tracing::info!("[parse_futures_account] {} 跳过(数量为0)", symbol);
                             return None;
                         }
 
@@ -354,6 +358,8 @@ impl BinanceAdapter {
                         // /fapi/v2/account positions 中没有 markPrice，用 entryPrice 估算
                         // 精确的 markPrice 需要单独调用 /fapi/v1/premiumIndex
                         let entry_price = Decimal::from_str(p["entryPrice"].as_str().unwrap_or("0")).unwrap_or_default();
+
+                        tracing::info!("[parse_futures_account] {} 解析成功: side={:?} qty={} entry={}", symbol, side, position_amt.abs(), entry_price);
 
                         Some(PositionInfo {
                             symbol,
@@ -369,7 +375,10 @@ impl BinanceAdapter {
                     })
                     .collect()
             })
-            .unwrap_or_default();
+            .unwrap_or_else(|| {
+                tracing::warn!("[parse_futures_account] API响应中没有 positions 数组!");
+                vec![]
+            });
 
         let total_wallet: Decimal = Decimal::from_str(
             data["totalWalletBalance"].as_str().unwrap_or("0")
@@ -1524,8 +1533,11 @@ impl trading_common::data::account_types::AccountProvider for BinanceAdapter {
         let account = TradingOperations::get_futures_account(self).await
             .map_err(|e| trading_common::data::types::DataError::InvalidFormat(e.to_string()))?;
 
+        tracing::info!("[get_positions] account.account_info.positions 长度: {}", account.account_info.positions.len());
+
         let now = chrono::Utc::now();
-        Ok(account.account_info.positions.iter().map(|p| {
+        let result: Vec<trading_common::data::account_types::PositionInfo> = account.account_info.positions.iter().map(|p| {
+            tracing::info!("[get_positions] 转换持仓: {} qty={}", p.symbol, p.quantity);
             trading_common::data::account_types::PositionInfo {
                 exchange: "binance".to_string(),
                 uid: account.account_info.uid.clone(),
@@ -1550,7 +1562,10 @@ impl trading_common::data::account_types::AccountProvider for BinanceAdapter {
                 break_even_price: None,
                 isolated_wallet: None,
             }
-        }).collect())
+        }).collect();
+
+        tracing::info!("[get_positions] 返回 {} 个持仓", result.len());
+        Ok(result)
     }
 
     fn normalize_symbol(&self, raw_symbol: &str) -> String {

@@ -157,21 +157,30 @@ impl AccountPoller {
         }
 
         // 获取持仓（主要是合约）
+        tracing::info!("[AccountPoller] {} market_type='{}'", config.id, config.market_type);
         if config.market_type == "futures" || config.market_type == "swap" {
+            tracing::info!("[AccountPoller] 开始获取 {} 持仓...", config.id);
             match account_provider.get_positions().await {
                 Ok(mut positions) => {
+                    tracing::info!("[AccountPoller] {} 获取到 {} 个持仓", config.id, positions.len());
                     for p in &mut positions {
                         p.uid = Some(uid.clone());
                     }
-                    if let Err(e) = self.account_repo.save_positions(&positions, &uid).await {
-                        error!("Failed to save positions for {}: {}", config.id, e);
+                    if positions.is_empty() {
+                        tracing::warn!("[AccountPoller] {} 持仓为空!", config.id);
+                    }
+                    match self.account_repo.save_positions(&positions, &uid).await {
+                        Ok(_) => tracing::info!("[AccountPoller] {} 持仓保存成功", config.id),
+                        Err(e) => error!("❌ [AccountPoller] {} 持仓保存失败: {}", config.id, e),
                     }
                 }
                 Err(e) => {
-                    error!("❌ Failed to get positions for {}: {}", config.id, e);
+                    error!("❌ [AccountPoller] {} 获取持仓失败: {}", config.id, e);
                     self.log_api_error_hint(config, &e);
                 }
             }
+        } else {
+            tracing::info!("[AccountPoller] {} 跳过持仓 (market_type={})", config.id, config.market_type);
         }
 
         info!("✅ Account poll completed for {} (uid={})", config.id, uid);
