@@ -329,6 +329,10 @@ impl BinanceAdapter {
             data["totalMaintMargin"].as_str().unwrap_or("0")
         ).unwrap_or_default();
 
+        // Binance Futures API 不返回 uid，使用 API Key 前 8 位作为标识
+        // 同一账户的 Spot 和 Futures 共用 API Key，因此 uid 一致
+        let uid = Some(format!("binance_{}", &self.config.api_key[..8.min(self.config.api_key.len())]));
+
         Ok(AccountInfo {
             balances,
             total_equity: total_wallet + unrealized_pnl,
@@ -336,7 +340,7 @@ impl BinanceAdapter {
             unrealized_pnl,
             margin_used,
             margin_ratio: None,
-            uid: None, // /fapi/v2/account 不返回 uid，需要从 Spot 账户获取
+            uid,
         })
     }
 
@@ -1432,7 +1436,6 @@ impl trading_common::data::account_types::AccountProvider for BinanceAdapter {
             maint_margin: Some(account.total_maint_margin),
             margin_ratio: account.account_info.margin_ratio,
             position_count: 0, // 需要额外查询
-            raw_data: None,
         })
     }
 
@@ -1461,6 +1464,10 @@ impl trading_common::data::account_types::AccountProvider for BinanceAdapter {
     }
 
     async fn get_positions(&self) -> trading_common::data::types::DataResult<Vec<trading_common::data::account_types::PositionInfo>> {
+        // 先获取账户信息以得到 uid
+        let account = TradingOperations::get_futures_account(self).await
+            .map_err(|e| trading_common::data::types::DataError::InvalidFormat(e.to_string()))?;
+
         let positions = TradingOperations::get_positions(self).await
             .map_err(|e| trading_common::data::types::DataError::InvalidFormat(e.to_string()))?;
 
@@ -1468,7 +1475,7 @@ impl trading_common::data::account_types::AccountProvider for BinanceAdapter {
         Ok(positions.iter().map(|p| {
             trading_common::data::account_types::PositionInfo {
                 exchange: "binance".to_string(),
-                uid: None, // 需要从账户信息获取
+                uid: account.account_info.uid.clone(),
                 symbol: p.symbol.clone(),
                 raw_symbol: p.symbol.clone(),
                 snapshot_at: now,
@@ -1489,8 +1496,7 @@ impl trading_common::data::account_types::AccountProvider for BinanceAdapter {
                 notional: p.quantity * p.mark_price.unwrap_or_default(),
                 break_even_price: None,
                 isolated_wallet: None,
-                raw_data: None,
-            }
+                }
         }).collect())
     }
 

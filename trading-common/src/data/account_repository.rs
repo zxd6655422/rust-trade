@@ -32,10 +32,9 @@ impl AccountRepository {
             "INSERT INTO account_snapshot \
              (exchange, market_type, uid, snapshot_at, total_equity, total_balance, \
               available_balance, frozen_balance, unrealized_pnl, initial_margin, \
-              maint_margin, margin_ratio, position_count, raw_data) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) \
-             ON CONFLICT (exchange, market_type, snapshot_at) DO UPDATE SET \
-              uid = EXCLUDED.uid, \
+              maint_margin, margin_ratio, position_count) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) \
+             ON CONFLICT (exchange, market_type, uid, snapshot_at) DO UPDATE SET \
               total_equity = EXCLUDED.total_equity, \
               total_balance = EXCLUDED.total_balance, \
               available_balance = EXCLUDED.available_balance, \
@@ -44,8 +43,7 @@ impl AccountRepository {
               initial_margin = EXCLUDED.initial_margin, \
               maint_margin = EXCLUDED.maint_margin, \
               margin_ratio = EXCLUDED.margin_ratio, \
-              position_count = EXCLUDED.position_count, \
-              raw_data = EXCLUDED.raw_data"
+              position_count = EXCLUDED.position_count"
         )
         .bind(&snapshot.exchange)
         .bind(&snapshot.market_type)
@@ -60,7 +58,6 @@ impl AccountRepository {
         .bind(snapshot.maint_margin)
         .bind(snapshot.margin_ratio)
         .bind(snapshot.position_count)
-        .bind(&snapshot.raw_data)
         .execute(&self.pool)
         .await?;
 
@@ -81,8 +78,7 @@ impl AccountRepository {
                 "INSERT INTO asset_balance \
                  (exchange, market_type, uid, asset, snapshot_at, total, available, frozen, unrealized_pnl, usd_value) \
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
-                 ON CONFLICT (exchange, market_type, asset, snapshot_at) DO UPDATE SET \
-                  uid = EXCLUDED.uid, \
+                 ON CONFLICT (exchange, market_type, uid, asset, snapshot_at) DO UPDATE SET \
                   total = EXCLUDED.total, \
                   available = EXCLUDED.available, \
                   frozen = EXCLUDED.frozen, \
@@ -129,10 +125,9 @@ impl AccountRepository {
                   position_side, position_amt, entry_price, mark_price, unrealized_pnl, \
                   leverage, margin_type, initial_margin, maint_margin, \
                   liquidation_price, notional, break_even_price, isolated_wallet, \
-                  pnl_ratio, raw_data) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21) \
-                 ON CONFLICT (exchange, symbol, position_side, snapshot_at) DO UPDATE SET \
-                  uid = EXCLUDED.uid, \
+                  pnl_ratio) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20) \
+                 ON CONFLICT (exchange, symbol, position_side, uid, snapshot_at) DO UPDATE SET \
                   market_type = EXCLUDED.market_type, \
                   raw_symbol = EXCLUDED.raw_symbol, \
                   position_amt = EXCLUDED.position_amt, \
@@ -147,8 +142,7 @@ impl AccountRepository {
                   notional = EXCLUDED.notional, \
                   break_even_price = EXCLUDED.break_even_price, \
                   isolated_wallet = EXCLUDED.isolated_wallet, \
-                  pnl_ratio = EXCLUDED.pnl_ratio, \
-                  raw_data = EXCLUDED.raw_data"
+                  pnl_ratio = EXCLUDED.pnl_ratio"
             )
             .bind(&pos.exchange)
             .bind("futures") // 持仓主要是合约
@@ -170,7 +164,6 @@ impl AccountRepository {
             .bind(pos.break_even_price)
             .bind(pos.isolated_wallet)
             .bind(pnl_ratio)
-            .bind(&pos.raw_data)
             .execute(&mut *tx)
             .await?;
         }
@@ -396,7 +389,6 @@ impl AccountRepository {
             maint_margin: r.get("maint_margin"),
             margin_ratio: r.get("margin_ratio"),
             position_count: r.get("position_count"),
-            raw_data: r.get("raw_data"),
         }
     }
 
@@ -435,7 +427,6 @@ impl AccountRepository {
             notional: r.get("notional"),
             break_even_price: r.get("break_even_price"),
             isolated_wallet: r.get("isolated_wallet"),
-            raw_data: r.get("raw_data"),
         }
     }
 }

@@ -1137,7 +1137,6 @@ impl trading_common::data::account_types::AccountProvider for BinanceSpotAdapter
             maint_margin: None,
             margin_ratio: account.margin_ratio,
             position_count: 0,
-            raw_data: None,
         })
     }
 

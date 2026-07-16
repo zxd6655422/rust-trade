@@ -1,6 +1,10 @@
 // main.rs
 // 交易引擎入口
 //
+// 统一启动模式：同时运行交易和账户信息同步
+// - 交易：从策略服务获取信号，执行买卖操作
+// - 账户同步：定时采集各交易所的账户余额、持仓等信息
+//
 // 交易所配置从数据库 exchange_config 表加载
 // 前端可动态管理交易所实例（增删改查、启用禁用）
 
@@ -38,18 +42,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
 
     match args.get(1).map(|s| s.as_str()) {
-        Some("live") => run_live_mode(&args).await,
-        Some("account") => run_account_mode(&args).await,
         Some("--help") | Some("-h") => {
             print_usage();
             Ok(())
         }
-        None => run_live_mode(&args).await,
-        _ => {
-            error!("❌ Unknown command: {}", args[1]);
-            print_usage();
-            std::process::exit(1);
-        }
+        _ => run().await,
     }
 }
 
@@ -57,10 +54,12 @@ fn print_usage() {
     println!("Trading Engine - Automated Trading System");
     println!();
     println!("Usage:");
-    println!("  cargo run                 # Run in live mode (trading + account polling)");
-    println!("  cargo run live            # Run in live mode (trading + account polling)");
-    println!("  cargo run account         # Run account polling only (no trading)");
+    println!("  cargo run                 # Start trading engine");
     println!("  cargo run --help          # Show this help message");
+    println!();
+    println!("Features:");
+    println!("  - Auto trading: Execute signals from strategy service");
+    println!("  - Account sync: Poll account balances, positions from exchanges");
     println!();
     println!("Configuration:");
     println!("  config/engine-development.toml  # DB/Redis/Risk config");
@@ -68,9 +67,10 @@ fn print_usage() {
     println!();
 }
 
-async fn run_live_mode(_args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    info!("Starting Trading Engine in live mode");
-
+/// 统一启动入口
+///
+/// 同时启动交易引擎和账户信息同步服务
+async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let settings = Settings::new()?;
     info!("✅ Configuration loaded");
 
@@ -108,20 +108,46 @@ async fn run_live_mode(_args: &[String]) -> Result<(), Box<dyn std::error::Error
             config.id, config.exchange_id, config.market_type, config.leverage);
     }
 
-    // 创建持仓仓储
+    // ============ 创建共享资源 ============
+
+    // 持仓仓储
     let position_repo = Arc::new(PositionRepository::new(pool.clone()));
 
-    // 创建止损止盈仓储（持久化）
+    // 止损止盈仓储（持久化）
     let stop_order_repo = Arc::new(StopOrderRepository::new(pool.clone()));
     info!("✅ Stop order repository created");
 
-    // 创建订单仓储（持久化）
+    // 订单仓储（持久化）
     let order_repo = Arc::new(OrderRepository::new(pool.clone()));
     info!("✅ Order repository created");
 
-    // 创建风控引擎（所有 TradingUnit 共享）
+    // 风控引擎（所有 TradingUnit 共享）
     let risk_engine = Arc::new(RiskEngine::new(settings.risk_control.clone()));
     info!("✅ Risk engine created");
+
+    // 账户数据仓储
+    let account_repo = Arc::new(trading_common::data::account_repository::AccountRepository::new(pool.clone()));
+    info!("✅ Account repository created");
+
+    // ============ 启动账户同步服务 ============
+    {
+        let account_configs = exchange_configs.clone();
+        let account_repo = account_repo.clone();
+
+        tokio::spawn(async move {
+            let poller = service::account_poller::AccountPoller::new(
+                account_configs,
+                account_repo,
+                service::account_poller::AccountPollerConfig::default(),
+            );
+
+            info!("📊 Account Poller starting...");
+            poller.start().await;
+        });
+    }
+    info!("✅ Account Poller started (background)");
+
+    // ============ 启动交易引擎 ============
 
     // 创建 TradingUnit
     let mut trading_units = Vec::new();
@@ -160,61 +186,15 @@ async fn run_live_mode(_args: &[String]) -> Result<(), Box<dyn std::error::Error
     ));
 
     info!("🎯 Trading Engine ready");
+    info!("   - Trading: Active (signal polling)");
+    info!("   - Account sync: Active (60s interval)");
     info!("Starting main loop...");
 
-    // 启动主循环
+    // 启动主循环（阻塞）
     signal_poller.start().await;
 
     database.close().await;
     info!("👋 Trading Engine stopped");
-
-    Ok(())
-}
-
-/// 账户信息轮询模式（不启动自动交易）
-///
-/// 只采集账户信息（余额、持仓等），不执行交易信号
-/// 适合只做监控、不想开自动交易的场景
-async fn run_account_mode(_args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    info!("Starting Trading Engine in account-only mode (no trading)");
-
-    let settings = Settings::new()?;
-    info!("✅ Configuration loaded");
-
-    // 创建数据库连接
-    let database = Database::new(&settings.database).await?;
-    let pool = database.pool().clone();
-    info!("✅ Database connected");
-
-    // 从数据库加载交易所配置
-    let exchange_repo = ExchangeRepository::new(pool.clone());
-    let exchange_configs = exchange_repo.load_enabled().await?;
-
-    if exchange_configs.is_empty() {
-        error!("❌ No enabled exchanges in database!");
-        return Err("No enabled exchanges configured".into());
-    }
-
-    info!("📋 Loaded {} enabled exchange configs", exchange_configs.len());
-
-    // 创建账户仓储
-    let account_repo = Arc::new(trading_common::data::account_repository::AccountRepository::new(pool.clone()));
-
-    // 创建账户轮询器
-    let poller = service::account_poller::AccountPoller::new(
-        exchange_configs,
-        account_repo,
-        service::account_poller::AccountPollerConfig::default(),
-    );
-
-    info!("📊 Account Poller starting...");
-    info!("   Press Ctrl+C to stop");
-
-    // 启动轮询（无限循环）
-    poller.start().await;
-
-    database.close().await;
-    info!("👋 Account Poller stopped");
 
     Ok(())
 }

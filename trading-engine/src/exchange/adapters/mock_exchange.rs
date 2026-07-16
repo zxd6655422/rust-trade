@@ -725,7 +725,6 @@ impl trading_common::data::account_types::AccountProvider for MockExchange {
             maint_margin: None,
             margin_ratio: account.margin_ratio,
             position_count: 0,
-            raw_data: None,
         })
     }
 
@@ -754,6 +753,10 @@ impl trading_common::data::account_types::AccountProvider for MockExchange {
     }
 
     async fn get_positions(&self) -> trading_common::data::types::DataResult<Vec<trading_common::data::account_types::PositionInfo>> {
+        // 先获取账户信息以得到 uid
+        let account = TradingOperations::get_account(self).await
+            .map_err(|e| trading_common::data::types::DataError::InvalidFormat(e.to_string()))?;
+
         let positions = TradingOperations::get_positions(self).await
             .map_err(|e| trading_common::data::types::DataError::InvalidFormat(e.to_string()))?;
 
@@ -761,7 +764,7 @@ impl trading_common::data::account_types::AccountProvider for MockExchange {
         Ok(positions.iter().map(|p| {
             trading_common::data::account_types::PositionInfo {
                 exchange: "mock".to_string(),
-                uid: None,
+                uid: account.uid.clone(),
                 symbol: p.symbol.clone(),
                 raw_symbol: p.symbol.clone(),
                 snapshot_at: now,
@@ -782,8 +785,7 @@ impl trading_common::data::account_types::AccountProvider for MockExchange {
                 notional: p.quantity * p.mark_price.unwrap_or_default(),
                 break_even_price: None,
                 isolated_wallet: None,
-                raw_data: None,
-            }
+                }
         }).collect())
     }
 

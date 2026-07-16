@@ -1,5 +1,58 @@
 # Changelog
 
+## [2026-07-16] 账户同步优化
+
+### 优化目标
+- 统一 trading-engine 启动模式，同时支持交易和账户同步
+- 修复 Binance/OKX uid 获取问题
+- 优化 account_snapshot 表存储空间（移除未使用的 raw_data JSONB 字段）
+
+### 数据库变更
+
+| 表名 | 变更 | 说明 |
+|------|------|------|
+| account_snapshot | 删除字段 | `raw_data` (JSONB) - 未使用，占用大量空间 |
+| position_snapshot | 删除字段 | `raw_data` (JSONB) - 未使用 |
+| account_snapshot | 修改约束 | 唯一约束包含 uid，支持多用户 |
+| asset_balance | 修改约束 | 唯一约束包含 uid |
+| position_snapshot | 修改约束 | 唯一约束包含 uid |
+| trading_orders | 新增字段 | `market_type`, `uid`, `position_side`, `source`, `signal_id`, `strategy_id` |
+| positions | 新增字段 | `uid`, `leverage`, `margin_type`, `liquidation_price` |
+| stop_orders | 新增字段 | `uid` |
+
+**SQL 脚本**:
+- `sql/core/account_snapshot_optimize.sql` - 优化表结构，删除 raw_data
+- `sql/core/account_snapshot_uid_unique.sql` - 更新唯一约束
+
+### 代码变更
+
+| 文件 | 变更说明 |
+|------|----------|
+| trading-engine/src/main.rs | 统一启动模式，移除 live/account 分离 |
+| trading-engine/src/exchange/adapters/binance_adapter.rs | 修复 uid 获取（使用 API Key 前缀） |
+| trading-engine/src/exchange/adapters/okx_adapter.rs | 修复 uid 获取 |
+| trading-common/src/data/account_types.rs | 移除 raw_data 字段 |
+| trading-common/src/data/account_repository.rs | 更新 SQL，移除 raw_data |
+| trading-common/src/data/repository.rs | 更新旧版账户快照方法 |
+
+### 优化效果
+
+- 移除 `raw_data` JSONB 字段后，每条记录减少约 10-50KB
+- 几百条数据从 9MB 降至几百 KB
+- 查询性能提升（无需处理大型 JSONB）
+
+### 文件整理
+
+| 文件位置 | 说明 |
+|----------|------|
+| `sql/core/account_snapshot.sql` | 最新表结构定义（含 uid，无 raw_data） |
+| `sql/core/trading_orders.sql` | 最新表结构定义（含 market_type, uid 等新字段） |
+| `version/v1.0/sql/20260716_账户快照表结构优化.sql` | 合并迁移脚本（添加uid+更新约束+删除raw_data） |
+| `version/v1.0/sql/20260716_订单表添加market_type_uid等字段.sql` | 迁移脚本 |
+| `version/v1.0/sql/20260716_持仓和止损表添加uid等字段.sql` | 迁移脚本 |
+
+---
+
 ## [2025-07-15] 策略管理优化
 
 ### 优化目标

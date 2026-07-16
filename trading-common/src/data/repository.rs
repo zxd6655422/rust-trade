@@ -2741,14 +2741,13 @@ impl TickDataRepository {
         maint_margin: Option<Decimal>,
         margin_ratio: Option<Decimal>,
         position_count: i32,
-        raw_data: Option<serde_json::Value>,
     ) -> DataResult<()> {
         sqlx::query(
             "INSERT INTO account_snapshot \
              (exchange, market_type, snapshot_at, total_equity, total_balance, \
               available_balance, frozen_balance, unrealized_pnl, \
-              initial_margin, maint_margin, margin_ratio, position_count, raw_data) \
-             VALUES ($1, $2, NOW(), $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
+              initial_margin, maint_margin, margin_ratio, position_count) \
+             VALUES ($1, $2, NOW(), $3, $4, $5, $6, $7, $8, $9, $10, $11) \
              ON CONFLICT (exchange, market_type, snapshot_at) DO UPDATE SET \
               total_equity = EXCLUDED.total_equity, \
               total_balance = EXCLUDED.total_balance, \
@@ -2758,8 +2757,7 @@ impl TickDataRepository {
               initial_margin = EXCLUDED.initial_margin, \
               maint_margin = EXCLUDED.maint_margin, \
               margin_ratio = EXCLUDED.margin_ratio, \
-              position_count = EXCLUDED.position_count, \
-              raw_data = EXCLUDED.raw_data"
+              position_count = EXCLUDED.position_count"
         )
         .bind(exchange)
         .bind(market_type)
@@ -2772,7 +2770,6 @@ impl TickDataRepository {
         .bind(maint_margin)
         .bind(margin_ratio)
         .bind(position_count)
-        .bind(raw_data)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -2835,15 +2832,14 @@ impl TickDataRepository {
         break_even_price: Option<Decimal>,
         isolated_wallet: Option<Decimal>,
         pnl_ratio: Option<Decimal>,
-        raw_data: Option<serde_json::Value>,
     ) -> DataResult<()> {
         sqlx::query(
             "INSERT INTO position_snapshot \
              (exchange, market_type, symbol, raw_symbol, snapshot_at, position_side, position_amt, \
               entry_price, mark_price, unrealized_pnl, leverage, margin_type, \
               initial_margin, maint_margin, liquidation_price, notional, \
-              break_even_price, isolated_wallet, pnl_ratio, raw_data) \
-             VALUES ($1, $2, $3, $4, NOW(), $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19) \
+              break_even_price, isolated_wallet, pnl_ratio) \
+             VALUES ($1, $2, $3, $4, NOW(), $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) \
              ON CONFLICT (exchange, symbol, position_side, snapshot_at) DO UPDATE SET \
               position_amt = EXCLUDED.position_amt, \
               entry_price = EXCLUDED.entry_price, \
@@ -2857,8 +2853,7 @@ impl TickDataRepository {
               notional = EXCLUDED.notional, \
               break_even_price = EXCLUDED.break_even_price, \
               isolated_wallet = EXCLUDED.isolated_wallet, \
-              pnl_ratio = EXCLUDED.pnl_ratio, \
-              raw_data = EXCLUDED.raw_data"
+              pnl_ratio = EXCLUDED.pnl_ratio"
         )
         .bind(exchange)
         .bind(market_type)
@@ -2878,7 +2873,6 @@ impl TickDataRepository {
         .bind(break_even_price)
         .bind(isolated_wallet)
         .bind(pnl_ratio)
-        .bind(raw_data)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -2914,7 +2908,6 @@ impl TickDataRepository {
             maint_margin: r.get("maint_margin"),
             margin_ratio: r.get("margin_ratio"),
             position_count: r.get("position_count"),
-            raw_data: r.get("raw_data"),
         }))
     }
 
@@ -2969,7 +2962,6 @@ impl TickDataRepository {
             notional: r.get("notional"),
             break_even_price: r.get("break_even_price"),
             isolated_wallet: r.get("isolated_wallet"),
-            raw_data: r.get("raw_data"),
         }).collect())
     }
 

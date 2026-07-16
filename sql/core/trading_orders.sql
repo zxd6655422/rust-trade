@@ -1,28 +1,44 @@
--- public.trading_orders 定义
+-- =================================================================
+-- trading_orders 表结构
+-- 记录所有交易订单信息
+-- 更新时间：2026-07-16
+-- =================================================================
 
--- Drop table
+CREATE TABLE IF NOT EXISTS trading_orders (
+    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    order_id VARCHAR(50) NOT NULL,              -- 交易所订单ID
+    exchange VARCHAR(20) NOT NULL,              -- 'binance' / 'okx'
+    market_type VARCHAR(10) NOT NULL DEFAULT 'futures',  -- 'spot' / 'futures'
+    uid VARCHAR(20),                            -- 用户标识（API Key 前缀）
+    symbol VARCHAR(20) NOT NULL,                -- 交易对
+    side VARCHAR(4) NOT NULL,                   -- 'BUY' / 'SELL'
+    order_type VARCHAR(20) NOT NULL,            -- 'MARKET' / 'LIMIT' / 'STOP_MARKET' 等
+    position_side VARCHAR(10) DEFAULT 'BOTH',   -- 'LONG' / 'SHORT' / 'BOTH'
+    quantity DECIMAL(20, 8) NOT NULL,           -- 下单数量
+    price DECIMAL(20, 8),                       -- 下单价格（市价单为NULL）
+    stop_price DECIMAL(20, 8),                  -- 止损/止盈触发价格
+    status VARCHAR(20) NOT NULL,                -- 'NEW' / 'FILLED' / 'CANCELED' / 'REJECTED'
+    filled_quantity DECIMAL(20, 8) DEFAULT 0,   -- 已成交数量
+    avg_price DECIMAL(20, 8),                   -- 成交均价
+    commission DECIMAL(20, 8),                  -- 手续费
+    commission_asset VARCHAR(10),               -- 手续费资产
+    client_order_id VARCHAR(50),                -- 客户端订单ID
+    time_in_force VARCHAR(10) DEFAULT 'GTC',    -- 'GTC' / 'IOC' / 'FOK'
+    source VARCHAR(20) NOT NULL DEFAULT 'unknown',  -- 'auto' / 'manual' / 'unknown'
+    signal_id UUID,                             -- 关联策略信号ID
+    strategy_id VARCHAR(50),                    -- 关联策略实例ID
+    created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+    updated_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
 
--- DROP TABLE public.trading_orders;
-
-CREATE TABLE public.trading_orders (
-	id uuid DEFAULT gen_random_uuid() NOT NULL,
-	order_id varchar(50) NOT NULL,
-	exchange varchar(20) NOT NULL,
-	symbol varchar(20) NOT NULL,
-	side varchar(4) NOT NULL,
-	order_type varchar(20) NOT NULL,
-	quantity numeric(20, 8) NOT NULL,
-	price numeric(20, 8) NULL,
-	status varchar(20) NOT NULL,
-	filled_quantity numeric(20, 8) DEFAULT 0 NULL,
-	avg_price numeric(20, 8) NULL,
-	commission numeric(20, 8) NULL,
-	commission_asset varchar(10) NULL,
-	client_order_id varchar(50) NULL,
-	created_at timestamptz DEFAULT now() NOT NULL,
-	updated_at timestamptz DEFAULT now() NOT NULL,
-	CONSTRAINT trading_orders_order_id_exchange_key UNIQUE (order_id, exchange),
-	CONSTRAINT trading_orders_pkey PRIMARY KEY (id)
+    CONSTRAINT trading_orders_order_id_exchange_key UNIQUE (order_id, exchange)
 );
-CREATE INDEX idx_orders_status ON public.trading_orders USING btree (status);
-CREATE INDEX idx_orders_symbol ON public.trading_orders USING btree (symbol);
+
+-- 查询索引
+CREATE INDEX IF NOT EXISTS idx_orders_status ON trading_orders(status);
+CREATE INDEX IF NOT EXISTS idx_orders_symbol ON trading_orders(symbol);
+CREATE INDEX IF NOT EXISTS idx_orders_market_type ON trading_orders(market_type);
+CREATE INDEX IF NOT EXISTS idx_orders_uid ON trading_orders(uid);
+CREATE INDEX IF NOT EXISTS idx_orders_source ON trading_orders(source);
+CREATE INDEX IF NOT EXISTS idx_orders_signal ON trading_orders(signal_id);
+CREATE INDEX IF NOT EXISTS idx_orders_strategy ON trading_orders(strategy_id);
+CREATE INDEX IF NOT EXISTS idx_orders_created ON trading_orders(created_at DESC);

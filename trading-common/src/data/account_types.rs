@@ -74,9 +74,6 @@ pub struct AccountSnapshot {
 
     // ============ 持仓相关 ============
     pub position_count: i32,
-
-    // ============ 原始数据 ============
-    pub raw_data: Option<serde_json::Value>,
 }
 
 impl AccountSnapshot {
@@ -245,9 +242,6 @@ pub struct PositionInfo {
     pub break_even_price: Option<Decimal>,
     /// 逐仓钱包余额 (Binance: isolatedWallet)
     pub isolated_wallet: Option<Decimal>,
-
-    // ============ 原始数据 ============
-    pub raw_data: Option<serde_json::Value>,
 }
 
 impl PositionInfo {

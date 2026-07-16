@@ -773,6 +773,9 @@ impl TradingOperations for OkxAdapter {
             .and_then(|d| d["mgnRatio"].as_str())
             .and_then(|s| Decimal::from_str(s).ok());
 
+        // OKX API 不直接返回 uid，使用 API Key 前 8 位作为标识
+        let uid = Some(format!("okx_{}", &self.config.api_key[..8.min(self.config.api_key.len())]));
+
         Ok(AccountInfo {
             balances,
             total_equity,
@@ -780,7 +783,7 @@ impl TradingOperations for OkxAdapter {
             unrealized_pnl,
             margin_used,
             margin_ratio,
-            uid: None, // TODO: 从 /api/v5/account/config 获取
+            uid,
         })
     }
 
@@ -1562,7 +1565,6 @@ impl trading_common::data::account_types::AccountProvider for OkxAdapter {
             maint_margin: None,
             margin_ratio: account.margin_ratio,
             position_count: 0,
-            raw_data: None,
         })
     }
 
@@ -1591,6 +1593,10 @@ impl trading_common::data::account_types::AccountProvider for OkxAdapter {
     }
 
     async fn get_positions(&self) -> trading_common::data::types::DataResult<Vec<trading_common::data::account_types::PositionInfo>> {
+        // 先获取账户信息以得到 uid
+        let account = TradingOperations::get_account(self).await
+            .map_err(|e| trading_common::data::types::DataError::InvalidFormat(e.to_string()))?;
+
         let positions = TradingOperations::get_positions(self).await
             .map_err(|e| trading_common::data::types::DataError::InvalidFormat(e.to_string()))?;
 
@@ -1598,7 +1604,7 @@ impl trading_common::data::account_types::AccountProvider for OkxAdapter {
         Ok(positions.iter().map(|p| {
             trading_common::data::account_types::PositionInfo {
                 exchange: "okx".to_string(),
-                uid: None,
+                uid: account.uid.clone(),
                 symbol: p.symbol.clone(),
                 raw_symbol: p.symbol.clone(),
                 snapshot_at: now,
@@ -1619,8 +1625,7 @@ impl trading_common::data::account_types::AccountProvider for OkxAdapter {
                 notional: p.quantity * p.mark_price.unwrap_or_default(),
                 break_even_price: None,
                 isolated_wallet: None,
-                raw_data: None,
-            }
+                }
         }).collect())
     }
 
