@@ -72,7 +72,7 @@ CREATE TABLE IF NOT EXISTS position_snapshot (
     position_side VARCHAR(10) NOT NULL,     -- 'LONG' / 'SHORT' / 'BOTH' / 'NET'
     position_amt DECIMAL(20,8) NOT NULL,    -- 持仓数量
     entry_price DECIMAL(20,8) NOT NULL,     -- 开仓均价
-    mark_price DECIMAL(20,8) NOT NULL,      -- 标记价格
+    mark_price DECIMAL(20,8),               -- 标记价格（/fapi/v2/account 不返回此字段）
     unrealized_pnl DECIMAL(20,8) NOT NULL,  -- 未实现盈亏
 
     -- ============ 杠杆和保证金 ============
