@@ -776,8 +776,12 @@ impl TradingOperations for OkxAdapter {
         // OKX API 不直接返回 uid，使用 API Key 前 8 位作为标识
         let uid = Some(format!("okx_{}", &self.config.api_key[..8.min(self.config.api_key.len())]));
 
+        // OKX 需要单独调用 /api/v5/account/positions 获取持仓，这里先传空
+        let positions = vec![];
+
         Ok(AccountInfo {
             balances,
+            positions,
             total_equity,
             available_balance: available,
             unrealized_pnl,

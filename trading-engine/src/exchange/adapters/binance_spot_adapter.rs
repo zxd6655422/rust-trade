@@ -276,6 +276,7 @@ impl BinanceSpotAdapter {
 
         Ok(AccountInfo {
             balances,
+            positions: vec![], // 现货没有持仓
             total_equity,
             available_balance: total_equity,
             unrealized_pnl: Decimal::ZERO,

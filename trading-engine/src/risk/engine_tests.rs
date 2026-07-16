@@ -33,6 +33,7 @@ mod tests {
                 free: equity,
                 locked: Decimal::ZERO,
             }],
+            positions: vec![],
             total_equity: equity,
             available_balance: equity,
             unrealized_pnl: Decimal::ZERO,

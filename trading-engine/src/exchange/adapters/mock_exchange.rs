@@ -319,6 +319,7 @@ impl TradingOperations for MockExchange {
 
         Ok(AccountInfo {
             balances,
+            positions: vec![], // Mock 简化处理，持仓通过 get_positions() 获取
             total_equity: account.balance + unrealized_pnl,
             available_balance: account.balance,
             unrealized_pnl,

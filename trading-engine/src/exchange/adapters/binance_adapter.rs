@@ -330,6 +330,42 @@ impl BinanceAdapter {
             })
             .unwrap_or_default();
 
+        // 解析持仓信息
+        let positions: Vec<PositionInfo> = data["positions"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|p| {
+                        let symbol = p["symbol"].as_str()?.to_string();
+                        let position_amt = Decimal::from_str(p["positionAmt"].as_str()?).ok()?;
+
+                        // 跳过空仓位
+                        if position_amt == Decimal::ZERO {
+                            return None;
+                        }
+
+                        let side = if position_amt > Decimal::ZERO {
+                            PositionSide::Long
+                        } else {
+                            PositionSide::Short
+                        };
+
+                        Some(PositionInfo {
+                            symbol,
+                            side,
+                            quantity: position_amt.abs(),
+                            avg_entry_price: Decimal::from_str(p["entryPrice"].as_str().unwrap_or("0")).unwrap_or_default(),
+                            mark_price: Decimal::from_str(p["markPrice"].as_str().unwrap_or("0")).ok(),
+                            unrealized_pnl: Decimal::from_str(p["unrealizedProfit"].as_str().unwrap_or("0")).unwrap_or_default(),
+                            leverage: p["leverage"].as_str().and_then(|s| s.parse().ok()).unwrap_or(1),
+                            margin: Decimal::from_str(p["isolatedMargin"].as_str().unwrap_or("0")).unwrap_or_default(),
+                            liquidation_price: Decimal::from_str(p["liquidationPrice"].as_str().unwrap_or("0")).ok().filter(|d| *d > Decimal::ZERO),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
         let total_wallet: Decimal = Decimal::from_str(
             data["totalWalletBalance"].as_str().unwrap_or("0")
         ).unwrap_or_default();
@@ -349,6 +385,7 @@ impl BinanceAdapter {
 
         Ok(AccountInfo {
             balances,
+            positions,
             total_equity: total_wallet + unrealized_pnl,
             available_balance: available,
             unrealized_pnl,
@@ -1449,7 +1486,7 @@ impl trading_common::data::account_types::AccountProvider for BinanceAdapter {
             initial_margin: Some(account.total_initial_margin),
             maint_margin: Some(account.total_maint_margin),
             margin_ratio: account.account_info.margin_ratio,
-            position_count: 0, // 需要额外查询
+            position_count: account.account_info.positions.len() as u32,
         })
     }
 

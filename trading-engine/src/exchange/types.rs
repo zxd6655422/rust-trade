@@ -215,6 +215,7 @@ pub struct Balance {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountInfo {
     pub balances: Vec<Balance>,
+    pub positions: Vec<PositionInfo>,
     pub total_equity: Decimal,
     pub available_balance: Decimal,
     pub unrealized_pnl: Decimal,
