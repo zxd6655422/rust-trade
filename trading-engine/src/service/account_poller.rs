@@ -113,9 +113,20 @@ impl AccountPoller {
         let account_provider = exchange.as_account_provider();
 
         // 获取 uid（优先使用缓存）
-        let uid = self.get_or_fetch_uid(config, account_provider).await?;
+        let uid = match self.get_or_fetch_uid(config, account_provider).await {
+            Ok(uid) => uid,
+            Err(e) => {
+                error!("❌ Failed to get uid for {}: {}", config.id, e);
+                error!("   请检查:");
+                error!("   1. API Key 是否正确配置");
+                error!("   2. API Key 是否有读取权限");
+                error!("   3. 服务器 IP 是否在 API Key 白名单中");
+                error!("   4. 是否使用了正确的网络 (testnet/mainnet)");
+                return Err(e);
+            }
+        };
 
-        // 获取账户快照（使用 AccountProvider 的方法）
+        // 获取账户快照
         match account_provider.get_account_snapshot(&config.market_type).await {
             Ok(mut snapshot) => {
                 snapshot.uid = Some(uid.clone());
@@ -124,11 +135,12 @@ impl AccountPoller {
                 }
             }
             Err(e) => {
-                warn!("Failed to get account snapshot for {}: {}", config.id, e);
+                error!("❌ Failed to get account snapshot for {}: {}", config.id, e);
+                self.log_api_error_hint(config, &e);
             }
         }
 
-        // 获取资产余额（使用 AccountProvider 的方法）
+        // 获取资产余额
         match account_provider.get_asset_balances(&config.market_type).await {
             Ok(mut balances) => {
                 for b in &mut balances {
@@ -139,11 +151,12 @@ impl AccountPoller {
                 }
             }
             Err(e) => {
-                warn!("Failed to get asset balances for {}: {}", config.id, e);
+                error!("❌ Failed to get asset balances for {}: {}", config.id, e);
+                self.log_api_error_hint(config, &e);
             }
         }
 
-        // 获取持仓（主要是合约，使用 AccountProvider 的方法）
+        // 获取持仓（主要是合约）
         if config.market_type == "futures" || config.market_type == "swap" {
             match account_provider.get_positions().await {
                 Ok(mut positions) => {
@@ -155,13 +168,47 @@ impl AccountPoller {
                     }
                 }
                 Err(e) => {
-                    warn!("Failed to get positions for {}: {}", config.id, e);
+                    error!("❌ Failed to get positions for {}: {}", config.id, e);
+                    self.log_api_error_hint(config, &e);
                 }
             }
         }
 
         info!("✅ Account poll completed for {} (uid={})", config.id, uid);
         Ok(())
+    }
+
+    /// 输出 API 错误的排查提示
+    fn log_api_error_hint(&self, config: &ExchangeInstanceConfig, error: &trading_common::data::types::DataError) {
+        let error_msg = error.to_string().to_lowercase();
+
+        if error_msg.contains("-2015") || error_msg.contains("permission") || error_msg.contains("权限") {
+            error!("   💡 提示: API Key 权限不足");
+            error!("      请在 {} 后台检查 API Key 权限设置", config.exchange_id);
+            error!("      只读权限即可查询账户信息，无需交易权限");
+            if config.exchange_id == "binance" || config.exchange_id == "binance-spot" {
+                error!("      Binance: API 管理 → 编辑 API Key → 勾选「读取」权限");
+            } else if config.exchange_id == "okx" || config.exchange_id == "okx-spot" {
+                error!("      OKX: API 管理 → 编辑 API Key → 权限选择「读取」");
+            }
+        } else if error_msg.contains("-2016") || error_msg.contains("ip") {
+            error!("   💡 提示: IP 白名单问题");
+            error!("      请将当前服务器 IP 添加到 API Key 白名单");
+            error!("      或者在交易所后台将 IP 白名单设置为空（不限制 IP）");
+        } else if error_msg.contains("-2014") || error_msg.contains("authentication") || error_msg.contains("invalid") {
+            error!("   💡 提示: API Key 配置问题");
+            let env_prefix = config.id.to_uppercase().replace("-", "_");
+            error!("      请检查环境变量 {}_API_KEY 和 {}_API_SECRET", env_prefix, env_prefix);
+        } else if error_msg.contains("-1021") || error_msg.contains("timestamp") {
+            error!("   💡 提示: 时间戳问题");
+            error!("      请检查服务器时间是否准确，或增大 recvWindow");
+        } else if error_msg.contains("network") || error_msg.contains("timeout") || error_msg.contains("连接") {
+            error!("   💡 提示: 网络连接问题");
+            error!("      请检查服务器是否能访问交易所 API");
+            if config.testnet {
+                error!("      当前使用测试网，请确认测试网地址可访问");
+            }
+        }
     }
 
     /// 获取或缓存 uid

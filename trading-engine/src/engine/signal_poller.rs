@@ -220,6 +220,9 @@ impl SignalPoller {
             );
 
             // 广播到所有已启用的 TradingUnit
+            let mut any_success = false;
+            let mut last_error = String::new();
+
             for unit in &self.trading_units {
                 if !unit.enabled { continue; }
 
@@ -230,18 +233,26 @@ impl SignalPoller {
                             "[{}] Signal executed: {} -> order_id={}",
                             unit_id, signal_id, result.order_id
                         );
+                        any_success = true;
                     }
                     Err(e) => {
                         warn!(
                             "[{}] Signal execution failed: {} - {}",
                             unit_id, signal_id, e
                         );
+                        last_error = e.to_string();
                     }
                 }
             }
 
-            // 标记信号为已执行（只要有一个 unit 成功就标记）
-            self.mark_signal_executed(signal_id, "broadcast").await;
+            // 根据执行结果标记信号状态
+            if any_success {
+                self.mark_signal_executed(signal_id, "broadcast").await;
+            } else {
+                // 所有 unit 都失败，标记为失败
+                warn!("All trading units failed for signal {}, marking as failed", signal_id);
+                self.mark_signal_failed(signal_id, &last_error).await;
+            }
         }
 
         Ok(())
@@ -303,6 +314,28 @@ impl SignalPoller {
         .await
         {
             warn!("Failed to mark signal as rejected: {}", e);
+        }
+    }
+
+    /// 标记信号为失败
+    async fn mark_signal_failed(&self, signal_id: Uuid, reason: &str) {
+        // 截断过长的错误信息
+        let truncated_reason = if reason.len() > 200 {
+            &reason[..200]
+        } else {
+            reason
+        };
+
+        if let Err(e) = sqlx::query(
+            "UPDATE strategy_signals SET status='failed', closed_reason=$2 \
+             WHERE id=$1 AND status='pending'"
+        )
+        .bind(signal_id)
+        .bind(truncated_reason)
+        .execute(&self.pool)
+        .await
+        {
+            warn!("Failed to mark signal as failed: {}", e);
         }
     }
 
