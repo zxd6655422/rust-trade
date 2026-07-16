@@ -51,6 +51,7 @@
 | `version/v1.0/sql/20260716_订单表添加market_type_uid等字段.sql` | 迁移脚本 |
 | `version/v1.0/sql/20260716_持仓和止损表添加uid等字段.sql` | 迁移脚本 |
 | `version/v1.0/sql/20260716_策略信号表添加状态值.sql` | 添加 executed/failed/rejected 状态 |
+| `version/v1.0/sql/20260716_策略信号表扩展字段长度.sql` | closed_reason 从 50 扩展到 500 |
 
 ---
 

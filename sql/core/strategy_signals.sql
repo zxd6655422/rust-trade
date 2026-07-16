@@ -17,7 +17,7 @@ CREATE TABLE public.strategy_signals (
 	order_id varchar(100) NULL,
 	executed bool DEFAULT false NOT NULL,
 	status varchar(20) DEFAULT 'pending'::character varying NOT NULL,
-	closed_reason varchar(50) NULL,
+	closed_reason varchar(500) NULL,
 	evaluated_at timestamptz NULL,
 	best_price numeric(20, 8) NULL,
 	worst_price numeric(20, 8) NULL,

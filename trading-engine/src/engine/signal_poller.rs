@@ -304,12 +304,19 @@ impl SignalPoller {
 
     /// 标记信号为已拒绝
     async fn mark_signal_rejected(&self, signal_id: Uuid, reason: &str) {
+        // 截断错误信息，closed_reason 字段限制 500 字符
+        let truncated_reason = if reason.len() > 495 {
+            format!("{}...", &reason[..495])
+        } else {
+            reason.to_string()
+        };
+
         if let Err(e) = sqlx::query(
             "UPDATE strategy_signals SET status='rejected', closed_reason=$2 \
              WHERE id=$1 AND status='pending'"
         )
         .bind(signal_id)
-        .bind(reason)
+        .bind(&truncated_reason)
         .execute(&self.pool)
         .await
         {
@@ -319,11 +326,11 @@ impl SignalPoller {
 
     /// 标记信号为失败
     async fn mark_signal_failed(&self, signal_id: Uuid, reason: &str) {
-        // 截断过长的错误信息
-        let truncated_reason = if reason.len() > 200 {
-            &reason[..200]
+        // 截断错误信息，closed_reason 字段限制 500 字符
+        let truncated_reason = if reason.len() > 495 {
+            format!("{}...", &reason[..495])
         } else {
-            reason
+            reason.to_string()
         };
 
         if let Err(e) = sqlx::query(
@@ -331,7 +338,7 @@ impl SignalPoller {
              WHERE id=$1 AND status='pending'"
         )
         .bind(signal_id)
-        .bind(truncated_reason)
+        .bind(&truncated_reason)
         .execute(&self.pool)
         .await
         {
