@@ -137,8 +137,31 @@ impl Settings {
 
         // 从环境变量覆盖 API Key (不存储在配置文件中)
         // API Key 应该通过环境变量传入
-        if std::env::var("BINANCE_API_KEY").is_ok() {
-            tracing::info!("Binance API key loaded from environment");
+        if let Ok(api_key) = std::env::var("BINANCE_API_KEY") {
+            let masked_key = if api_key.len() > 8 {
+                format!("{}...", &api_key[..8])
+            } else {
+                "***".to_string()
+            };
+            tracing::info!("Binance API key loaded: {}", masked_key);
+        }
+
+        if let Ok(futures_key) = std::env::var("BINANCE_FUTURES_API_KEY") {
+            let masked_key = if futures_key.len() > 8 {
+                format!("{}...", &futures_key[..8])
+            } else {
+                "***".to_string()
+            };
+            tracing::info!("Binance Futures API key loaded: {}", masked_key);
+        }
+
+        if let Ok(spot_key) = std::env::var("BINANCE_SPOT_API_KEY") {
+            let masked_key = if spot_key.len() > 8 {
+                format!("{}...", &spot_key[..8])
+            } else {
+                "***".to_string()
+            };
+            tracing::info!("Binance Spot API key loaded: {}", masked_key);
         }
 
         let s = builder.build()?;
@@ -226,7 +249,7 @@ fn determine_env_filename() -> String {
     format!(".env.{}", run_mode)
 }
 
-/// 加载环境变量（支持 config/ 目录）
+/// 加载环境变量（支持 config/ 目录，兼容 systemd 服务）
 pub fn load_env() {
     let run_mode = std::env::var("RUN_MODE").unwrap_or_else(|_| {
         if cfg!(debug_assertions) { "development".into() } else { "production".into() }
@@ -234,7 +257,20 @@ pub fn load_env() {
 
     let env_filename = format!(".env.{}", run_mode);
 
-    // 优先从 config/ 目录加载
+    // 优先级 1: 可执行文件同级目录的 config/ 目录
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            let config_env = exe_dir.join("config").join(&env_filename);
+            if config_env.exists() {
+                if let Ok(_) = dotenvy::from_filename(&config_env) {
+                    tracing::info!("✅ Loaded env from: {:?}", config_env);
+                    return;
+                }
+            }
+        }
+    }
+
+    // 优先级 2: 当前工作目录的 config/ 目录
     let config_env_path = format!("config/{}", env_filename);
     if std::path::Path::new(&config_env_path).exists() {
         if let Ok(_) = dotenvy::from_filename(&config_env_path) {
@@ -243,11 +279,17 @@ pub fn load_env() {
         }
     }
 
-    // 回退到当前目录
-    if let Err(_) = dotenvy::from_filename(&env_filename) {
-        tracing::warn!("⚠️ {} not found, trying .env", env_filename);
-        if let Err(_) = dotenvy::dotenv() {
-            tracing::warn!("⚠️ No .env file found");
-        }
+    // 优先级 3: 当前工作目录
+    if let Ok(_) = dotenvy::from_filename(&env_filename) {
+        tracing::info!("✅ Loaded env from: {}", env_filename);
+        return;
     }
+
+    // 优先级 4: .env
+    if let Ok(_) = dotenvy::dotenv() {
+        tracing::info!("✅ Loaded env from: .env");
+        return;
+    }
+
+    tracing::warn!("⚠️ No .env file found (searched: config/{0}, {0}, .env)", env_filename);
 }

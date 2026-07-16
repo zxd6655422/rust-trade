@@ -148,6 +148,13 @@ impl BinanceAdapter {
         let query_string = self.create_signed_query(params)?;
         let url = format!("{}{}?{}", self.base_url, endpoint, query_string);
 
+        // 调试日志：打印请求信息
+        tracing::debug!(
+            "Binance API request: {} {} (key: {}...)",
+            method, endpoint,
+            &self.config.api_key[..8.min(self.config.api_key.len())]
+        );
+
         let response = match method {
             "GET" => self.client.get(&url).header("X-MBX-APIKEY", &self.config.api_key).send().await?,
             "POST" => self.client.post(&url).header("X-MBX-APIKEY", &self.config.api_key).send().await?,
@@ -168,6 +175,13 @@ impl BinanceAdapter {
                 .as_str()
                 .unwrap_or("Unknown error")
                 .to_string();
+
+            // 详细错误日志
+            tracing::warn!(
+                "Binance API error: {} {} - code={}, msg={}, api_key={}...",
+                method, endpoint, code, message,
+                &self.config.api_key[..8.min(self.config.api_key.len())]
+            );
 
             return Err(self.classify_error(code, message));
         }
