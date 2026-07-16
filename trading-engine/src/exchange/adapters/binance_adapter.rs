@@ -330,7 +330,8 @@ impl BinanceAdapter {
             })
             .unwrap_or_default();
 
-        // 解析持仓信息
+        // 解析持仓信息 (来自 /fapi/v2/account 的 positions 数组)
+        // 注意：/fapi/v2/account 和 /fapi/v2/positionRisk 返回的字段不同
         let positions: Vec<PositionInfo> = data["positions"]
             .as_array()
             .map(|arr| {
@@ -350,15 +351,19 @@ impl BinanceAdapter {
                             PositionSide::Short
                         };
 
+                        // /fapi/v2/account positions 中没有 markPrice，用 entryPrice 估算
+                        // 精确的 markPrice 需要单独调用 /fapi/v1/premiumIndex
+                        let entry_price = Decimal::from_str(p["entryPrice"].as_str().unwrap_or("0")).unwrap_or_default();
+
                         Some(PositionInfo {
                             symbol,
                             side,
                             quantity: position_amt.abs(),
-                            avg_entry_price: Decimal::from_str(p["entryPrice"].as_str().unwrap_or("0")).unwrap_or_default(),
-                            mark_price: Decimal::from_str(p["markPrice"].as_str().unwrap_or("0")).ok(),
+                            avg_entry_price: entry_price,
+                            mark_price: None, // /fapi/v2/account 不返回 markPrice
                             unrealized_pnl: Decimal::from_str(p["unrealizedProfit"].as_str().unwrap_or("0")).unwrap_or_default(),
                             leverage: p["leverage"].as_str().and_then(|s| s.parse().ok()).unwrap_or(1),
-                            margin: Decimal::from_str(p["isolatedMargin"].as_str().unwrap_or("0")).unwrap_or_default(),
+                            margin: Decimal::from_str(p["initialMargin"].as_str().unwrap_or("0")).unwrap_or_default(),
                             liquidation_price: Decimal::from_str(p["liquidationPrice"].as_str().unwrap_or("0")).ok().filter(|d| *d > Decimal::ZERO),
                         })
                     })
@@ -1515,15 +1520,12 @@ impl trading_common::data::account_types::AccountProvider for BinanceAdapter {
     }
 
     async fn get_positions(&self) -> trading_common::data::types::DataResult<Vec<trading_common::data::account_types::PositionInfo>> {
-        // 先获取账户信息以得到 uid
+        // 复用 get_futures_account 中已解析的 positions，避免额外请求 /fapi/v2/positionRisk
         let account = TradingOperations::get_futures_account(self).await
             .map_err(|e| trading_common::data::types::DataError::InvalidFormat(e.to_string()))?;
 
-        let positions = TradingOperations::get_positions(self).await
-            .map_err(|e| trading_common::data::types::DataError::InvalidFormat(e.to_string()))?;
-
         let now = chrono::Utc::now();
-        Ok(positions.iter().map(|p| {
+        Ok(account.account_info.positions.iter().map(|p| {
             trading_common::data::account_types::PositionInfo {
                 exchange: "binance".to_string(),
                 uid: account.account_info.uid.clone(),
@@ -1547,7 +1549,7 @@ impl trading_common::data::account_types::AccountProvider for BinanceAdapter {
                 notional: p.quantity * p.mark_price.unwrap_or_default(),
                 break_even_price: None,
                 isolated_wallet: None,
-                }
+            }
         }).collect())
     }
 
