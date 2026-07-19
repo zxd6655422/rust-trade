@@ -23,5 +23,5 @@
 - 数据库永远不要使用视图或者函数，如果有表结构变更，则需要记录到version/版本/sql 目录中，不要在单个文件中追加脚本。 应该以日期时间戳、更新目的加以区分， 每个表的字段都要详细的注释。
 
 # 技能
-- 架构图输出 archify
-- 前端反AI设计 hallmark
+- 架构图输出 npx skills add tt-a1i/archify -g
+- 前端反AI设计 npx skills add nutlope/hallmark
