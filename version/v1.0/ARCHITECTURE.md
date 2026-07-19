@@ -420,6 +420,289 @@ Info (记录):
 
 ---
 
+## 交易事件日志系统
+
+### 设计目标
+
+实现全链路日志持久化和实时事件推送，支持从策略推理到执行到风控的完整回放。
+
+**核心能力**：
+- `signal_id` 贯穿全链路，可追溯
+- 策略分析推理过程完整记录
+- 实时 WebSocket 事件推送
+- REST API 查询完整时间线
+
+### 完整事件链路
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        完整事件链路                                  │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  [strategy-service]                  [trading-engine]               │
+│                                                                     │
+│  ① 策略分析                          ③ 风控检查                     │
+│  StrategyAnalyzed                    RiskCheck                      │
+│  ├─ 多TF分析结果                     ├─ 熔断检查                    │
+│  ├─ 指标值                           ├─ 日亏损检查                  │
+│  ├─ 置信度                           ├─ 最大回撤检查                │
+│  └─ 推理文本(reason)                 ├─ 仓位大小检查                │
+│           │                          ├─ 总曝光度检查                │
+│           ▼                          ├─ 黑天鹅检测                  │
+│  ② 信号写入(strategy_signals)        └─ Kelly仓位调整               │
+│  signal_id = UUID           ──────────────►│                       │
+│  timeframe_details = JSON                   ▼                       │
+│  market_context = JSON               ④ 下单                        │
+│  signal_strength = DECIMAL          OrderPlaced                    │
+│  reason = TEXT                              │                       │
+│                                             ▼                       │
+│                                      ⑤ 成交                        │
+│                                      OrderFilled                    │
+│                                      ├─ 成交价                     │
+│                                      ├─ 手续费                     │
+│                                      └─ 滑点                       │
+│                                             │                       │
+│                              ┌───────────────┼───────────────┐      │
+│                              ▼               ▼               ▼      │
+│                         ⑥ 止损触发      ⑦ 止盈触发      ⑧ 风控平仓  │
+│                         StopTriggered   StopTriggered   RiskAction  │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### 数据流
+
+```
+strategy-service                    trading-engine                  trading-core
+     │                                   │                              │
+     │ ① analyze()                       │                              │
+     │    ↓                              │                              │
+     │ ② INSERT strategy_signals         │                              │
+     │    (signal_id, timeframe_details, │                              │
+     │     market_context, reason, ...)  │                              │
+     │                                   │                              │
+     │         ┌─────────────────────────┤                              │
+     │         │ ③ SELECT strategy_signals│                              │
+     │         │    (含 timeframe_details)│                              │
+     │         │    ↓                    │                              │
+     │         │ ④ risk_engine.check_order│                             │
+     │         │    ↓                    │                              │
+     │         │ ⑤ exchange.place_order   │                              │
+     │         │    ↓                    │                              │
+     │         │ ⑥ handle_order_update    │                              │
+     │         │    ↓                    │                              │
+     │         │ 写入 trade_logs          │                              │
+     │         │ 写入 risk_logs           │                              │
+     │         │ LPUSH Redis 队列 ────────┼─────────────────────────────►│
+     │         │                         │                              │ BRPOP
+     │         │ ⑦ check_stop_orders     │                              │ → WebSocket
+     │         │    ↓                    │                              │   推送
+     │         │ 写入 trade_logs          │                              │
+     │         │ LPUSH Redis 队列 ────────┼─────────────────────────────►│
+     │         │                         │                              │
+     │         │ ⑧ check_positions       │                              │
+     │         │    ↓                    │                              │
+     │         │ 写入 risk_logs           │                              │
+     │         │ LPUSH Redis 队列 ────────┼─────────────────────────────►│
+```
+
+### 事件类型定义
+
+```rust
+/// 全链路交易事件
+pub enum TradingEvent {
+    /// 策略分析完成（从 strategy_signals 表读取）
+    StrategyAnalyzed {
+        signal_id: Uuid,
+        strategy_id: String,
+        symbol: String,
+        direction: String,
+        entry_price: Decimal,
+        confidence: Decimal,
+        signal_strength: Option<Decimal>,
+        stop_loss: Option<Decimal>,
+        take_profit: Option<Decimal>,
+        timeframe_details: serde_json::Value,
+        market_context: Option<serde_json::Value>,
+        reason: String,
+        created_at: DateTime<Utc>,
+    },
+    /// 风控检查结果
+    RiskCheck {
+        signal_id: Option<Uuid>,
+        exchange: String,
+        market_type: String,
+        symbol: String,
+        check_type: String,      // order_check / position_check
+        result: String,          // allow / reject / modify
+        reason: String,
+        current_equity: Option<Decimal>,
+        peak_equity: Option<Decimal>,
+        daily_pnl: Option<Decimal>,
+        details: serde_json::Value,
+        timestamp: DateTime<Utc>,
+    },
+    /// 订单下单
+    OrderPlaced { ... },
+    /// 订单成交
+    OrderFilled {
+        signal_id: Option<Uuid>,
+        order_id: String,
+        exchange: String,
+        market_type: String,
+        symbol: String,
+        side: String,
+        quantity: Decimal,
+        avg_price: Decimal,
+        commission: Option<Decimal>,
+        slippage: Option<Decimal>,
+        pnl: Option<Decimal>,
+        event_type: String,      // fill / stop_loss / take_profit / risk_close
+        timestamp: DateTime<Utc>,
+    },
+    /// 止损止盈触发
+    StopTriggered { ... },
+    /// 风控动作
+    RiskAction {
+        signal_id: Option<Uuid>,
+        exchange: String,
+        market_type: String,
+        action_type: String,     // force_close / reduce / close_all
+        symbol: Option<String>,
+        reason: String,
+        details: serde_json::Value,
+        timestamp: DateTime<Utc>,
+    },
+}
+```
+
+### 数据库表
+
+**trade_logs 新增字段**：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| signal_id | UUID | 关联策略信号ID，贯穿全链路 |
+| exchange | VARCHAR(20) | 交易所: binance / okx |
+| market_type | VARCHAR(10) | 交易模式: spot / futures |
+| event_type | VARCHAR(30) | 事件类型: fill / stop_loss / take_profit / risk_close |
+| commission | DECIMAL(20,8) | 手续费 |
+| slippage | DECIMAL(20,8) | 滑点 |
+| details | JSONB | 扩展信息 |
+
+**risk_logs 新增字段**：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| signal_id | UUID | 关联策略信号ID |
+| exchange | VARCHAR(20) | 交易所 |
+| market_type | VARCHAR(10) | 交易模式 |
+| check_result | VARCHAR(20) | 检查结果: allow / reject / modify |
+| current_equity | DECIMAL(20,8) | 当前权益 |
+| peak_equity | DECIMAL(20,8) | 峰值权益 |
+| daily_pnl | DECIMAL(20,8) | 当日盈亏 |
+
+### 跨进程通信
+
+```
+trading-engine                    Redis                     trading-core
+     │                              │                              │
+     │  EventPublisher              │                              │
+     │  LPUSH trading:events:queue  │                              │
+     │  ───────────────────────────►│                              │
+     │                              │    PubSubEventSubscriber     │
+     │                              │    BRPOP trading:events:queue│
+     │                              │◄─────────────────────────────│
+     │                              │                              │
+     │                              │    broadcast::channel        │
+     │                              │    ──────────────────────►   │
+     │                              │                              │ WebSocket
+     │                              │                              │ 推送
+```
+
+### REST API
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/api/events/trades` | GET | 查询成交日志（symbol/signal_id/event_type/limit） |
+| `/api/events/risk` | GET | 查询风控日志（event_type/symbol/limit） |
+| `/api/events/timeline?signal_id=xxx` | GET | 全链路时间线回放 |
+
+**时间线 API 返回格式**：
+
+```json
+{
+  "success": true,
+  "signal_id": "uuid",
+  "timeline": [
+    {"time": "...", "event": "strategy_analyzed", "data": {...}},
+    {"time": "...", "event": "risk_check", "result": "allow", "data": {...}},
+    {"time": "...", "event": "order_placed", "data": {...}},
+    {"time": "...", "event": "order_filled", "data": {...}},
+    {"time": "...", "event": "stop_triggered", "data": {...}}
+  ]
+}
+```
+
+### WebSocket 事件订阅
+
+```json
+// 订阅交易事件
+{"SubscribeEvents": null}
+
+// 取消订阅
+{"UnsubscribeEvents": null}
+
+// 收到的事件格式
+{
+  "TradingEvent": {
+    "type": "OrderFilled",
+    "signal_id": "uuid",
+    "order_id": "...",
+    "symbol": "BTCUSDT",
+    ...
+  }
+}
+```
+
+### 涉及文件
+
+| 文件 | 说明 |
+|------|------|
+| `trading-common/src/data/event_types.rs` | TradingEvent 枚举定义 |
+| `trading-common/src/paper/trader.rs` | PaperTrader 事件记录（drain_events） |
+| `trading-engine/src/storage/event_repository.rs` | trade_logs/risk_logs 写入 |
+| `trading-engine/src/storage/event_publisher.rs` | Redis LPUSH 事件发布 |
+| `trading-engine/src/order/manager.rs` | 成交/止损/风控时记录事件 |
+| `trading-engine/src/engine/signal_poller.rs` | 传递 signal_id，记录风控事件 |
+| `trading-core/src/service/event_subscriber.rs` | Redis BRPOP 事件订阅 |
+| `trading-core/src/api/websocket.rs` | WebSocket 事件推送 |
+| `trading-core/src/api/handlers.rs` | /api/events/* 查询端点 |
+
+### 模拟交易事件支持
+
+PaperTrader 内置事件日志，成交时自动记录 `TradingEvent::OrderFilled`：
+
+```rust
+// 获取事件（不消费）
+let events = paper_trader.get_events();
+
+// 取出事件（消费后清空）
+let events = paper_trader.drain_events();
+```
+
+事件类型标识：
+- `exchange = "paper"`, `market_type = "paper"`
+- `event_type = "fill"` / `"stop_loss"` / `"take_profit"`
+
+调用方可将事件写入 trade_logs 表或通过 Redis 转发，实现与实盘一致的日志查询。
+
+### 回测事件支持
+
+回测引擎（MultiTimeframeBacktestEngine）是一次性执行，结果通过 `BacktestResult` 返回，包含完整的交易列表和统计指标，无需额外事件机制。
+
+---
+
 ## 总结
 
 ### 服务分离的优势

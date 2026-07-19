@@ -3,6 +3,7 @@ pub mod account_types;
 pub mod aggregator;
 pub mod aggregator_tests;
 pub mod cache;
+pub mod event_types;
 pub mod parquet_store;
 pub mod polars_repository;
 pub mod repository;

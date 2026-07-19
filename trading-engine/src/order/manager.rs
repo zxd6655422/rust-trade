@@ -11,9 +11,10 @@ use uuid::Uuid;
 
 use crate::exchange::traits::Exchange;
 use crate::exchange::types::*;
-use crate::risk::{RiskDecision, RiskEngine, RiskAction, StopLossConfig, StopLossManager, StopAction};
-use crate::storage::{OrderRepository, OrderSource, StopOrderRepository};
+use crate::risk::{RiskConfig, RiskDecision, RiskEngine, RiskAction, StopLossConfig, StopLossManager, StopAction};
+use crate::storage::{EventPublisher, EventRepository, OrderRepository, OrderSource, StopOrderRepository};
 use trading_common::backtest::strategy::Signal;
+use trading_common::data::event_types::TradingEvent;
 
 /// 将数量截断到 step_size 精度
 fn round_to_step_size(quantity: Decimal, step_size: Decimal) -> Decimal {
@@ -44,6 +45,10 @@ pub struct OrderManager {
     stop_loss_config: StopLossConfig,
     /// 交易所用户 uid
     uid: Option<String>,
+    /// 事件仓储（写入 trade_logs/risk_logs）
+    event_repo: Option<Arc<EventRepository>>,
+    /// 事件发布器（Redis Pub/Sub）
+    event_publisher: Option<Arc<EventPublisher>>,
 }
 
 impl OrderManager {
@@ -66,6 +71,8 @@ impl OrderManager {
             margin_type: MarginType::Isolated,  // 默认逐仓
             stop_loss_config,
             uid: None,
+            event_repo: None,
+            event_publisher: None,
         }
     }
 
@@ -91,6 +98,8 @@ impl OrderManager {
             margin_type: MarginType::Isolated,
             stop_loss_config,
             uid: None,
+            event_repo: None,
+            event_publisher: None,
         }
     }
 
@@ -107,6 +116,16 @@ impl OrderManager {
     /// 设置用户 uid
     pub fn set_uid(&mut self, uid: String) {
         self.uid = Some(uid);
+    }
+
+    /// 设置事件仓储（启用交易日志持久化）
+    pub fn set_event_repo(&mut self, repo: Arc<EventRepository>) {
+        self.event_repo = Some(repo);
+    }
+
+    /// 设置事件发布器（启用 Redis Pub/Sub 事件推送）
+    pub fn set_event_publisher(&mut self, publisher: Arc<EventPublisher>) {
+        self.event_publisher = Some(publisher);
     }
 
     /// 获取交易所标识
@@ -135,7 +154,9 @@ impl OrderManager {
     }
 
     /// 执行交易信号
-    pub async fn execute_signal(&self, signal: Signal) -> Result<OrderResult, OrderError> {
+    ///
+    /// signal_id: 来自 strategy_signals 表的 UUID，用于全链路追踪
+    pub async fn execute_signal(&self, signal: Signal, signal_id: Option<Uuid>) -> Result<OrderResult, OrderError> {
         // 1. 获取账户信息
         let account = self
             .exchange
@@ -184,12 +205,16 @@ impl OrderManager {
         }
 
         // 4. 风控检查
-        match self
+        let risk_decision = self
             .risk_engine
             .check_order(&order_request, &account)
             .await
-            .map_err(|e| OrderError::RiskError(e.to_string()))?
-        {
+            .map_err(|e| OrderError::RiskError(e.to_string()))?;
+
+        // 记录风控检查事件
+        self.record_risk_check_event(signal_id, &order_request, &risk_decision, &account).await;
+
+        match risk_decision {
             RiskDecision::Allow => {
                 info!(
                     "Risk check passed for {} {} {}",
@@ -207,18 +232,19 @@ impl OrderManager {
                 );
                 let mut modified_request = order_request.clone();
                 modified_request.quantity = quantity;
-                return self.place_and_track_order(modified_request).await;
+                return self.place_and_track_order(modified_request, signal_id).await;
             }
         }
 
         // 5. 下单
-        self.place_and_track_order(order_request).await
+        self.place_and_track_order(order_request, signal_id).await
     }
 
     /// 下单并跟踪
     async fn place_and_track_order(
         &self,
         order: OrderRequest,
+        signal_id: Option<Uuid>,
     ) -> Result<OrderResult, OrderError> {
         let result = self
             .exchange
@@ -274,7 +300,7 @@ impl OrderManager {
                 OrderSource::Auto,
                 self.uid.clone(),
                 Some("BOTH".to_string()), // 默认双向持仓
-                None, // signal_id
+                signal_id, // signal_id（全链路追踪）
                 None, // strategy_id
                 Some("GTC".to_string()),
                 order.stop_price,
@@ -415,16 +441,37 @@ impl OrderManager {
     /// 执行止损止盈动作
     pub async fn execute_stop_action(&self, action: StopAction) -> Result<OrderResult, OrderError> {
         let order_request = action.to_order_request();
+        let trigger_type = match action {
+            StopAction::StopLoss { .. } => "stop_loss",
+            StopAction::TakeProfit { .. } => "take_profit",
+            StopAction::TrailingStop { .. } => "trailing_stop",
+        };
+        let trigger_price = order_request.price.unwrap_or_default();
+
         info!(
-            "Executing stop action: {} {} {}",
-            order_request.symbol, order_request.side, order_request.quantity
+            "Executing stop action: {} {} {} ({})",
+            order_request.symbol, order_request.side, order_request.quantity, trigger_type
         );
 
         // 移除止损止盈订单
         self.stop_loss_manager.remove_stop_order(&order_request.symbol).await;
 
         // 执行平仓订单
-        self.place_and_track_order(order_request).await
+        let result = self.place_and_track_order(order_request.clone(), None).await?;
+
+        // 记录止损止盈触发事件
+        self.record_stop_event(
+            None, // stop action 没有直接的 signal_id
+            Some(result.order_id.clone()),
+            &result.symbol,
+            trigger_type,
+            trigger_price,
+            result.price.unwrap_or_default(),
+            result.quantity,
+            Decimal::ZERO, // PnL 在成交后计算
+        ).await;
+
+        Ok(result)
     }
 
     /// 获取活动订单
@@ -514,11 +561,23 @@ impl OrderManager {
                     client_order_id: None,
                 };
 
-                match self.place_and_track_order(order_request).await {
+                match self.place_and_track_order(order_request, None).await {
                     Ok(result) => {
                         info!("Risk force close order placed: {}", result.order_id);
                         // 移除止损止盈
                         self.stop_loss_manager.remove_stop_order(&symbol).await;
+
+                        // 记录风控动作事件
+                        self.record_risk_action_event(
+                            None,
+                            "force_close",
+                            Some(symbol.clone()),
+                            &reason,
+                            serde_json::json!({
+                                "quantity": quantity,
+                                "order_id": result.order_id,
+                            }),
+                        ).await;
                     }
                     Err(e) => {
                         error!("Risk force close failed for {}: {}", symbol, e);
@@ -562,9 +621,23 @@ impl OrderManager {
                     client_order_id: None,
                 };
 
-                match self.place_and_track_order(order_request).await {
+                match self.place_and_track_order(order_request, None).await {
                     Ok(result) => {
                         info!("Risk reduce order placed: {}", result.order_id);
+
+                        // 记录风控动作事件
+                        self.record_risk_action_event(
+                            None,
+                            "reduce_position",
+                            Some(symbol.clone()),
+                            &reason,
+                            serde_json::json!({
+                                "current_quantity": current_quantity,
+                                "target_quantity": target_quantity,
+                                "reduce_quantity": reduce_qty,
+                                "order_id": result.order_id,
+                            }),
+                        ).await;
                     }
                     Err(e) => {
                         error!("Risk reduce failed for {}: {}", symbol, e);
@@ -577,7 +650,8 @@ impl OrderManager {
 
                 // 获取所有持仓并逐个平仓
                 let positions = self.exchange.get_positions().await.unwrap_or_default();
-                for pos in positions {
+                let positions_count = positions.len();
+                for pos in &positions {
                     if pos.quantity <= Decimal::ZERO {
                         continue;
                     }
@@ -598,7 +672,7 @@ impl OrderManager {
                         client_order_id: None,
                     };
 
-                    match self.place_and_track_order(order_request).await {
+                    match self.place_and_track_order(order_request, None).await {
                         Ok(result) => {
                             info!(
                                 "Risk close all — {} order placed: {}",
@@ -610,6 +684,17 @@ impl OrderManager {
                         }
                     }
                 }
+
+                // 记录风控动作事件
+                self.record_risk_action_event(
+                    None,
+                    "close_all",
+                    None,
+                    &reason,
+                    serde_json::json!({
+                        "positions_closed": positions_count,
+                    }),
+                ).await;
 
                 // 清除所有止损止盈
                 // （CloseAll 后持仓已清，止损止盈也应清除）
@@ -643,7 +728,8 @@ impl OrderManager {
                 entry_price,
             } => {
                 // 动态计算仓位大小
-                let quantity = self.resolve_quantity(*quantity, *entry_price, account);
+                let risk_config = self.risk_engine.config().await;
+                let quantity = self.resolve_quantity(*quantity, *entry_price, account, &risk_config);
 
                 // 检查 USDT 余额是否充足
                 let usdt_balance = account
@@ -683,7 +769,8 @@ impl OrderManager {
                 entry_price,
             } => {
                 // 动态计算仓位大小
-                let quantity = self.resolve_quantity(*quantity, *entry_price, account);
+                let risk_config = self.risk_engine.config().await;
+                let quantity = self.resolve_quantity(*quantity, *entry_price, account, &risk_config);
 
                 // 根据交易模式选择不同的持仓校验方式
                 if self.market_type == "futures" {
@@ -816,13 +903,13 @@ impl OrderManager {
         quantity: Decimal,
         entry_price: Decimal,
         account: &AccountInfo,
+        risk_config: &RiskConfig,
     ) -> Decimal {
         if quantity > Decimal::ZERO {
             return quantity;
         }
 
         // 动态计算: position_value = equity * risk_per_trade_pct / stop_loss_pct
-        let risk_config = self.risk_engine.config();
         let equity = account.total_equity;
         let risk_pct = risk_config.risk_per_trade_pct;
         let stop_loss_pct = self.stop_loss_config.default_stop_loss_pct;
@@ -940,6 +1027,166 @@ impl OrderManager {
 
         (sl_order_id, tp_order_id)
     }
+
+    // ============================================================
+    // 事件记录辅助方法
+    // ============================================================
+
+    /// 记录风控检查事件
+    async fn record_risk_check_event(
+        &self,
+        signal_id: Option<Uuid>,
+        order: &OrderRequest,
+        decision: &RiskDecision,
+        account: &AccountInfo,
+    ) {
+        let (result, reason) = match decision {
+            RiskDecision::Allow => ("allow", "Risk check passed".to_string()),
+            RiskDecision::Reject(r) => ("reject", r.clone()),
+            RiskDecision::Modify(qty) => ("modify", format!("Quantity modified to {}", qty)),
+        };
+
+        let event = TradingEvent::RiskCheck {
+            signal_id,
+            exchange: self.exchange_id.clone(),
+            market_type: self.market_type.clone(),
+            symbol: order.symbol.clone(),
+            check_type: "order_check".to_string(),
+            result: result.to_string(),
+            reason,
+            current_equity: Some(account.total_equity),
+            peak_equity: None,
+            daily_pnl: None,
+            details: serde_json::json!({
+                "order_side": format!("{:?}", order.side),
+                "order_quantity": order.quantity,
+                "order_price": order.price,
+            }),
+            timestamp: Utc::now(),
+        };
+
+        if let Some(repo) = &self.event_repo {
+            if let Err(e) = repo.log_event(&event).await {
+                warn!("Failed to log risk check event: {}", e);
+            }
+        }
+        if let Some(publisher) = &self.event_publisher {
+            if let Err(e) = publisher.publish(&event).await {
+                warn!("Failed to publish risk check event: {}", e);
+            }
+        }
+    }
+
+    /// 记录成交事件
+    pub async fn record_fill_event(
+        &self,
+        signal_id: Option<Uuid>,
+        order_id: &str,
+        symbol: &str,
+        side: &str,
+        quantity: Decimal,
+        avg_price: Decimal,
+        commission: Option<Decimal>,
+        pnl: Option<Decimal>,
+        event_type: &str,
+    ) {
+        let event = TradingEvent::OrderFilled {
+            signal_id,
+            order_id: order_id.to_string(),
+            exchange: self.exchange_id.clone(),
+            market_type: self.market_type.clone(),
+            symbol: symbol.to_string(),
+            side: side.to_string(),
+            quantity,
+            avg_price,
+            commission,
+            slippage: None, // TODO: 计算滑点
+            pnl,
+            event_type: event_type.to_string(),
+            timestamp: Utc::now(),
+        };
+
+        if let Some(repo) = &self.event_repo {
+            if let Err(e) = repo.log_event(&event).await {
+                warn!("Failed to log fill event: {}", e);
+            }
+        }
+        if let Some(publisher) = &self.event_publisher {
+            if let Err(e) = publisher.publish(&event).await {
+                warn!("Failed to publish fill event: {}", e);
+            }
+        }
+    }
+
+    /// 记录止损止盈触发事件
+    pub async fn record_stop_event(
+        &self,
+        signal_id: Option<Uuid>,
+        order_id: Option<String>,
+        symbol: &str,
+        trigger_type: &str,
+        trigger_price: Decimal,
+        close_price: Decimal,
+        quantity: Decimal,
+        pnl: Decimal,
+    ) {
+        let event = TradingEvent::StopTriggered {
+            signal_id,
+            order_id,
+            exchange: self.exchange_id.clone(),
+            market_type: self.market_type.clone(),
+            symbol: symbol.to_string(),
+            trigger_type: trigger_type.to_string(),
+            trigger_price,
+            close_price,
+            quantity,
+            pnl,
+            timestamp: Utc::now(),
+        };
+
+        if let Some(repo) = &self.event_repo {
+            if let Err(e) = repo.log_event(&event).await {
+                warn!("Failed to log stop event: {}", e);
+            }
+        }
+        if let Some(publisher) = &self.event_publisher {
+            if let Err(e) = publisher.publish(&event).await {
+                warn!("Failed to publish stop event: {}", e);
+            }
+        }
+    }
+
+    /// 记录风控动作事件
+    pub async fn record_risk_action_event(
+        &self,
+        signal_id: Option<Uuid>,
+        action_type: &str,
+        symbol: Option<String>,
+        reason: &str,
+        details: serde_json::Value,
+    ) {
+        let event = TradingEvent::RiskAction {
+            signal_id,
+            exchange: self.exchange_id.clone(),
+            market_type: self.market_type.clone(),
+            action_type: action_type.to_string(),
+            symbol,
+            reason: reason.to_string(),
+            details,
+            timestamp: Utc::now(),
+        };
+
+        if let Some(repo) = &self.event_repo {
+            if let Err(e) = repo.log_event(&event).await {
+                warn!("Failed to log risk action event: {}", e);
+            }
+        }
+        if let Some(publisher) = &self.event_publisher {
+            if let Err(e) = publisher.publish(&event).await {
+                warn!("Failed to publish risk action event: {}", e);
+            }
+        }
+    }
 }
 
 /// 订单错误
@@ -980,10 +1227,10 @@ mod tests {
 
     fn create_risk_config() -> RiskConfig {
         RiskConfig {
-            max_position_size: Decimal::from(50000),
-            max_order_size: Decimal::from(1),
+            max_position_pct: Decimal::from_str("0.30").unwrap(),
             stop_loss_pct: Decimal::from_str("0.02").unwrap(),
             take_profit_pct: Decimal::from_str("0.04").unwrap(),
+            risk_per_trade_pct: Decimal::from_str("0.02").unwrap(),
             max_daily_loss: Decimal::from(5000),
             max_drawdown_pct: Decimal::from_str("0.15").unwrap(),
             max_exposure_pct: Decimal::from_str("0.8").unwrap(),
@@ -992,6 +1239,7 @@ mod tests {
             volatility_target: Decimal::from_str("0.15").unwrap(),
             circuit_breaker_cooldown: 3600,
             black_swan_threshold: Decimal::from_str("0.05").unwrap(),
+            daily_reset_hour: 0,
         }
     }
 
@@ -1004,7 +1252,7 @@ mod tests {
         exchange.set_price("BTCUSDT", Decimal::from(50000)).await;
         exchange.set_price("ETHUSDT", Decimal::from(3000)).await;
 
-        let risk_engine = Arc::new(RiskEngine::new(create_risk_config()));
+        let risk_engine = Arc::new(RiskEngine::new_for_test(create_risk_config()));
         let stop_config = StopLossConfig::default();
         let manager = OrderManager::new(exchange.clone(), risk_engine, stop_config);
         (exchange, manager)
@@ -1175,7 +1423,7 @@ mod tests {
         let exchange = Arc::new(MockExchange::new(config).unwrap());
         exchange.set_price("BTCUSDT", Decimal::from(50000)).await;
 
-        let risk_engine = Arc::new(RiskEngine::new(create_risk_config()));
+        let risk_engine = Arc::new(RiskEngine::new_for_test(create_risk_config()));
         let stop_config = StopLossConfig::default();
         let manager = OrderManager::new(exchange, risk_engine, stop_config);
 

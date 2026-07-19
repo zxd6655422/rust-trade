@@ -18,6 +18,11 @@ pub struct RedisCache {
 }
 
 impl RedisCache {
+    /// 获取 Redis 连接管理器（用于创建 EventPublisher 等）
+    pub fn manager(&self) -> &ConnectionManager {
+        &self.manager
+    }
+
     /// 创建新的 Redis 缓存连接
     pub async fn new(config: &CacheConfig) -> Result<Self, redis::RedisError> {
         info!("Connecting to Redis...");

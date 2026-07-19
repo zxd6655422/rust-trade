@@ -1928,3 +1928,17 @@ anyhow = "1"
 2. **回测/模拟交易绑定**: 回测结果和模拟交易日志都通过 `instance_id` 关联到具体策略实例
 3. **向后兼容**: 保留 `strategy_id` 字段存储策略类型名称，`instance_id` 为可选字段
 4. **渐进式迁移**: 配置文件中的默认策略配置暂时保留，后续可通过数据库默认策略覆盖
+
+---
+
+### 📋 风控引擎已知问题 (2026-07-17)
+
+#### 问题 1：检查 4（单笔仓位限制）默认值过小 ✅ 已修复
+
+**修复**: `max_position_size`（绝对 USDT）改为 `max_position_pct`（占权益百分比，默认 30%）。移除了 `max_order_size`。1000 USDT 和 100000 USDT 账户通用同一套配置。
+
+---
+
+#### 问题 2：黑天鹅检测和 Kelly 动态仓位未生效 ✅ 已修复
+
+**修复**: 在 `SignalPoller` 中新增任务 6（WebSocket tick 订阅）。每 5 分钟查询 `trading_positions` + `strategy_signals` 获取活跃交易对，通过交易所 WebSocket 订阅实时成交数据，回调中通过 mpsc channel 转发给 `risk_engine.update_market_data()`。纯内存方案，无数据库写入。

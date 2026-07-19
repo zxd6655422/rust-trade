@@ -25,7 +25,7 @@ use config::Settings;
 use engine::signal_poller::{SignalPoller, SignalPollerConfig};
 use engine::trading_unit::TradingUnit;
 use risk::RiskEngine;
-use storage::{Database, ExchangeRepository, OrderRepository, PositionRepository, RedisCache, StopOrderRepository};
+use storage::{Database, EventPublisher, EventRepository, ExchangeRepository, OrderRepository, PositionRepository, RedisCache, RiskConfigRepository, StopOrderRepository};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -121,13 +121,29 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let order_repo = Arc::new(OrderRepository::new(pool.clone()));
     info!("✅ Order repository created");
 
+    // 风控参数仓储（从 DB 加载，支持热更新）
+    let risk_config_repo = Arc::new(RiskConfigRepository::new(pool.clone(), settings.risk_control.clone()).await);
+    info!("✅ Risk config repository created");
+
     // 风控引擎（所有 TradingUnit 共享）
-    let risk_engine = Arc::new(RiskEngine::new(settings.risk_control.clone()));
+    let risk_engine = Arc::new(RiskEngine::new(risk_config_repo.clone(), settings.risk_control.clone()).await);
     info!("✅ Risk engine created");
 
     // 账户数据仓储
     let account_repo = Arc::new(trading_common::data::account_repository::AccountRepository::new(pool.clone()));
     info!("✅ Account repository created");
+
+    // 事件仓储（交易日志持久化）
+    let event_repo = Arc::new(EventRepository::new(pool.clone()));
+    info!("✅ Event repository created");
+
+    // 事件发布器（Redis Pub/Sub）
+    let event_publisher = match EventPublisher::new(cache.manager().clone()) {
+        publisher => {
+            info!("✅ Event publisher created (Redis Pub/Sub)");
+            Arc::new(publisher)
+        }
+    };
 
     // ============ 启动账户同步服务 ============
     {
@@ -159,6 +175,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             cache.clone(),
             Some(stop_order_repo.clone()),
             Some(order_repo.clone()),
+            Some(event_repo.clone()),
+            Some(event_publisher.clone()),
         ) {
             Ok(unit) => {
                 trading_units.push(Arc::new(unit));

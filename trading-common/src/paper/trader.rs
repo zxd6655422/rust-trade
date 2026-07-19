@@ -12,6 +12,7 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::backtest::portfolio::{Portfolio, PositionSide as PortfolioPositionSide};
+use crate::data::event_types::TradingEvent;
 use crate::data::types::TradeSide;
 
 // ===== 配置 =====
@@ -182,6 +183,10 @@ pub struct PaperTrader {
     started_at: Option<DateTime<Utc>>,
     /// 订单 ID 计数器
     order_counter: u64,
+    /// 交易事件日志（内存缓存，drain_events 取出）
+    events: Vec<TradingEvent>,
+    /// 事件发送通道（异步写入 DB 或 Redis）
+    event_tx: Option<tokio::sync::mpsc::UnboundedSender<TradingEvent>>,
 }
 
 impl PaperTrader {
@@ -199,7 +204,15 @@ impl PaperTrader {
             running: false,
             started_at: None,
             order_counter: 0,
+            events: Vec::new(),
+            event_tx: None,
         }
+    }
+
+    /// 设置事件通道（事件异步发送到外部处理器，可写 DB/Redis）
+    pub fn with_event_tx(mut self, tx: tokio::sync::mpsc::UnboundedSender<TradingEvent>) -> Self {
+        self.event_tx = Some(tx);
+        self
     }
 
     /// 启动模拟交易
@@ -559,6 +572,39 @@ impl PaperTrader {
                 order.filled_price = Some(fill_price);
                 order.commission = order.quantity * fill_price * self.config.commission_rate;
                 order.filled_at = Some(Utc::now());
+
+                // 记录成交事件
+                let side_str = match order.side {
+                    TradeSide::Buy => "BUY",
+                    TradeSide::Sell => "SELL",
+                };
+                let event_type = match order.order_type {
+                    PaperOrderType::StopLoss => "stop_loss",
+                    PaperOrderType::TakeProfit => "take_profit",
+                    _ => "fill",
+                };
+                let event = TradingEvent::OrderFilled {
+                    signal_id: None,
+                    order_id: order.order_id.clone(),
+                    exchange: "paper".to_string(),
+                    market_type: "paper".to_string(),
+                    symbol: order.symbol.clone(),
+                    side: side_str.to_string(),
+                    quantity: order.quantity,
+                    avg_price: fill_price,
+                    commission: Some(order.commission),
+                    slippage: None,
+                    pnl: None,
+                    event_type: event_type.to_string(),
+                    timestamp: Utc::now(),
+                };
+
+                // 通过通道异步发送（外部处理器可写 DB/Redis）
+                if let Some(tx) = &self.event_tx {
+                    let _ = tx.send(event.clone());
+                }
+
+                self.events.push(event);
             }
             Err(e) => {
                 order.status = PaperOrderStatus::Rejected;
@@ -568,6 +614,21 @@ impl PaperTrader {
     }
 
     // ===== 查询接口 =====
+
+    /// 获取所有事件（不消费）
+    pub fn get_events(&self) -> &[TradingEvent] {
+        &self.events
+    }
+
+    /// 取出所有事件（消费，取出后清空）
+    pub fn drain_events(&mut self) -> Vec<TradingEvent> {
+        std::mem::take(&mut self.events)
+    }
+
+    /// 事件数量
+    pub fn event_count(&self) -> usize {
+        self.events.len()
+    }
 
     /// 获取当前状态快照
     pub fn get_status(&self) -> PaperTraderStatus {

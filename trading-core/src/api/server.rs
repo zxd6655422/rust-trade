@@ -111,7 +111,11 @@ impl ApiServer {
                         .route("/account/balances", web::get().to(handlers::get_account_balances))
                         .route("/account/positions", web::get().to(handlers::get_account_positions))
                         .route("/account/history", web::get().to(handlers::get_account_history))
-                        .route("/account/uids", web::get().to(handlers::get_account_uids)),
+                        .route("/account/uids", web::get().to(handlers::get_account_uids))
+                        // 交易事件 API
+                        .route("/events/trades", web::get().to(handlers::get_trade_logs))
+                        .route("/events/risk", web::get().to(handlers::get_risk_logs))
+                        .route("/events/timeline", web::get().to(handlers::get_event_timeline)),
                 )
                 // WebSocket
                 .route("/ws", web::get().to(websocket::ws_handler))

@@ -11,16 +11,19 @@ mod tests {
     /// 创建测试用风控配置
     fn create_test_config() -> RiskConfig {
         RiskConfig {
-            max_position_size: Decimal::from(10000),
-            max_order_size: Decimal::from(1),
+            max_position_pct: Decimal::from_str("0.30").unwrap(),
             stop_loss_pct: Decimal::from_str("0.02").unwrap(),
             take_profit_pct: Decimal::from_str("0.04").unwrap(),
+            risk_per_trade_pct: Decimal::from_str("0.02").unwrap(),
             max_daily_loss: Decimal::from(500),
             max_drawdown_pct: Decimal::from_str("0.15").unwrap(),
             max_exposure_pct: Decimal::from_str("0.8").unwrap(),
             kelly_fraction: Decimal::from_str("0.25").unwrap(),
+            volatility_lookback: 20,
+            volatility_target: Decimal::from_str("0.15").unwrap(),
             circuit_breaker_cooldown: 3600,
             black_swan_threshold: Decimal::from_str("0.05").unwrap(),
+            daily_reset_hour: 0,
         }
     }
 
@@ -62,7 +65,7 @@ mod tests {
     #[tokio::test]
     async fn test_risk_engine_initialization() {
         let config = create_test_config();
-        let engine = RiskEngine::new(config);
+        let engine = RiskEngine::new_for_test(config);
 
         let status = engine.get_status().await;
         assert_eq!(status.daily_pnl, Decimal::ZERO);
@@ -75,7 +78,7 @@ mod tests {
     #[tokio::test]
     async fn test_check_order_allow() {
         let config = create_test_config();
-        let engine = RiskEngine::new(config);
+        let engine = RiskEngine::new_for_test(config);
         let account = create_test_account("100000");
         let order = create_test_order("BTCUSDT", "0.1", "50000");
 
@@ -84,12 +87,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_check_order_exceeds_max_position_size() {
+    async fn test_check_order_exceeds_max_position_pct() {
         let config = create_test_config();
-        let engine = RiskEngine::new(config);
+        let engine = RiskEngine::new_for_test(config);
         let account = create_test_account("100000");
 
-        // 订单价值 = 1 * 50000 = 50000，超过 max_position_size (10000)
+        // 订单价值 = 1 * 50000 = 50000，超过 max_position_pct (30% of 100000 = 30000)
         let order = create_test_order("BTCUSDT", "1", "50000");
 
         let result = engine.check_order(&order, &account).await.unwrap();
@@ -97,16 +100,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_check_order_exceeds_max_order_size() {
+    async fn test_check_order_within_max_position_pct() {
         let config = create_test_config();
-        let engine = RiskEngine::new(config);
+        let engine = RiskEngine::new_for_test(config);
         let account = create_test_account("100000");
 
-        // 订单数量 = 2，超过 max_order_size (1)
-        let order = create_test_order("BTCUSDT", "2", "5000");
+        // 订单价值 = 0.05 * 50000 = 2500，在 max_position_pct (30% of 100000 = 30000) 范围内
+        let order = create_test_order("BTCUSDT", "0.05", "50000");
 
         let result = engine.check_order(&order, &account).await.unwrap();
-        assert!(matches!(result, RiskDecision::Reject(_)));
+        assert!(matches!(result, RiskDecision::Allow));
     }
 
     // ========== 日亏损限制测试 ==========
@@ -114,7 +117,7 @@ mod tests {
     #[tokio::test]
     async fn test_daily_loss_limit() {
         let config = create_test_config();
-        let engine = RiskEngine::new(config);
+        let engine = RiskEngine::new_for_test(config);
         let account = create_test_account("100000");
 
         // 模拟日亏损超过限制
@@ -129,7 +132,7 @@ mod tests {
     #[tokio::test]
     async fn test_circuit_breaker() {
         let config = create_test_config();
-        let engine = RiskEngine::new(config);
+        let engine = RiskEngine::new_for_test(config);
         let account = create_test_account("100000");
 
         // 触发熔断
@@ -149,7 +152,7 @@ mod tests {
     #[tokio::test]
     async fn test_record_trade_result() {
         let config = create_test_config();
-        let engine = RiskEngine::new(config);
+        let engine = RiskEngine::new_for_test(config);
 
         // 记录买入
         engine.record_trade_result("BTCUSDT", "BUY", Decimal::from(1), Decimal::from(50000)).await;
@@ -162,7 +165,7 @@ mod tests {
     #[tokio::test]
     async fn test_record_trade_result_sell() {
         let config = create_test_config();
-        let engine = RiskEngine::new(config);
+        let engine = RiskEngine::new_for_test(config);
 
         // 先买入
         engine.record_trade_result("BTCUSDT", "BUY", Decimal::from(1), Decimal::from(50000)).await;
@@ -180,7 +183,7 @@ mod tests {
     #[tokio::test]
     async fn test_reset_daily_stats() {
         let config = create_test_config();
-        let engine = RiskEngine::new(config);
+        let engine = RiskEngine::new_for_test(config);
 
         // 记录一些交易
         engine.record_trade_result("BTCUSDT", "BUY", Decimal::from(1), Decimal::from(50000)).await;
@@ -198,7 +201,7 @@ mod tests {
     #[tokio::test]
     async fn test_check_order_zero_quantity() {
         let config = create_test_config();
-        let engine = RiskEngine::new(config);
+        let engine = RiskEngine::new_for_test(config);
         let account = create_test_account("100000");
         let order = create_test_order("BTCUSDT", "0", "50000");
 
@@ -209,7 +212,7 @@ mod tests {
     #[tokio::test]
     async fn test_multiple_symbols() {
         let config = create_test_config();
-        let engine = RiskEngine::new(config);
+        let engine = RiskEngine::new_for_test(config);
 
         // 记录多个交易对
         engine.record_trade_result("BTCUSDT", "BUY", Decimal::from(1), Decimal::from(50000)).await;
@@ -225,8 +228,7 @@ mod tests {
     fn test_risk_config_values() {
         let config = create_test_config();
 
-        assert_eq!(config.max_position_size, Decimal::from(10000));
-        assert_eq!(config.max_order_size, Decimal::from(1));
+        assert_eq!(config.max_position_pct, Decimal::from_str("0.30").unwrap());
         assert_eq!(config.max_daily_loss, Decimal::from(500));
         assert_eq!(config.circuit_breaker_cooldown, 3600);
     }
@@ -236,7 +238,7 @@ mod tests {
     #[tokio::test]
     async fn test_position_snapshot() {
         let config = create_test_config();
-        let engine = RiskEngine::new(config);
+        let engine = RiskEngine::new_for_test(config);
 
         // 买入
         engine.record_trade_result("BTCUSDT", "BUY", Decimal::from(1), Decimal::from(50000)).await;
@@ -250,7 +252,7 @@ mod tests {
     #[tokio::test]
     async fn test_full_trading_scenario() {
         let config = create_test_config();
-        let engine = RiskEngine::new(config);
+        let engine = RiskEngine::new_for_test(config);
         let account = create_test_account("100000");
 
         // 1. 检查订单

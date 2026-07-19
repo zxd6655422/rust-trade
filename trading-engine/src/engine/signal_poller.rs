@@ -37,6 +37,12 @@ struct SignalRecord {
     pub entry_allowed: bool,
     pub status: String,
     pub created_at: DateTime<Utc>,
+    /// 以下字段用于全链路日志追踪
+    pub signal_strength: Option<Decimal>,
+    pub stop_loss: Option<Decimal>,
+    pub take_profit: Option<Decimal>,
+    pub timeframe_details: serde_json::Value,
+    pub market_context: Option<serde_json::Value>,
 }
 
 /// 信号轮询器配置
@@ -187,7 +193,79 @@ impl SignalPoller {
             }
         });
 
-        info!("All 5 tasks spawned, running in parallel");
+        // 任务6: WebSocket tick 订阅（喂数据给风控引擎的黑天鹅检测和 Kelly 仓位）
+        // 使用 channel 将 tick 从同步回调转发到异步处理
+        let s = self.clone();
+        let enabled_units_for_tick: Vec<_> = enabled_units.iter().map(|u| u.exchange.clone()).collect();
+        let risk_engine_for_tick = self.risk_engine.clone();
+        tokio::spawn(async move {
+            // 每 5 分钟刷新一次交易对列表
+            let mut refresh_interval = interval(Duration::from_secs(300));
+            let mut last_symbols: Vec<String> = vec![];
+
+            loop {
+                refresh_interval.tick().await;
+
+                // 查询当前活跃交易对
+                let symbols = match s.get_active_symbols().await {
+                    Ok(syms) => syms,
+                    Err(e) => {
+                        warn!("Failed to get active symbols for tick subscription: {}", e);
+                        continue;
+                    }
+                };
+
+                if symbols.is_empty() {
+                    debug!("No active symbols for tick subscription, skipping");
+                    continue;
+                }
+
+                // 交易对没变化则跳过重连
+                if symbols == last_symbols {
+                    continue;
+                }
+                last_symbols = symbols.clone();
+
+                info!("Subscribing to tick data for: {:?}", symbols);
+
+                // 为每个交易所订阅 tick 数据
+                for exchange in &enabled_units_for_tick {
+                    let symbols = symbols.clone();
+                    let risk_engine = risk_engine_for_tick.clone();
+                    let exchange_clone = exchange.clone();
+
+                    // 创建 channel：回调(同步) → 处理任务(异步)
+                    let (tx, mut rx) = tokio::sync::mpsc::channel::<trading_common::data::types::TickData>(10000);
+
+                    // 接收端：异步调用 update_market_data
+                    let risk_engine_recv = risk_engine.clone();
+                    tokio::spawn(async move {
+                        while let Some(tick) = rx.recv().await {
+                            risk_engine_recv.update_market_data(&tick).await;
+                        }
+                    });
+
+                    // 订阅端：WebSocket 回调通过 channel 发送
+                    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
+                    let callback = Box::new(move |tick: trading_common::data::types::TickData| {
+                        let _ = tx.try_send(tick);
+                    });
+
+                    // subscribe_trades 是长阻塞调用，在独立任务中运行
+                    tokio::spawn(async move {
+                        if let Err(e) = exchange_clone.subscribe_trades(&symbols, callback, shutdown_rx).await {
+                            warn!("Tick WebSocket disconnected: {}, will retry in 5 min", e);
+                        }
+                    });
+
+                    // 保存 shutdown_tx 以便下次刷新时关闭旧连接
+                    // （5 分钟后 refresh_interval 触发时会自然重连）
+                    let _ = shutdown_tx;
+                }
+            }
+        });
+
+        info!("All 6 tasks spawned, running in parallel");
 
         // 保持主任务存活
         loop {
@@ -227,7 +305,7 @@ impl SignalPoller {
                 if !unit.enabled { continue; }
 
                 let unit_id = unit.id.clone();
-                match unit.order_manager.execute_signal(signal.clone()).await {
+                match unit.order_manager.execute_signal(signal.clone(), Some(signal_id)).await {
                     Ok(result) => {
                         info!(
                             "[{}] Signal executed: {} -> order_id={}",
@@ -262,7 +340,9 @@ impl SignalPoller {
     async fn get_pending_signals(&self) -> Result<Vec<SignalRecord>, String> {
         let rows = sqlx::query(
             "SELECT id, symbol, strategy_id, direction, entry_price, \
-                    overall_confidence, entry_allowed, status, created_at \
+                    overall_confidence, entry_allowed, status, created_at, \
+                    signal_strength, stop_loss, take_profit, \
+                    timeframe_details, market_context \
              FROM strategy_signals \
              WHERE status='pending' AND entry_allowed=true \
              ORDER BY created_at DESC LIMIT $1"
@@ -282,6 +362,12 @@ impl SignalPoller {
             entry_allowed: r.get::<bool, _>("entry_allowed"),
             status: r.get::<String, _>("status"),
             created_at: r.get::<DateTime<Utc>, _>("created_at"),
+            signal_strength: r.try_get::<Decimal, _>("signal_strength").ok(),
+            stop_loss: r.try_get::<Decimal, _>("stop_loss").ok(),
+            take_profit: r.try_get::<Decimal, _>("take_profit").ok(),
+            timeframe_details: r.try_get::<serde_json::Value, _>("timeframe_details")
+                .unwrap_or(serde_json::json!({})),
+            market_context: r.try_get::<serde_json::Value, _>("market_context").ok(),
         }).collect();
 
         Ok(records)
@@ -493,5 +579,32 @@ impl SignalPoller {
         }
 
         Ok(())
+    }
+
+    // ============================================================
+    // 辅助方法
+    // ============================================================
+
+    /// 查询当前活跃交易对（有持仓或有待执行信号的交易对）
+    ///
+    /// 用于 WebSocket tick 订阅，喂数据给风控引擎的黑天鹅检测和 Kelly 仓位计算
+    async fn get_active_symbols(&self) -> Result<Vec<String>, String> {
+        let rows = sqlx::query_scalar::<_, String>(
+            r#"
+            SELECT DISTINCT symbol FROM (
+                -- 有持仓的交易对
+                SELECT symbol FROM trading_positions WHERE quantity != 0
+                UNION
+                -- 有 pending 信号的交易对
+                SELECT symbol FROM strategy_signals WHERE status = 'pending'
+            ) AS active
+            ORDER BY symbol
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| format!("Failed to query active symbols: {}", e))?;
+
+        Ok(rows)
     }
 }

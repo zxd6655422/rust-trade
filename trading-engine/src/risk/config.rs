@@ -8,16 +8,19 @@ fn default_risk_per_trade_pct() -> Decimal {
     Decimal::from(2) / Decimal::from(100) // 2%
 }
 
+fn default_max_position_pct() -> Decimal {
+    Decimal::from(30) / Decimal::from(100) // 30%
+}
+
 /// 风控配置
 #[derive(Debug, Clone, Deserialize)]
 pub struct RiskConfig {
     // ===== 基础风控 =====
 
-    /// 单笔最大仓位 (USDT)
-    pub max_position_size: Decimal,
-
-    /// 单笔最大下单量
-    pub max_order_size: Decimal,
+    /// 单笔最大仓位占权益百分比 (如 0.3 = 30%)
+    /// order_value > equity * max_position_pct 时拒绝
+    #[serde(default = "default_max_position_pct")]
+    pub max_position_pct: Decimal,
 
     /// 止损百分比 (如 0.02 = 2%)
     pub stop_loss_pct: Decimal,
@@ -57,14 +60,18 @@ pub struct RiskConfig {
 
     /// 熔断冷却时间 (秒)
     pub circuit_breaker_cooldown: u64,
+
+    /// 每日重置小时 (UTC 0-23, 0=午夜)
+    /// peak_equity 和 daily_pnl 在该小时跨天时重置
+    #[serde(default)]
+    pub daily_reset_hour: u32,
 }
 
 impl Default for RiskConfig {
     fn default() -> Self {
         Self {
             // 基础风控
-            max_position_size: Decimal::from(1000),
-            max_order_size: Decimal::from(1000),
+            max_position_pct: Decimal::from(30) / Decimal::from(100), // 30%
             stop_loss_pct: Decimal::from(2) / Decimal::from(100), // 2%
             take_profit_pct: Decimal::from(4) / Decimal::from(100), // 4%
             risk_per_trade_pct: Decimal::from(2) / Decimal::from(100), // 2%
@@ -80,6 +87,7 @@ impl Default for RiskConfig {
             volatility_target: Decimal::from(15) / Decimal::from(100), // 15%
             black_swan_threshold: Decimal::from(5) / Decimal::from(100), // 5%
             circuit_breaker_cooldown: 3600, // 1 小时
+            daily_reset_hour: 0, // UTC 午夜
         }
     }
 }

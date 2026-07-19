@@ -18,7 +18,7 @@ use crate::exchange::ExchangeFactory;
 use crate::order::OrderManager;
 use crate::portfolio::PortfolioManager;
 use crate::risk::{RiskEngine, StopLossConfig, StopLossManager};
-use crate::storage::{OrderRepository, PositionRepository, RedisCache, StopOrderRepository};
+use crate::storage::{EventPublisher, EventRepository, OrderRepository, PositionRepository, RedisCache, StopOrderRepository};
 
 /// 一个交易所+交易模式的独立交易单元
 ///
@@ -53,6 +53,8 @@ impl TradingUnit {
         cache: Arc<RedisCache>,
         stop_order_repo: Option<Arc<StopOrderRepository>>,
         order_repo: Option<Arc<OrderRepository>>,
+        event_repo: Option<Arc<EventRepository>>,
+        event_publisher: Option<Arc<EventPublisher>>,
     ) -> Result<Self, String> {
         // 从环境变量获取 API Key
         let api_key = config.api_key()?;
@@ -92,6 +94,16 @@ impl TradingUnit {
         // 设置订单仓储（启用订单持久化）
         if let Some(repo) = order_repo {
             order_manager.set_order_repo(repo);
+        }
+
+        // 设置事件仓储（启用交易日志持久化）
+        if let Some(repo) = event_repo {
+            order_manager.set_event_repo(repo);
+        }
+
+        // 设置事件发布器（启用 Redis Pub/Sub 事件推送）
+        if let Some(publisher) = event_publisher {
+            order_manager.set_event_publisher(publisher);
         }
 
         let order_manager = Arc::new(order_manager);

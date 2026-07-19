@@ -1,11 +1,11 @@
 // risk/engine.rs
 // 风控引擎实现
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Timelike, Utc};
 use rust_decimal::Decimal;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, info, warn};
 
 use super::config::RiskConfig;
@@ -86,6 +86,8 @@ pub struct RiskState {
     pub daily_trade_count: u32,
     /// 最近价格历史 (用于黑天鹅检测)
     pub price_history: HashMap<String, Vec<(DateTime<Utc>, Decimal)>>,
+    /// 上次每日重置的日期（用于自动跨天重置 peak_equity 和 daily_pnl）
+    pub last_daily_reset_date: Option<NaiveDate>,
 }
 
 /// 持仓快照
@@ -98,20 +100,29 @@ pub struct PositionSnapshot {
     pub unrealized_pnl: Decimal,
 }
 
+use crate::storage::RiskConfigRepository;
+
 /// 风控引擎
 pub struct RiskEngine {
-    config: RiskConfig,
+    config: RwLock<RiskConfig>,
+    config_repo: Option<Arc<RiskConfigRepository>>,
     state: Arc<Mutex<RiskState>>,
 }
 
 impl RiskEngine {
-    /// 获取风控配置
-    pub fn config(&self) -> &RiskConfig {
-        &self.config
+    /// 获取当前风控配置（从缓存读取，不持有锁）
+    pub async fn config(&self) -> RiskConfig {
+        self.config.read().await.clone()
     }
 
     /// 创建新的风控引擎
-    pub fn new(config: RiskConfig) -> Self {
+    ///
+    /// - `config_repo`: 数据库风控参数仓储，支持热更新
+    /// - `fallback_config`: DB 加载失败时的兜底配置（来自 config.toml）
+    pub async fn new(config_repo: Arc<RiskConfigRepository>, _fallback_config: RiskConfig) -> Self {
+        let config = config_repo.get_config().await;
+        info!("RiskEngine initialized with config from DB");
+
         let initial_state = RiskState {
             initial_capital: Decimal::ZERO,
             daily_pnl: Decimal::ZERO,
@@ -122,12 +133,55 @@ impl RiskEngine {
             circuit_breaker_until: None,
             daily_trade_count: 0,
             price_history: HashMap::new(),
+            last_daily_reset_date: None,
         };
 
         Self {
-            config,
+            config: RwLock::new(config),
+            config_repo: Some(config_repo),
             state: Arc::new(Mutex::new(initial_state)),
         }
+    }
+
+    /// 测试用构造函数（不依赖数据库）
+    #[cfg(test)]
+    pub fn new_for_test(config: RiskConfig) -> Self {
+        let initial_state = RiskState {
+            initial_capital: Decimal::ZERO,
+            daily_pnl: Decimal::ZERO,
+            peak_equity: Decimal::ZERO,
+            current_equity: Decimal::ZERO,
+            positions: HashMap::new(),
+            last_trade_time: HashMap::new(),
+            circuit_breaker_until: None,
+            daily_trade_count: 0,
+            price_history: HashMap::new(),
+            last_daily_reset_date: None,
+        };
+
+        Self {
+            config: RwLock::new(config),
+            config_repo: None,
+            state: Arc::new(Mutex::new(initial_state)),
+        }
+    }
+
+    /// 从数据库重新加载风控配置（热更新）
+    ///
+    /// 由 sync_account_balance 每 30s 调用一次
+    /// 测试模式下（config_repo = None）跳过
+    pub async fn reload_config(&self) {
+        let repo = match &self.config_repo {
+            Some(repo) => repo,
+            None => return, // 测试模式，无 DB
+        };
+        if let Err(e) = repo.reload().await {
+            warn!("Failed to reload risk config from DB: {}", e);
+            return;
+        }
+        let new_config = repo.get_config().await;
+        *self.config.write().await = new_config;
+        debug!("Risk config reloaded from database");
     }
 
     /// 设置初始资金（从交易所账户获取）
@@ -142,8 +196,48 @@ impl RiskEngine {
     }
 
     /// 同步账户余额到风控状态
+    ///
+    /// 每次调用时：
+    /// 1. 从 DB 热更新风控配置（约 30s 一次）
+    /// 2. 自动检查是否跨交易日，跨日则重置 daily_pnl、daily_trade_count、peak_equity
+    /// 3. 更新当前权益和峰值权益
     pub async fn sync_account_balance(&self, account: &AccountInfo) {
+        // 1. 热更新风控配置
+        self.reload_config().await;
+
+        let config = self.config.read().await;
+        let reset_hour = config.daily_reset_hour;
+        drop(config);
+
         let mut state = self.state.lock().await;
+
+        // 2. 自动跨交易日重置
+        // 交易日起始时刻 = daily_reset_hour (UTC)
+        // 例：daily_reset_hour=8 → UTC 8:00 后算新交易日
+        let now = Utc::now();
+        let effective_date = if now.hour() >= reset_hour {
+            now.date_naive()
+        } else {
+            // 还没到今天的重置时刻，仍属于上一个交易日
+            (now - chrono::Duration::days(1)).date_naive()
+        };
+
+        let should_reset = match state.last_daily_reset_date {
+            Some(last_date) => effective_date > last_date,
+            None => true, // 首次调用，初始化日期
+        };
+        if should_reset {
+            info!(
+                "Daily reset: effective date changed from {:?} to {} (reset_hour={} UTC)",
+                state.last_daily_reset_date, effective_date, reset_hour
+            );
+            state.daily_pnl = Decimal::ZERO;
+            state.daily_trade_count = 0;
+            state.peak_equity = Decimal::ZERO;
+            state.last_daily_reset_date = Some(effective_date);
+        }
+
+        // 3. 更新权益
         state.initial_capital = account.total_equity;
         let total_unrealized: Decimal = state.positions.values().map(|p| p.unrealized_pnl).sum();
         state.current_equity = account.total_equity + state.daily_pnl + total_unrealized;
@@ -199,6 +293,7 @@ impl RiskEngine {
         order: &OrderRequest,
         account: &AccountInfo,
     ) -> Result<RiskDecision, RiskError> {
+        let config = self.config.read().await.clone();
         let state = self.state.lock().await;
 
         // 1. 熔断检查
@@ -212,50 +307,43 @@ impl RiskEngine {
         }
 
         // 2. 日亏损限制
-        if state.daily_pnl < -self.config.max_daily_loss {
+        if state.daily_pnl < -config.max_daily_loss {
             return Ok(RiskDecision::Reject(format!(
                 "Daily loss limit reached: {} / {}",
-                state.daily_pnl, self.config.max_daily_loss
+                state.daily_pnl, config.max_daily_loss
             )));
         }
 
         // 3. 最大回撤检查
         if state.peak_equity > Decimal::ZERO {
             let drawdown = (state.peak_equity - state.current_equity) / state.peak_equity;
-            if drawdown > self.config.max_drawdown_pct {
+            if drawdown > config.max_drawdown_pct {
                 return Ok(RiskDecision::Reject(format!(
                     "Max drawdown breached: {}% / {}%",
                     drawdown * Decimal::from(100),
-                    self.config.max_drawdown_pct * Decimal::from(100)
+                    config.max_drawdown_pct * Decimal::from(100)
                 )));
             }
         }
 
-        // 4. 单笔仓位大小检查
+        // 4. 单笔仓位大小检查（占权益百分比）
         let order_value = order.quantity * order.price.unwrap_or(Decimal::ZERO);
-        if order_value > self.config.max_position_size {
+        let max_position_value = account.total_equity * config.max_position_pct;
+        if order_value > max_position_value {
             return Ok(RiskDecision::Reject(format!(
-                "Order value {} exceeds max position size {}",
-                order_value, self.config.max_position_size
+                "Order value {} exceeds max position {} ({}% of equity {})",
+                order_value, max_position_value, config.max_position_pct * Decimal::from(100), account.total_equity
             )));
         }
 
-        // 5. 单笔下单量检查
-        if order.quantity > self.config.max_order_size {
-            return Ok(RiskDecision::Reject(format!(
-                "Order quantity {} exceeds max order size {}",
-                order.quantity, self.config.max_order_size
-            )));
-        }
-
-        // 6. 总曝光度检查
+        // 5. 总曝光度检查
         let total_exposure: Decimal = state
             .positions
             .values()
             .map(|p| p.quantity * p.current_price)
             .sum();
         let new_exposure = total_exposure + order_value;
-        let max_exposure = account.total_equity * self.config.max_exposure_pct;
+        let max_exposure = account.total_equity * config.max_exposure_pct;
         if new_exposure > max_exposure {
             return Ok(RiskDecision::Reject(format!(
                 "Total exposure {} would exceed limit {}",
@@ -263,15 +351,15 @@ impl RiskEngine {
             )));
         }
 
-        // 7. 黑天鹅检测
-        if self.detect_black_swan(&state, &order.symbol).await {
+        // 6. 黑天鹅检测
+        if self.detect_black_swan(&state, &order.symbol, &config) {
             return Ok(RiskDecision::Reject(
                 "Black swan detected, trading halted".to_string(),
             ));
         }
 
-        // 8. Kelly 仓位调整
-        let adjusted_quantity = self.calculate_kelly_position(order, &state);
+        // 7. Kelly 仓位调整
+        let adjusted_quantity = self.calculate_kelly_position(order, &state, &config);
         if adjusted_quantity < order.quantity {
             return Ok(RiskDecision::Modify(adjusted_quantity));
         }
@@ -292,19 +380,20 @@ impl RiskEngine {
         &self,
         account: &AccountInfo,
     ) -> Vec<RiskAction> {
+        let config = self.config.read().await.clone();
         let state = self.state.lock().await;
         let mut actions = Vec::new();
 
         // 1. 日亏损限制 → 全部平仓
-        if state.daily_pnl < -self.config.max_daily_loss {
+        if state.daily_pnl < -config.max_daily_loss {
             warn!(
                 "⚠️ Daily loss limit breached: {} / {}, force closing all positions",
-                state.daily_pnl, self.config.max_daily_loss
+                state.daily_pnl, config.max_daily_loss
             );
             actions.push(RiskAction::CloseAll {
                 reason: format!(
                     "Daily loss {} exceeds limit {}",
-                    state.daily_pnl, self.config.max_daily_loss
+                    state.daily_pnl, config.max_daily_loss
                 ),
             });
             return actions; // 优先级最高，直接返回
@@ -313,17 +402,17 @@ impl RiskEngine {
         // 2. 最大回撤 → 全部平仓
         if state.peak_equity > Decimal::ZERO {
             let drawdown = (state.peak_equity - state.current_equity) / state.peak_equity;
-            if drawdown > self.config.max_drawdown_pct {
+            if drawdown > config.max_drawdown_pct {
                 warn!(
                     "⚠️ Max drawdown breached: {}% / {}%, force closing all positions",
                     drawdown * Decimal::from(100),
-                    self.config.max_drawdown_pct * Decimal::from(100)
+                    config.max_drawdown_pct * Decimal::from(100)
                 );
                 actions.push(RiskAction::CloseAll {
                     reason: format!(
                         "Drawdown {}% exceeds limit {}%",
                         drawdown * Decimal::from(100),
-                        self.config.max_drawdown_pct * Decimal::from(100)
+                        config.max_drawdown_pct * Decimal::from(100)
                     ),
                 });
                 return actions;
@@ -336,7 +425,7 @@ impl RiskEngine {
             .values()
             .map(|p| p.quantity * p.current_price)
             .sum();
-        let max_exposure = account.total_equity * self.config.max_exposure_pct;
+        let max_exposure = account.total_equity * config.max_exposure_pct;
 
         if total_exposure > max_exposure && !state.positions.is_empty() {
             let excess_ratio = (total_exposure - max_exposure) / total_exposure;
@@ -388,28 +477,30 @@ impl RiskEngine {
             }
         }
 
-        // 4. 单个持仓过大 → 减仓
+        // 4. 单个持仓过大 → 减仓（占权益百分比）
+        let max_position_value = account.total_equity * config.max_position_pct;
         for pos in state.positions.values() {
             let pos_value = pos.quantity * pos.current_price;
-            if pos_value > self.config.max_position_size {
-                let target_value = self.config.max_position_size;
+            if pos_value > max_position_value {
                 let target_qty = if pos.current_price > Decimal::ZERO {
-                    target_value / pos.current_price
+                    max_position_value / pos.current_price
                 } else {
                     Decimal::ZERO
                 };
                 if target_qty < pos.quantity {
                     warn!(
-                        "⚠️ Position {} value {} exceeds max {}, reducing to {}",
-                        pos.symbol, pos_value, self.config.max_position_size, target_qty
+                        "⚠️ Position {} value {} exceeds max {} ({}% of equity {}), reducing to {}",
+                        pos.symbol, pos_value, max_position_value,
+                        config.max_position_pct * Decimal::from(100), account.total_equity, target_qty
                     );
                     actions.push(RiskAction::ReducePosition {
                         symbol: pos.symbol.clone(),
                         current_quantity: pos.quantity,
                         target_quantity: target_qty,
                         reason: format!(
-                            "Position value {} exceeds max {}",
-                            pos_value, self.config.max_position_size
+                            "Position value {} exceeds max {} ({}% of equity)",
+                            pos_value, max_position_value,
+                            config.max_position_pct * Decimal::from(100)
                         ),
                     });
                 }
@@ -527,8 +618,9 @@ impl RiskEngine {
 
     /// 手动触发熔断
     pub async fn trigger_circuit_breaker(&self, reason: &str) {
+        let config = self.config.read().await;
         let mut state = self.state.lock().await;
-        let until = Utc::now() + chrono::Duration::seconds(self.config.circuit_breaker_cooldown as i64);
+        let until = Utc::now() + chrono::Duration::seconds(config.circuit_breaker_cooldown as i64);
         state.circuit_breaker_until = Some(until);
         warn!(
             "Circuit breaker triggered: {} | Will resume at: {}",
@@ -536,12 +628,14 @@ impl RiskEngine {
         );
     }
 
-    /// 重置日统计
+    /// 重置日统计（手动调用时使用，自动跨天重置由 sync_account_balance 处理）
     pub async fn reset_daily_stats(&self) {
         let mut state = self.state.lock().await;
         state.daily_pnl = Decimal::ZERO;
         state.daily_trade_count = 0;
-        info!("Daily risk stats reset");
+        state.peak_equity = Decimal::ZERO;
+        state.last_daily_reset_date = Some(Utc::now().date_naive());
+        info!("Daily risk stats reset (including peak_equity)");
     }
 
     /// 从交易所同步已实现盈亏（替代简化计算）
@@ -586,7 +680,7 @@ impl RiskEngine {
     }
 
     /// 检测黑天鹅事件
-    async fn detect_black_swan(&self, state: &RiskState, symbol: &str) -> bool {
+    fn detect_black_swan(&self, state: &RiskState, symbol: &str, config: &RiskConfig) -> bool {
         if let Some(history) = state.price_history.get(symbol) {
             if history.len() < 2 {
                 return false;
@@ -611,7 +705,7 @@ impl RiskEngine {
 
             if min_price > Decimal::ZERO {
                 let change = (max_price - min_price) / min_price;
-                if change > self.config.black_swan_threshold {
+                if change > config.black_swan_threshold {
                     warn!(
                         "Black swan detected for {}: price changed {}% in {} ticks",
                         symbol,
@@ -627,12 +721,12 @@ impl RiskEngine {
     }
 
     /// Kelly 公式仓位计算
-    fn calculate_kelly_position(&self, order: &OrderRequest, state: &RiskState) -> Decimal {
+    fn calculate_kelly_position(&self, order: &OrderRequest, state: &RiskState, config: &RiskConfig) -> Decimal {
         // 简化版本：基于历史胜率和盈亏比
         // 实际应该从交易历史中计算
 
         // 默认使用保守的 1/4 Kelly
-        let base_kelly = self.config.kelly_fraction;
+        let base_kelly = config.kelly_fraction;
 
         // 波动率调整
         if let Some(history) = state.price_history.get(&order.symbol) {
@@ -641,8 +735,8 @@ impl RiskEngine {
                 let volatility = self.calculate_volatility(&prices);
 
                 // 波动率越高，仓位越小
-                if volatility > self.config.volatility_target {
-                    let adjustment = self.config.volatility_target / volatility;
+                if volatility > config.volatility_target {
+                    let adjustment = config.volatility_target / volatility;
                     return order.quantity * base_kelly * adjustment;
                 }
             }

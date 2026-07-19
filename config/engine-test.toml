@@ -24,8 +24,7 @@ data_source = "trades"  # trades / tickers / candle1m
 
 [risk_control]
 # 基础风控
-max_position_size = 500.0
-max_order_size = 0.001
+max_position_pct = 0.30
 stop_loss_pct = 0.02
 take_profit_pct = 0.04
 

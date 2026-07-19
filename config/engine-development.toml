@@ -28,8 +28,7 @@ data_source = "trades"  # trades / tickers / candle1m
 
 [risk_control]
 # 基础风控
-max_position_size = 500.0        # 单笔最大仓位 500 USDT (开发环境用小额)
-max_order_size = 0.001           # 单笔最大 0.001 BTC
+max_position_pct = 0.30          # 单笔最大仓位占权益 30%
 stop_loss_pct = 0.02             # 2% 止损
 take_profit_pct = 0.04           # 4% 止盈
 

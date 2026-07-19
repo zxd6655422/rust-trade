@@ -1569,3 +1569,336 @@ pub async fn get_account_uids(state: web::Data<AppState>) -> HttpResponse {
         }
     }
 }
+
+// ============================================================
+// 交易事件查询 API
+// ============================================================
+
+/// 成交日志查询参数
+#[derive(Debug, Deserialize)]
+pub struct TradeLogQuery {
+    pub symbol: Option<String>,
+    pub signal_id: Option<Uuid>,
+    pub event_type: Option<String>,
+    /// 过滤来源: live / paper / backtest
+    pub source: Option<String>,
+    #[serde(default = "default_limit")]
+    pub limit: i64,
+}
+
+/// 风控日志查询参数
+#[derive(Debug, Deserialize)]
+pub struct RiskLogQuery {
+    pub event_type: Option<String>,
+    pub symbol: Option<String>,
+    /// 过滤来源: live / paper
+    pub source: Option<String>,
+    #[serde(default = "default_limit")]
+    pub limit: i64,
+}
+
+fn default_limit() -> i64 {
+    50
+}
+
+/// GET /api/events/trades - 查询成交日志
+pub async fn get_trade_logs(
+    state: web::Data<AppState>,
+    query: web::Query<TradeLogQuery>,
+) -> HttpResponse {
+    // 直接查询 trade_logs 表
+    let pool = &state.pool;
+
+    let mut sql = String::from(
+        "SELECT id, timestamp, strategy_id, symbol, side, quantity, price, order_id, pnl, notes,
+                signal_id, exchange, market_type, event_type, commission, slippage, details
+         FROM trade_logs WHERE 1=1"
+    );
+
+    if query.symbol.is_some() {
+        sql.push_str(" AND symbol = $1");
+    }
+    if query.signal_id.is_some() {
+        sql.push_str(&format!(" AND signal_id = ${}", if query.symbol.is_some() { "2" } else { "1" }));
+    }
+    if query.event_type.is_some() {
+        sql.push_str(&format!(" AND event_type = ${}", if query.symbol.is_some() { if query.signal_id.is_some() { "3" } else { "2" } } else { if query.signal_id.is_some() { "2" } else { "1" } }));
+    }
+
+    sql.push_str(" ORDER BY timestamp DESC LIMIT ");
+
+    // 简化：直接使用 sqlx query_as
+    let records = sqlx::query_as::<_, TradeLogRow>(
+        r#"
+        SELECT id, timestamp, strategy_id, symbol, side, quantity, price, order_id, pnl, notes,
+               signal_id, exchange, market_type, event_type, commission, slippage, details, source
+        FROM trade_logs
+        WHERE ($1::text IS NULL OR symbol = $1)
+          AND ($2::uuid IS NULL OR signal_id = $2)
+          AND ($3::text IS NULL OR event_type = $3)
+          AND ($4::text IS NULL OR source = $4)
+        ORDER BY timestamp DESC
+        LIMIT $5
+        "#,
+    )
+    .bind(query.symbol.as_deref())
+    .bind(query.signal_id)
+    .bind(query.event_type.as_deref())
+    .bind(query.source.as_deref())
+    .bind(query.limit)
+    .fetch_all(pool)
+    .await;
+
+    match records {
+        Ok(rows) => HttpResponse::Ok().json(serde_json::json!({
+            "success": true,
+            "data": rows,
+            "count": rows.len(),
+        })),
+        Err(e) => {
+            error!("Failed to fetch trade logs: {}", e);
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "success": false,
+                "message": format!("Failed to fetch trade logs: {}", e)
+            }))
+        }
+    }
+}
+
+/// 风控日志行
+#[derive(Debug, Serialize, sqlx::FromRow)]
+struct RiskLogRow {
+    pub id: Uuid,
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+    pub event_type: String,
+    pub symbol: Option<String>,
+    pub details: Option<serde_json::Value>,
+    pub decision: String,
+    pub signal_id: Option<Uuid>,
+    pub exchange: Option<String>,
+    pub market_type: Option<String>,
+    pub check_result: Option<String>,
+    pub current_equity: Option<Decimal>,
+    pub peak_equity: Option<Decimal>,
+    pub daily_pnl: Option<Decimal>,
+    pub source: Option<String>,
+}
+
+/// 成交日志行
+#[derive(Debug, Serialize, sqlx::FromRow)]
+struct TradeLogRow {
+    pub id: Uuid,
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+    pub strategy_id: Option<String>,
+    pub symbol: String,
+    pub side: String,
+    pub quantity: Decimal,
+    pub price: Decimal,
+    pub order_id: Option<String>,
+    pub pnl: Option<Decimal>,
+    pub notes: Option<String>,
+    pub signal_id: Option<Uuid>,
+    pub exchange: Option<String>,
+    pub market_type: Option<String>,
+    pub event_type: Option<String>,
+    pub commission: Option<Decimal>,
+    pub slippage: Option<Decimal>,
+    pub details: Option<serde_json::Value>,
+    pub source: Option<String>,
+}
+
+/// GET /api/events/risk - 查询风控日志
+pub async fn get_risk_logs(
+    state: web::Data<AppState>,
+    query: web::Query<RiskLogQuery>,
+) -> HttpResponse {
+    let pool = &state.pool;
+
+    let records = sqlx::query_as::<_, RiskLogRow>(
+        r#"
+        SELECT id, timestamp, event_type, symbol, details, decision,
+               signal_id, exchange, market_type, check_result,
+               current_equity, peak_equity, daily_pnl, source
+        FROM risk_logs
+        WHERE ($1::text IS NULL OR event_type = $1)
+          AND ($2::text IS NULL OR symbol = $2)
+          AND ($3::text IS NULL OR source = $3)
+        ORDER BY timestamp DESC
+        LIMIT $4
+        "#,
+    )
+    .bind(query.event_type.as_deref())
+    .bind(query.symbol.as_deref())
+    .bind(query.source.as_deref())
+    .bind(query.limit)
+    .fetch_all(pool)
+    .await;
+
+    match records {
+        Ok(rows) => HttpResponse::Ok().json(serde_json::json!({
+            "success": true,
+            "data": rows,
+            "count": rows.len(),
+        })),
+        Err(e) => {
+            error!("Failed to fetch risk logs: {}", e);
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "success": false,
+                "message": format!("Failed to fetch risk logs: {}", e)
+            }))
+        }
+    }
+}
+
+/// GET /api/events/timeline?signal_id=xxx - 全链路时间线
+pub async fn get_event_timeline(
+    state: web::Data<AppState>,
+    query: web::Query<std::collections::HashMap<String, String>>,
+) -> HttpResponse {
+    let signal_id_str = match query.get("signal_id") {
+        Some(id) => id,
+        None => {
+            return HttpResponse::BadRequest().json(serde_json::json!({
+                "success": false,
+                "message": "signal_id parameter is required"
+            }));
+        }
+    };
+
+    let signal_id = match Uuid::parse_str(signal_id_str) {
+        Ok(id) => id,
+        Err(_) => {
+            return HttpResponse::BadRequest().json(serde_json::json!({
+                "success": false,
+                "message": "Invalid signal_id format"
+            }));
+        }
+    };
+
+    let pool = &state.pool;
+
+    // 1. 从 strategy_signals 获取策略分析信息
+    let signal_info = sqlx::query_as::<_, (Uuid, String, String, String, Decimal, Decimal, Option<Decimal>, Option<Decimal>, Option<Decimal>, serde_json::Value, Option<serde_json::Value>, chrono::DateTime<chrono::Utc>)>(
+        r#"
+        SELECT id, strategy_id, symbol, direction, entry_price, overall_confidence,
+               signal_strength, stop_loss, take_profit,
+               timeframe_details, market_context, created_at
+        FROM strategy_signals
+        WHERE id = $1
+        "#,
+    )
+    .bind(signal_id)
+    .fetch_optional(pool)
+    .await;
+
+    // 2. 从 trade_logs 获取成交记录
+    let trade_logs = sqlx::query_as::<_, TradeLogRow>(
+        r#"
+        SELECT id, timestamp, strategy_id, symbol, side, quantity, price, order_id, pnl, notes,
+               signal_id, exchange, market_type, event_type, commission, slippage, details
+        FROM trade_logs
+        WHERE signal_id = $1
+        ORDER BY timestamp ASC
+        "#,
+    )
+    .bind(signal_id)
+    .fetch_all(pool)
+    .await;
+
+    // 3. 从 risk_logs 获取风控记录
+    let risk_logs = sqlx::query_as::<_, RiskLogRow>(
+        r#"
+        SELECT id, timestamp, event_type, symbol, details, decision,
+               signal_id, exchange, market_type, check_result,
+               current_equity, peak_equity, daily_pnl
+        FROM risk_logs
+        WHERE signal_id = $1
+        ORDER BY timestamp ASC
+        "#,
+    )
+    .bind(signal_id)
+    .fetch_all(pool)
+    .await;
+
+    // 构建时间线
+    let mut timeline = Vec::new();
+
+    // 添加策略分析事件
+    if let Ok(Some(sig)) = signal_info {
+        timeline.push(serde_json::json!({
+            "time": sig.11,
+            "event": "strategy_analyzed",
+            "data": {
+                "signal_id": sig.0,
+                "strategy_id": sig.1,
+                "symbol": sig.2,
+                "direction": sig.3,
+                "entry_price": sig.4,
+                "confidence": sig.5,
+                "signal_strength": sig.6,
+                "stop_loss": sig.7,
+                "take_profit": sig.8,
+                "timeframe_details": sig.9,
+                "market_context": sig.10,
+            }
+        }));
+    }
+
+    // 添加风控检查事件
+    if let Ok(logs) = risk_logs {
+        for log in logs {
+            timeline.push(serde_json::json!({
+                "time": log.timestamp,
+                "event": log.event_type,
+                "data": {
+                    "symbol": log.symbol,
+                    "decision": log.decision,
+                    "check_result": log.check_result,
+                    "exchange": log.exchange,
+                    "market_type": log.market_type,
+                    "current_equity": log.current_equity,
+                    "peak_equity": log.peak_equity,
+                    "daily_pnl": log.daily_pnl,
+                    "details": log.details,
+                }
+            }));
+        }
+    }
+
+    // 添加成交事件
+    if let Ok(logs) = trade_logs {
+        for log in logs {
+            timeline.push(serde_json::json!({
+                "time": log.timestamp,
+                "event": log.event_type.as_deref().unwrap_or("order_filled"),
+                "data": {
+                    "order_id": log.order_id,
+                    "symbol": log.symbol,
+                    "side": log.side,
+                    "quantity": log.quantity,
+                    "price": log.price,
+                    "pnl": log.pnl,
+                    "commission": log.commission,
+                    "slippage": log.slippage,
+                    "exchange": log.exchange,
+                    "market_type": log.market_type,
+                    "details": log.details,
+                }
+            }));
+        }
+    }
+
+    // 按时间排序
+    timeline.sort_by(|a, b| {
+        let time_a = a.get("time").and_then(|t| t.as_str()).unwrap_or("");
+        let time_b = b.get("time").and_then(|t| t.as_str()).unwrap_or("");
+        time_a.cmp(time_b)
+    });
+
+    HttpResponse::Ok().json(serde_json::json!({
+        "success": true,
+        "signal_id": signal_id,
+        "timeline": timeline,
+        "count": timeline.len(),
+    }))
+}

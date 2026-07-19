@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
 use tracing::{error, info, warn};
 
+use trading_common::data::event_types::TradingEvent;
 use trading_common::data::types::TickData;
 
 /// WebSocket 心跳间隔
@@ -24,6 +25,10 @@ pub enum WsRequest {
     Subscribe { symbols: Vec<String> },
     /// 取消订阅
     Unsubscribe { symbols: Vec<String> },
+    /// 订阅交易事件
+    SubscribeEvents,
+    /// 取消订阅交易事件
+    UnsubscribeEvents,
     /// 请求回测
     Backtest {
         strategy: String,
@@ -42,6 +47,8 @@ pub enum WsResponse {
     BacktestProgress(BacktestProgressMessage),
     /// 回测完成
     BacktestResult(BacktestResultMessage),
+    /// 交易事件（来自 trading-engine）
+    TradingEvent(TradingEvent),
     /// 错误
     Error { message: String },
     /// 订阅确认
@@ -80,15 +87,21 @@ pub struct WsSession {
     subscribed_symbols: Vec<String>,
     /// 数据接收通道
     tick_rx: broadcast::Receiver<TickData>,
+    /// 交易事件接收通道
+    event_rx: broadcast::Receiver<TradingEvent>,
+    /// 是否订阅交易事件
+    subscribe_events: bool,
 }
 
 impl WsSession {
-    pub fn new(tick_rx: broadcast::Receiver<TickData>) -> Self {
+    pub fn new(tick_rx: broadcast::Receiver<TickData>, event_rx: broadcast::Receiver<TradingEvent>) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
             hb: Instant::now(),
             subscribed_symbols: Vec::new(),
             tick_rx,
+            event_rx,
+            subscribe_events: false,
         }
     }
 
@@ -139,7 +152,7 @@ impl Actor for WsSession {
         info!("WebSocket session started: {}", self.id);
         self.start_heartbeat(ctx);
 
-        // 启动数据接收任务
+        // 启动 tick 数据接收任务
         let addr = ctx.address();
         let mut tick_rx = self.tick_rx.resubscribe();
 
@@ -154,6 +167,27 @@ impl Actor for WsSession {
                     }
                     Err(broadcast::error::RecvError::Closed) => {
                         info!("Tick channel closed");
+                        break;
+                    }
+                }
+            }
+        });
+
+        // 启动交易事件接收任务
+        let addr = ctx.address();
+        let mut event_rx = self.event_rx.resubscribe();
+
+        tokio::spawn(async move {
+            loop {
+                match event_rx.recv().await {
+                    Ok(event) => {
+                        addr.do_send(TradingEventMessage(event));
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        warn!("WebSocket event receiver lagged by {} messages", n);
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        info!("Event channel closed");
                         break;
                     }
                 }
@@ -196,6 +230,27 @@ impl Handler<TickDataMessage> for WsSession {
     }
 }
 
+/// 交易事件消息
+#[derive(Message)]
+#[rtype(result = "()")]
+struct TradingEventMessage(TradingEvent);
+
+impl Handler<TradingEventMessage> for WsSession {
+    type Result = ();
+
+    fn handle(&mut self, msg: TradingEventMessage, ctx: &mut Self::Context) {
+        // 只有订阅了事件才推送
+        if !self.subscribe_events {
+            return;
+        }
+
+        let response = WsResponse::TradingEvent(msg.0);
+        if let Ok(json) = serde_json::to_string(&response) {
+            ctx.text(json);
+        }
+    }
+}
+
 /// 处理 WebSocket 消息
 impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WsSession {
     fn handle(&mut self, msg: Result<ws::Message, ws::ProtocolError>, ctx: &mut Self::Context) {
@@ -225,6 +280,16 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WsSession {
                         let response = match request {
                             WsRequest::Subscribe { symbols } => self.handle_subscribe(symbols),
                             WsRequest::Unsubscribe { symbols } => self.handle_unsubscribe(symbols),
+                            WsRequest::SubscribeEvents => {
+                                self.subscribe_events = true;
+                                info!("Session {} subscribed to trading events", self.id);
+                                WsResponse::Subscribed { symbols: vec!["events".to_string()] }
+                            }
+                            WsRequest::UnsubscribeEvents => {
+                                self.subscribe_events = false;
+                                info!("Session {} unsubscribed from trading events", self.id);
+                                WsResponse::Unsubscribed { symbols: vec!["events".to_string()] }
+                            }
                             WsRequest::Backtest { .. } => {
                                 // 回测通过 HTTP API 处理，WebSocket 只用于实时数据
                                 WsResponse::Error {
@@ -271,8 +336,10 @@ pub async fn ws_handler(
     req: HttpRequest,
     stream: web::Payload,
     tick_tx: web::Data<broadcast::Sender<TickData>>,
+    event_tx: web::Data<broadcast::Sender<TradingEvent>>,
 ) -> Result<HttpResponse, actix_web::Error> {
     let tick_rx = tick_tx.subscribe();
-    let session = WsSession::new(tick_rx);
+    let event_rx = event_tx.subscribe();
+    let session = WsSession::new(tick_rx, event_rx);
     ws::start(session, &req, stream)
 }

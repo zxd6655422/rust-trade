@@ -1,5 +1,69 @@
 # Changelog
 
+## [2026-07-18] 交易事件日志系统
+
+### 设计目标
+- 全链路日志持久化（策略分析→风控→下单→成交→止损）
+- `signal_id` 贯穿全链路，支持完整时间线回放
+- 实时 WebSocket 事件推送
+- REST API 查询成交/风控日志
+
+### 数据库变更
+
+| 表名 | 变更 | 说明 |
+|------|------|------|
+| trade_logs | 新增字段 | `signal_id`, `exchange`, `market_type`, `event_type`, `commission`, `slippage`, `details` |
+| risk_logs | 新增字段 | `signal_id`, `exchange`, `market_type`, `check_result`, `current_equity`, `peak_equity`, `daily_pnl` |
+
+**SQL 脚本**: `version/v1.0/sql/20260718_trading_monitor_logs.sql`
+
+### 新增文件
+
+| 文件 | 说明 |
+|------|------|
+| `trading-common/src/data/event_types.rs` | TradingEvent 全链路事件枚举 |
+| `trading-engine/src/storage/event_repository.rs` | 事件仓储 (trade_logs/risk_logs 写入) |
+| `trading-engine/src/storage/event_publisher.rs` | Redis 事件发布器 (LPUSH) |
+| `trading-core/src/service/event_subscriber.rs` | Redis 事件订阅器 (BRPOP) |
+
+### 修改文件
+
+| 文件 | 说明 |
+|------|------|
+| `trading-common/src/data/mod.rs` | 注册 event_types 模块 |
+| `trading-engine/src/storage/mod.rs` | 注册 event_repository/event_publisher |
+| `trading-engine/src/storage/cache.rs` | 新增 manager() 方法 |
+| `trading-engine/src/order/manager.rs` | 集成事件记录，execute_signal 传 signal_id |
+| `trading-engine/src/engine/signal_poller.rs` | 传递 signal_id，读取更多信号字段 |
+| `trading-engine/src/engine/trading_unit.rs` | 注入 EventRepository/EventPublisher |
+| `trading-engine/src/main.rs` | 创建并注入事件组件 |
+| `trading-core/src/service/mod.rs` | 注册 event_subscriber 模块 |
+| `trading-core/src/api/websocket.rs` | 支持交易事件 WebSocket 推送 |
+| `trading-core/src/api/handlers.rs` | 新增 /api/events/* 端点 |
+| `trading-core/src/api/server.rs` | 注册事件 API 路由 |
+
+### 新增 API 端点
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/api/events/trades` | GET | 查询成交日志（symbol/signal_id/event_type/limit） |
+| `/api/events/risk` | GET | 查询风控日志（event_type/symbol/limit） |
+| `/api/events/timeline?signal_id=xxx` | GET | 全链路时间线回放 |
+
+### 跨进程通信
+
+- trading-engine 通过 Redis LPUSH 发布事件到 `trading:events:queue`
+- trading-core 通过 Redis BRPOP 消费事件，转发到 WebSocket 客户端
+
+### 模拟交易事件支持
+
+- PaperTrader 内置事件日志（`Vec<TradingEvent>`）
+- 成交时自动记录 `OrderFilled` 事件
+- 调用方通过 `drain_events()` 取出事件，可写入 trade_logs 或 Redis
+- 事件标识：`exchange="paper"`, `market_type="paper"`
+
+---
+
 ## [2026-07-16] 账户同步优化
 
 ### 优化目标
