@@ -583,6 +583,96 @@ pub async fn get_positions(
     Ok(positions)
 }
 
+/// 从快照表获取最新账户信息
+#[tauri::command]
+pub async fn get_account_snapshot(
+    state: State<'_, AppState>,
+    exchange: Option<String>,
+    market_type: Option<String>,
+) -> Result<Option<serde_json::Value>, String> {
+    let exchange = exchange.unwrap_or_else(|| "binance".to_string());
+    let market_type = market_type.unwrap_or_else(|| "futures".to_string());
+
+    info!("Getting account snapshot for exchange={}, market_type={}", exchange, market_type);
+
+    let snapshot = state.repository
+        .get_latest_account_snapshot(&exchange, &market_type)
+        .await
+        .map_err(|e| {
+            error!("Failed to get account snapshot: {}", e);
+            e.to_string()
+        })?;
+
+    match snapshot {
+        Some(s) => {
+            let equity = s.total_equity.to_string();
+            let unrealized = s.unrealized_pnl.to_string();
+            info!("Account snapshot: equity={}, unrealized_pnl={}, positions={}", equity, unrealized, s.position_count);
+            Ok(Some(serde_json::json!({
+                "exchange": s.exchange,
+                "market_type": s.market_type,
+                "snapshot_at": s.snapshot_at.to_rfc3339(),
+                "total_equity": equity,
+                "total_balance": s.total_balance.to_string(),
+                "available_balance": s.available_balance.to_string(),
+                "frozen_balance": s.frozen_balance.to_string(),
+                "unrealized_pnl": unrealized,
+                "initial_margin": s.initial_margin.map(|v| v.to_string()),
+                "maint_margin": s.maint_margin.map(|v| v.to_string()),
+                "margin_ratio": s.margin_ratio.map(|v| v.to_string()),
+                "position_count": s.position_count,
+            })))
+        }
+        None => {
+            info!("No account snapshot found for exchange={}, market_type={}", exchange, market_type);
+            Ok(None)
+        }
+    }
+}
+
+/// 从快照表获取最新持仓列表
+#[tauri::command]
+pub async fn get_account_positions(
+    state: State<'_, AppState>,
+    exchange: Option<String>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let exchange = exchange.unwrap_or_else(|| "binance".to_string());
+
+    info!("Getting account positions from snapshot for exchange={}", exchange);
+
+    let positions = state.repository
+        .get_latest_positions(&exchange)
+        .await
+        .map_err(|e| {
+            error!("Failed to get account positions: {}", e);
+            e.to_string()
+        })?;
+
+    let result: Vec<serde_json::Value> = positions.iter().map(|p| {
+        serde_json::json!({
+            "exchange": p.exchange,
+            "symbol": p.symbol,
+            "raw_symbol": p.raw_symbol,
+            "snapshot_at": p.snapshot_at.to_rfc3339(),
+            "position_side": p.position_side.as_str(),
+            "position_amt": p.position_amt.to_string(),
+            "entry_price": p.entry_price.to_string(),
+            "mark_price": p.mark_price.to_string(),
+            "unrealized_pnl": p.unrealized_pnl.to_string(),
+            "leverage": p.leverage,
+            "margin_type": p.margin_type.as_str(),
+            "initial_margin": p.initial_margin.to_string(),
+            "maint_margin": p.maint_margin.to_string(),
+            "liquidation_price": p.liquidation_price.map(|v| v.to_string()),
+            "notional": p.notional.to_string(),
+            "break_even_price": p.break_even_price.map(|v| v.to_string()),
+        })
+    }).collect();
+
+    info!("Retrieved {} account positions from snapshot", result.len());
+    Ok(result)
+}
+
 /// 获取交易历史记录
 #[tauri::command]
 pub async fn get_trade_history(
@@ -1236,6 +1326,9 @@ pub async fn start_paper_trading(
     // 如果提供了新配置，重新创建 trader
     if let Some(req) = request {
         let config = trading_common::paper::PaperTraderConfig {
+            instance_id: None,
+            strategy_type: None,
+            display_name: None,
             initial_capital: req.initial_capital
                 .and_then(|s| Decimal::from_str(&s).ok())
                 .unwrap_or(Decimal::from(10000)),

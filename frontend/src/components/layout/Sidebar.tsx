@@ -3,7 +3,7 @@
 import React from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { LayoutDashboard, Settings, Activity, Zap } from 'lucide-react';
+import { LayoutDashboard, Settings, Activity, Zap, LineChart, Brain, FlaskConical } from 'lucide-react';
 import { useLanguage } from '@/lib/i18n/context';
 
 const Sidebar = () => {
@@ -11,8 +11,11 @@ const Sidebar = () => {
   const { t } = useLanguage();
 
   const menuItems = [
-    { label: t.sidebar.dashboard, path: '/', icon: LayoutDashboard },
+    { label: t.sidebar.overview, path: '/overview', icon: LayoutDashboard },
+    { label: t.sidebar.market, path: '/market', icon: LineChart },
     { label: t.sidebar.trading, path: '/trading', icon: Activity },
+    { label: t.sidebar.strategy, path: '/strategy', icon: Brain },
+    { label: t.sidebar.backtest, path: '/backtest', icon: FlaskConical },
     { label: t.sidebar.settings, path: '/settings', icon: Settings },
   ];
 

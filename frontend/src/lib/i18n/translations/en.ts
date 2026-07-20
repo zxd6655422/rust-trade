@@ -18,8 +18,12 @@ export const en = {
 
   // Sidebar
   sidebar: {
-    dashboard: 'Dashboard',
+    overview: 'Overview',
+    market: 'Market',
     trading: 'Trading',
+    strategy: 'Strategy',
+    backtest: 'Backtest',
+    dashboard: 'Dashboard',
     settings: 'Settings',
     quantitativeTrading: 'Quantitative Trading',
   },
@@ -470,6 +474,38 @@ export const en = {
     type: 'Type',
     status: 'Status',
     noTrades: 'No trades yet',
+  },
+
+  // Overview
+  overview: {
+    title: 'Overview',
+    subtitle: 'Account overview and system status',
+    totalAssets: 'Total Assets',
+    todayPnl: "Today's PnL",
+    positionCount: 'Positions',
+    winRate: 'Win Rate',
+    signalCount: 'Signals',
+    equityCurve: 'Equity Curve',
+    activePositions: 'Active Positions',
+    recentSignals: 'Recent Signals',
+    systemStatus: 'System Status',
+    tradingCore: 'Trading Core',
+    database: 'Database',
+    autoTrading: 'Auto Trading',
+    dataCoverage: 'Data Coverage',
+    exchange: 'Exchange',
+    running: 'Running',
+    paused: 'Paused',
+    stopped: 'Stopped',
+    lastUpdate: 'Last update',
+    viewAll: 'View All',
+    noPositions: 'No open positions',
+    noPositionsDesc: 'Positions will appear here when trades are executed',
+    noSignals: 'No signals yet',
+    noSignalsDesc: 'Signals will appear here when strategies generate them',
+    thisWeek: 'this week',
+    pendingCount: 'pending',
+    days: 'days',
   },
 
   // Auto Trading Status

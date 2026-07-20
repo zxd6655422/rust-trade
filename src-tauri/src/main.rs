@@ -75,6 +75,8 @@ fn main() {
             get_24h_stats,
             // P9: 持仓和交易记录
             get_positions,
+            get_account_snapshot,
+            get_account_positions,
             get_trade_history,
             get_pnl_summary,
             // P10: 统计分析

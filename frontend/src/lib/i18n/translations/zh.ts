@@ -20,8 +20,12 @@ export const zh: Translations = {
 
   // 侧边栏
   sidebar: {
-    dashboard: '仪表盘',
-    trading: '交易中心',
+    overview: '概览',
+    market: '行情',
+    trading: '交易',
+    strategy: '策略',
+    backtest: '回测',
+    dashboard: '数据',
     settings: '设置',
     quantitativeTrading: '量化交易',
   },
@@ -472,6 +476,38 @@ export const zh: Translations = {
     type: '类型',
     status: '状态',
     noTrades: '暂无交易记录',
+  },
+
+  // 概览
+  overview: {
+    title: '概览',
+    subtitle: '账户总览与系统状态',
+    totalAssets: '总资产',
+    todayPnl: '今日盈亏',
+    positionCount: '持仓数',
+    winRate: '胜率',
+    signalCount: '信号数',
+    equityCurve: '收益曲线',
+    activePositions: '活跃持仓',
+    recentSignals: '最近信号',
+    systemStatus: '系统状态',
+    tradingCore: 'Trading Core',
+    database: '数据库',
+    autoTrading: '自动交易',
+    dataCoverage: '数据覆盖',
+    exchange: '交易所',
+    running: '运行中',
+    paused: '已暂停',
+    stopped: '已停止',
+    lastUpdate: '最后更新',
+    viewAll: '查看全部',
+    noPositions: '暂无持仓',
+    noPositionsDesc: '执行交易后持仓将显示在此处',
+    noSignals: '暂无信号',
+    noSignalsDesc: '策略生成信号后将显示在此处',
+    thisWeek: '本周',
+    pendingCount: '待验证',
+    days: '天',
   },
 
   // 自动交易状态
