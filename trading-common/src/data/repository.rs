@@ -2965,6 +2965,54 @@ impl TickDataRepository {
         }).collect())
     }
 
+    /// 获取最新现货资产余额（过滤余额为 0 的资产）
+    pub async fn get_latest_asset_balances(
+        &self,
+        exchange: &str,
+        market_type: &str,
+    ) -> DataResult<Vec<crate::data::account_types::AssetBalance>> {
+        // 获取最新快照时间
+        let latest_time: Option<DateTime<Utc>> = sqlx::query_scalar(
+            "SELECT MAX(snapshot_at) FROM asset_balance \
+             WHERE exchange = $1 AND market_type = $2"
+        )
+        .bind(exchange)
+        .bind(market_type)
+        .fetch_one(&self.pool)
+        .await?;
+
+        let snapshot_at = match latest_time {
+            Some(t) => t,
+            None => return Ok(Vec::new()),
+        };
+
+        // 查询该快照时间下余额 > 0 的资产
+        let rows = sqlx::query(
+            "SELECT * FROM asset_balance \
+             WHERE exchange = $1 AND market_type = $2 AND snapshot_at = $3 \
+               AND (total > 0 OR available > 0 OR frozen > 0) \
+             ORDER BY asset"
+        )
+        .bind(exchange)
+        .bind(market_type)
+        .bind(snapshot_at)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.iter().map(|r| crate::data::account_types::AssetBalance {
+            exchange: r.get("exchange"),
+            market_type: r.get("market_type"),
+            uid: r.get("uid"),
+            asset: r.get("asset"),
+            snapshot_at: r.get("snapshot_at"),
+            total: r.get("total"),
+            available: r.get("available"),
+            frozen: r.get("frozen"),
+            unrealized_pnl: r.get("unrealized_pnl"),
+            usd_value: r.get("usd_value"),
+        }).collect())
+    }
+
     /// 清理旧的账户快照
     pub async fn cleanup_old_account_snapshots(&self) -> DataResult<u64> {
         let result = sqlx::query(

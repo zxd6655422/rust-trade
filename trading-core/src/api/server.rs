@@ -109,6 +109,7 @@ impl ApiServer {
                         .route("/account/overview", web::get().to(handlers::get_account_overview))
                         .route("/account/snapshot", web::get().to(handlers::get_account_snapshot))
                         .route("/account/balances", web::get().to(handlers::get_account_balances))
+                        .route("/spot/prices", web::get().to(handlers::get_spot_prices))
                         .route("/account/positions", web::get().to(handlers::get_account_positions))
                         .route("/account/history", web::get().to(handlers::get_account_history))
                         .route("/account/uids", web::get().to(handlers::get_account_uids))

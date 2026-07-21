@@ -319,6 +319,15 @@ pub struct PositionInfo {
     pub updated_at: String,
 }
 
+/// 现货资产余额（返回给前端）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssetBalanceItem {
+    pub asset: String,
+    pub total: String,
+    pub available: String,
+    pub frozen: String,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TradeRecord {
     pub id: String,

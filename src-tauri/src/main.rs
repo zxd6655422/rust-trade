@@ -125,6 +125,9 @@ fn main() {
             get_scheduler_status,
             pause_scheduler,
             resume_scheduler,
+            // 现货资产
+            get_asset_balances,
+            get_spot_prices,
             // 系统状态
             check_trading_core_status
         ])

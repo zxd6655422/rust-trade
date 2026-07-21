@@ -1370,6 +1370,13 @@ pub struct AccountQuery {
     pub uid: Option<String>,
 }
 
+/// 现货价格查询参数
+#[derive(Debug, Deserialize)]
+pub struct SpotPricesQuery {
+    /// 逗号分隔的币种列表，如 "BTC,ETH,SOL"
+    pub assets: String,
+}
+
 pub async fn get_account_snapshot(
     state: web::Data<AppState>,
     query: web::Query<AccountQuery>,
@@ -1447,6 +1454,67 @@ pub async fn get_account_balances(
             }))
         }
     }
+}
+
+/// 获取现货实时价格（代理 Binance 公开 API，供 Tauri 客户端调用）
+pub async fn get_spot_prices(
+    query: web::Query<SpotPricesQuery>,
+) -> HttpResponse {
+    let assets: Vec<&str> = query.assets.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+    if assets.is_empty() {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "success": false,
+            "message": "assets parameter is required"
+        }));
+    }
+
+    // 稳定币直接返回 1:1
+    let stablecoins = ["USDT", "USDC", "BUSD", "DAI", "TUSD", "FDUSD", "USDP"];
+    let mut prices = serde_json::Map::new();
+    let mut need_fetch = Vec::new();
+
+    for asset in &assets {
+        if stablecoins.contains(asset) {
+            prices.insert(asset.to_string(), serde_json::json!("1"));
+        } else {
+            need_fetch.push(*asset);
+        }
+    }
+
+    // 从 Binance 公开 API 获取价格
+    if !need_fetch.is_empty() {
+        match reqwest::get("https://api.binance.com/api/v3/ticker/price").await {
+            Ok(resp) => {
+                match resp.json::<Vec<serde_json::Value>>().await {
+                    Ok(all_prices) => {
+                        for asset in &need_fetch {
+                            let pair = format!("{}USDT", asset);
+                            if let Some(item) = all_prices.iter().find(|p| p["symbol"].as_str() == Some(&pair)) {
+                                if let Some(price) = item["price"].as_str() {
+                                    prices.insert(asset.to_string(), serde_json::json!(price));
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to parse Binance prices: {}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                error!("Failed to fetch Binance prices: {}", e);
+                return HttpResponse::ServiceUnavailable().json(serde_json::json!({
+                    "success": false,
+                    "message": format!("Failed to fetch prices from exchange: {}", e)
+                }));
+            }
+        }
+    }
+
+    HttpResponse::Ok().json(serde_json::json!({
+        "success": true,
+        "data": prices
+    }))
 }
 
 /// 查询持仓

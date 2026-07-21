@@ -673,6 +673,92 @@ pub async fn get_account_positions(
     Ok(result)
 }
 
+/// 获取现货资产余额（从 asset_balance 快照表，过滤余额为 0 的资产）
+#[tauri::command]
+pub async fn get_asset_balances(
+    state: State<'_, AppState>,
+    exchange: Option<String>,
+    market_type: Option<String>,
+) -> Result<Vec<AssetBalanceItem>, String> {
+    let exchange = exchange.unwrap_or_else(|| "binance".to_string());
+    let market_type = market_type.unwrap_or_else(|| "spot".to_string());
+
+    info!("Getting asset balances for exchange={}, market_type={}", exchange, market_type);
+
+    let balances = state.repository
+        .get_latest_asset_balances(&exchange, &market_type)
+        .await
+        .map_err(|e| {
+            error!("Failed to get asset balances: {}", e);
+            e.to_string()
+        })?;
+
+    let result: Vec<AssetBalanceItem> = balances.iter().map(|b| AssetBalanceItem {
+        asset: b.asset.clone(),
+        total: b.total.to_string(),
+        available: b.available.to_string(),
+        frozen: b.frozen.to_string(),
+    }).collect();
+
+    info!("Retrieved {} asset balances", result.len());
+    Ok(result)
+}
+
+/// 获取现货实时价格（通过 trading-core 代理获取，不直接访问交易所）
+#[tauri::command]
+pub async fn get_spot_prices(
+    assets: Vec<String>,
+    server_url: Option<String>,
+) -> Result<std::collections::HashMap<String, String>, String> {
+    use std::collections::HashMap;
+
+    // 稳定币直接返回 1:1
+    let stablecoins = ["USDT", "USDC", "BUSD", "DAI", "TUSD", "FDUSD", "USDP"];
+    let mut prices: HashMap<String, String> = HashMap::new();
+    let mut need_fetch: Vec<String> = Vec::new();
+
+    for asset in &assets {
+        if stablecoins.contains(&asset.as_str()) {
+            prices.insert(asset.clone(), "1".to_string());
+        } else {
+            need_fetch.push(asset.clone());
+        }
+    }
+
+    if !need_fetch.is_empty() {
+        // 通过 trading-core 代理获取价格
+        let base_url = server_url.unwrap_or_else(|| "http://localhost:8080".to_string());
+        let assets_param = need_fetch.join(",");
+        let url = format!("{}/api/spot/prices?assets={}", base_url, assets_param);
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .map_err(|e| e.to_string())?;
+
+        let resp = client.get(&url)
+            .send()
+            .await
+            .map_err(|e| format!("Failed to fetch prices from trading-core: {}", e))?;
+
+        let result: serde_json::Value = resp.json()
+            .await
+            .map_err(|e| format!("Failed to parse prices response: {}", e))?;
+
+        // 解析 trading-core 返回的价格数据
+        if let Some(data) = result.get("data").and_then(|d| d.as_object()) {
+            for (asset, price_val) in data {
+                if let Some(price_str) = price_val.as_str() {
+                    prices.insert(asset.clone(), price_str.to_string());
+                }
+            }
+        }
+    }
+
+    info!("Fetched prices for {} assets", prices.len());
+    Ok(prices)
+}
+
 /// 获取交易历史记录
 #[tauri::command]
 pub async fn get_trade_history(

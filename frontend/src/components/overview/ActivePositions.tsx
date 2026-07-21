@@ -3,7 +3,8 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { ArrowUpRight, ArrowDownRight, BarChart3, AlertTriangle } from 'lucide-react';
+import { ArrowUpRight, ArrowDownRight, BarChart3, AlertTriangle, Coins } from 'lucide-react';
+import SpotBalances from './SpotBalances';
 import { invoke } from '@tauri-apps/api/core';
 import { useLanguage } from '@/lib/i18n/context';
 
@@ -37,6 +38,7 @@ function getExchange(): string {
 
 const ActivePositions: React.FC = () => {
   const { t } = useLanguage();
+  const [tab, setTab] = useState<'futures' | 'spot'>('futures');
   const [positions, setPositions] = useState<AccountPosition[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -75,18 +77,42 @@ const ActivePositions: React.FC = () => {
   return (
     <Card className="h-full">
       <CardHeader className="pb-3">
-        <CardTitle className="text-sm font-medium flex items-center gap-2">
-          <BarChart3 className="w-4 h-4" />
-          {t.overview.activePositions}
-          {positions.length > 0 && (
-            <Badge variant="secondary" className="ml-auto text-xs">
-              {positions.length}
-            </Badge>
-          )}
-        </CardTitle>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => setTab('futures')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+                tab === 'futures'
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+              }`}
+            >
+              <BarChart3 className="w-3.5 h-3.5" />
+              {t.overview.futuresPositions}
+              {positions.length > 0 && (
+                <Badge variant={tab === 'futures' ? 'secondary' : 'outline'} className="ml-1 text-[10px] px-1 py-0">
+                  {positions.length}
+                </Badge>
+              )}
+            </button>
+            <button
+              onClick={() => setTab('spot')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+                tab === 'spot'
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+              }`}
+            >
+              <Coins className="w-3.5 h-3.5" />
+              {t.overview.spotPositions}
+            </button>
+          </div>
+        </div>
       </CardHeader>
       <CardContent>
-        {loading ? (
+        {tab === 'spot' ? (
+          <SpotBalances />
+        ) : loading ? (
           <div className="flex items-center justify-center py-8 text-muted-foreground text-sm">
             {t.common.loading}
           </div>
