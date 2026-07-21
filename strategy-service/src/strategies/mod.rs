@@ -22,6 +22,7 @@ pub enum SignalType {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Signal {
+    // --- 现有字段保持不变 ---
     pub signal_type: SignalType,
     pub signal_strength: f64,
     pub entry_price: f64,
@@ -30,6 +31,53 @@ pub struct Signal {
     pub confidence: f64,
     pub reason: String,
     pub market_context: serde_json::Value,
+
+    // --- 新增字段（向后兼容）---
+    /// 市场结构判断
+    #[serde(default)]
+    pub market_structure: Option<MarketStructure>,
+    /// 关键价位
+    #[serde(default)]
+    pub key_levels: Option<KeyLevels>,
+    /// 交易计划
+    #[serde(default)]
+    pub trade_setup: Option<TradeSetup>,
+}
+
+/// 市场结构类型
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum MarketStructureType {
+    TrendingUp,
+    TrendingDown,
+    Ranging,
+    Breakout,
+    Reversal,
+}
+
+/// 市场结构判断
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarketStructure {
+    pub structure_type: MarketStructureType,
+    pub confidence: f64,
+    pub description: String,
+}
+
+/// 关键价位集合
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KeyLevels {
+    pub support: Vec<f64>,
+    pub resistance: Vec<f64>,
+    pub pivot: Option<f64>,
+}
+
+/// 交易计划
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TradeSetup {
+    pub entry_zone: (f64, f64),
+    pub stop_loss: f64,
+    pub take_profit: Vec<f64>,
+    pub risk_reward: f64,
+    pub invalidation: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,6 +148,9 @@ fn from_rsi_signal(s: trading_common::strategy::rsi::Signal) -> Signal {
         confidence: s.confidence,
         reason: s.reason,
         market_context: s.market_context,
+        market_structure: None,
+        key_levels: None,
+        trade_setup: None,
     }
 }
 
@@ -138,6 +189,9 @@ fn from_macd_signal(s: trading_common::strategy::macd::Signal) -> Signal {
         confidence: s.confidence,
         reason: s.reason,
         market_context: s.market_context,
+        market_structure: None,
+        key_levels: None,
+        trade_setup: None,
     }
 }
 
@@ -176,6 +230,9 @@ fn from_bollinger_signal(s: trading_common::strategy::bollinger::Signal) -> Sign
         confidence: s.confidence,
         reason: s.reason,
         market_context: s.market_context,
+        market_structure: None,
+        key_levels: None,
+        trade_setup: None,
     }
 }
 
@@ -214,6 +271,9 @@ fn from_volume_signal(s: trading_common::strategy::volume::Signal) -> Signal {
         confidence: s.confidence,
         reason: s.reason,
         market_context: s.market_context,
+        market_structure: None,
+        key_levels: None,
+        trade_setup: None,
     }
 }
 

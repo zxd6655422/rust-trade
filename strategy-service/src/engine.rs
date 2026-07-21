@@ -280,6 +280,10 @@ async fn process_strategy(
         market_context: Some(signal.market_context),
         stop_loss: signal.stop_loss.map(|v| rust_decimal::Decimal::try_from(v)).transpose()?,
         take_profit: signal.take_profit.map(|v| rust_decimal::Decimal::try_from(v)).transpose()?,
+        // V7 新增字段：策略分析详情
+        market_structure: signal.market_structure.map(|ms| serde_json::to_value(ms).unwrap_or_default()),
+        key_levels: signal.key_levels.map(|kl| serde_json::to_value(kl).unwrap_or_default()),
+        trade_setup: signal.trade_setup.map(|ts| serde_json::to_value(ts).unwrap_or_default()),
     };
 
     let saved_signal = signals::create_signal(pool, signal_request).await?;
