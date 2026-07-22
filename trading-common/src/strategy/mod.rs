@@ -5,6 +5,7 @@
 // bridging both tick-based (backtest::strategy::Strategy) and multi-timeframe
 // (backtest::strategy::MultiTimeframeStrategy) strategy types.
 
+pub mod analysis;
 pub mod bollinger;
 pub mod macd;
 pub mod macro_cycle;
@@ -15,6 +16,26 @@ pub mod volume;
 
 use crate::data::types::{OHLCData, TickData, Timeframe};
 use std::collections::HashMap;
+
+// Re-export analysis types
+pub use analysis::{
+    Annotations,
+    EntryCondition,
+    EntryConditionType,
+    KeyLevels,
+    LineAnnotation,
+    LineType,
+    MarkerAnnotation,
+    MarkerType,
+    MarketStructure,
+    MarketStructureType,
+    StrategyAnalysis,
+    TradeBias,
+    TradeDirection,
+    TradeSetup,
+    ZoneAnnotation,
+    from_legacy_signal,
+};
 
 // Re-export existing strategy types from backtest module
 pub use crate::backtest::strategy::{

@@ -25,3 +25,4 @@
 # 技能
 - 架构图输出 npx skills add tt-a1i/archify -g
 - 前端反AI设计 npx skills add nutlope/hallmark
+- 代码框架结构 可以使用codegraph来查找

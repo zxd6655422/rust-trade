@@ -34,6 +34,10 @@ pub struct StrategySignal {
     pub market_context: Option<serde_json::Value>,
     pub stop_loss: Option<Decimal>,
     pub take_profit: Option<Decimal>,
+    // V7 新增字段：策略分析详情
+    pub market_structure: Option<serde_json::Value>,
+    pub key_levels: Option<serde_json::Value>,
+    pub trade_setup: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -52,6 +56,10 @@ pub struct CreateSignalRequest {
     pub market_context: Option<serde_json::Value>,
     pub stop_loss: Option<Decimal>,
     pub take_profit: Option<Decimal>,
+    // V7 新增字段：策略分析详情
+    pub market_structure: Option<serde_json::Value>,
+    pub key_levels: Option<serde_json::Value>,
+    pub trade_setup: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -94,9 +102,10 @@ pub async fn create_signal(
             strategy_id, symbol, direction, entry_price,
             overall_confidence, entry_allowed, entry_direction,
             timeframe_details, instance_id, signal_strength,
-            market_context, stop_loss, take_profit
+            market_context, stop_loss, take_profit,
+            market_structure, key_levels, trade_setup
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
         RETURNING *
         "#
     )
@@ -113,6 +122,9 @@ pub async fn create_signal(
     .bind(&req.market_context)
     .bind(req.stop_loss)
     .bind(req.take_profit)
+    .bind(&req.market_structure)
+    .bind(&req.key_levels)
+    .bind(&req.trade_setup)
     .fetch_one(pool)
     .await?;
 

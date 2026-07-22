@@ -12,6 +12,7 @@ use trading_common::{
     },
 };
 use rust_decimal::Decimal;
+use rust_decimal::prelude::ToPrimitive;
 use sqlx::Row;
 
 use std::str::FromStr;
@@ -2434,4 +2435,581 @@ pub async fn archive_all_symbols(
     }
 
     Ok(results)
+}
+// ============ 策略决策引擎接口 ============
+
+/// 获取策略实例列表
+#[tauri::command]
+pub async fn get_strategy_instances(
+    state: State<'_, AppState>,
+) -> Result<Vec<serde_json::Value>, String> {
+    info!("Getting strategy instances");
+
+    let pool = state.repository.get_pool();
+
+    let rows = sqlx::query(
+        "SELECT id, strategy_type, display_name, params, status, symbols, auto_trade, position_size_pct, exchange, market_type \
+         FROM strategy_instances ORDER BY created_at DESC"
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| {
+        error!("Failed to get strategy instances: {}", e);
+        e.to_string()
+    })?;
+
+    let instances: Vec<serde_json::Value> = rows.iter().map(|row| {
+        let id: sqlx::types::Uuid = row.get("id");
+        let position_size_pct: Decimal = row.get("position_size_pct");
+        serde_json::json!({
+            "id": id.to_string(),
+            "strategy_type": row.get::<String, _>("strategy_type"),
+            "display_name": row.get::<String, _>("display_name"),
+            "params": row.get::<serde_json::Value, _>("params"),
+            "status": row.get::<String, _>("status"),
+            "symbols": row.get::<Vec<String>, _>("symbols"),
+            "auto_trade": row.get::<bool, _>("auto_trade"),
+            "position_size_pct": position_size_pct.to_string().parse::<f64>().unwrap_or(10.0),
+            "exchange": row.get::<String, _>("exchange"),
+            "market_type": row.get::<String, _>("market_type"),
+        })
+    }).collect();
+
+    info!("Retrieved {} strategy instances", instances.len());
+    Ok(instances)
+}
+
+/// 获取单个策略的分析结果（简化版，用于前端策略中心）
+#[tauri::command]
+pub async fn get_strategy_analysis_simple(
+    state: State<'_, AppState>,
+    strategy_type: String,
+    symbol: String,
+) -> Result<serde_json::Value, String> {
+    info!("Getting strategy analysis: strategy={}, symbol={}", strategy_type, symbol);
+
+    // 1. 拉取 K 线数据
+    let klines_1m = state.repository.get_klines(&symbol, 2000).await
+        .map_err(|e| { error!("get_klines failed: {}", e); e.to_string() })?;
+    if klines_1m.is_empty() {
+        return Err("No kline data available.".to_string());
+    }
+
+    let current_price = klines_1m.last().unwrap().close;
+    let current_price_f64 = current_price.to_f64().unwrap_or(0.0);
+
+    // 2. 聚合多时间框架数据
+    let mut aggregator = KlineAggregator::new();
+    for kline in &klines_1m { aggregator.update(kline.clone()); }
+
+    // 3. 执行策略分析
+    let strategy_id = strategy_type.as_str();
+
+    if trading_common::backtest::strategy::is_multi_timeframe_strategy(strategy_id) {
+        // 多时间框架策略
+        let mut strategy = trading_common::backtest::strategy::create_multi_timeframe_strategy(strategy_id)?;
+        let mut tf_klines = std::collections::HashMap::new();
+        for tf in strategy.required_timeframes() {
+            tf_klines.insert(tf, aggregator.get_klines(tf, 200));
+        }
+        let analysis = strategy.analyze(&tf_klines);
+
+        // 转换为 StrategyAnalysis 格式
+        let direction = match analysis.overall_direction {
+            trading_common::backtest::strategy::TrendDirection::Bullish => "long",
+            trading_common::backtest::strategy::TrendDirection::Bearish => "short",
+            _ => "neutral",
+        };
+
+        let confidence = analysis.overall_confidence.to_string().parse::<f64>().unwrap_or(50.0);
+
+        // 构建关键价位（使用支撑阻力估算）
+        let mut support_levels = Vec::new();
+        let mut resistance_levels = Vec::new();
+
+        // 从各时间框架分析中提取方向信息来估算关键价位
+        for (_, ta) in &analysis.timeframe_analyses {
+            // 根据方向估算支撑阻力
+            if ta.direction == trading_common::backtest::strategy::TrendDirection::Bullish {
+                support_levels.push(current_price_f64 * 0.98);
+                resistance_levels.push(current_price_f64 * 1.04);
+            } else if ta.direction == trading_common::backtest::strategy::TrendDirection::Bearish {
+                support_levels.push(current_price_f64 * 0.96);
+                resistance_levels.push(current_price_f64 * 1.02);
+            }
+        }
+
+        // 去重排序
+        support_levels.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        support_levels.dedup();
+        resistance_levels.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        resistance_levels.dedup();
+
+        // 计算止损止盈
+        let entry_price = current_price_f64;
+        let stop_loss = if direction == "long" {
+            support_levels.first().copied().unwrap_or(entry_price * 0.98)
+        } else {
+            resistance_levels.first().copied().unwrap_or(entry_price * 1.02)
+        };
+        let take_profit = if direction == "long" {
+            resistance_levels.first().copied().unwrap_or(entry_price * 1.04)
+        } else {
+            support_levels.first().copied().unwrap_or(entry_price * 0.96)
+        };
+
+        let risk = (entry_price - stop_loss).abs();
+        let risk_reward = if risk > 0.0 {
+            (take_profit - entry_price).abs() / risk
+        } else {
+            2.0
+        };
+
+        Ok(serde_json::json!({
+            "strategy_id": strategy_id,
+            "strategy_name": strategy_type,
+            "timestamp": chrono::Utc::now().timestamp_millis(),
+            "symbol": symbol,
+            "market_structure": {
+                "structure_type": if direction == "long" { "trending_up" } else if direction == "short" { "trending_down" } else { "ranging" },
+                "confidence": confidence,
+                "description": format!("{} 置信度 {:.1}%", strategy_type, confidence),
+            },
+            "key_levels": {
+                "support": support_levels,
+                "resistance": resistance_levels,
+                "pivot": null,
+            },
+            "bias": {
+                "direction": direction,
+                "confidence": confidence,
+                "reasoning": format!("{} 策略分析: {}", strategy_type, direction),
+            },
+            "trade_setup": if direction != "neutral" {
+                Some(serde_json::json!({
+                    "entry_zone": [entry_price * 0.995, entry_price * 1.005],
+                    "stop_loss": stop_loss,
+                    "take_profit": [take_profit],
+                    "risk_reward": risk_reward,
+                    "invalidation": "价格突破关键价位",
+                }))
+            } else {
+                None
+            },
+        }))
+    } else {
+        Err(format!("Strategy '{}' does not support real-time analysis", strategy_type))
+    }
+}
+
+/// 获取综合决策结果
+#[tauri::command]
+pub async fn get_strategy_decision(
+    _state: State<'_, AppState>,
+    symbol: String,
+    analyses: Vec<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    info!("Getting strategy decision for {} with {} analyses", symbol, analyses.len());
+
+    // 解析分析结果
+    let parsed_analyses: Vec<trading_common::strategy::analysis::StrategyAnalysis> = analyses
+        .iter()
+        .filter_map(|a| serde_json::from_value(a.clone()).ok())
+        .collect();
+
+    if parsed_analyses.is_empty() {
+        return Ok(serde_json::json!({
+            "should_trade": false,
+            "direction": "neutral",
+            "confidence": 0,
+            "consensus_strategies": [],
+            "trade_setup": null,
+            "market_structure": {
+                "structure_type": "ranging",
+                "confidence": 0,
+                "description": "没有有效的策略分析",
+            },
+            "reasoning": "没有有效的策略分析结果",
+        }));
+    }
+
+    // 使用决策引擎
+    use trading_common::strategy::analysis::TradeDirection;
+
+    // 简单的决策逻辑
+    let min_confidence = 70.0;
+    let min_consensus = 2;
+
+    // 过滤低置信度
+    let valid: Vec<&trading_common::strategy::analysis::StrategyAnalysis> = parsed_analyses
+        .iter()
+        .filter(|a| a.bias.confidence >= min_confidence)
+        .collect();
+
+    // 统计方向
+    let long_count = valid.iter().filter(|a| a.bias.direction == TradeDirection::Long).count();
+    let short_count = valid.iter().filter(|a| a.bias.direction == TradeDirection::Short).count();
+
+    // 判断共识
+    let (direction, consensus_count) = if long_count >= min_consensus && long_count > short_count {
+        ("long", long_count)
+    } else if short_count >= min_consensus && short_count > long_count {
+        ("short", short_count)
+    } else {
+        ("neutral", 0)
+    };
+
+    if direction == "neutral" {
+        return Ok(serde_json::json!({
+            "should_trade": false,
+            "direction": "neutral",
+            "confidence": 0,
+            "consensus_strategies": [],
+            "trade_setup": null,
+            "market_structure": {
+                "structure_type": "ranging",
+                "confidence": 50,
+                "description": "策略共识不足",
+            },
+            "reasoning": format!("做多: {}, 做空: {}, 需要至少{}个策略共识", long_count, short_count, min_consensus),
+        }));
+    }
+
+    // 收集共识策略
+    let consensus_strategies: Vec<String> = valid
+        .iter()
+        .filter(|a| (a.bias.direction == TradeDirection::Long && direction == "long") ||
+                     (a.bias.direction == TradeDirection::Short && direction == "short"))
+        .map(|a| a.strategy_name.clone())
+        .collect();
+
+    // 计算平均置信度
+    let avg_confidence: f64 = valid
+        .iter()
+        .filter(|a| (a.bias.direction == TradeDirection::Long && direction == "long") ||
+                     (a.bias.direction == TradeDirection::Short && direction == "short"))
+        .map(|a| a.bias.confidence)
+        .sum::<f64>() / consensus_count as f64;
+
+    // 综合交易计划
+    let trade_setups: Vec<&trading_common::strategy::analysis::TradeSetup> = valid
+        .iter()
+        .filter_map(|a| a.trade_setup.as_ref())
+        .collect();
+
+    let trade_setup = if !trade_setups.is_empty() {
+        let entry_low = trade_setups.iter().map(|s| s.entry_zone.0).sum::<f64>() / trade_setups.len() as f64;
+        let entry_high = trade_setups.iter().map(|s| s.entry_zone.1).sum::<f64>() / trade_setups.len() as f64;
+        let stop_loss = trade_setups.iter().map(|s| s.stop_loss).sum::<f64>() / trade_setups.len() as f64;
+        let take_profit: Vec<f64> = trade_setups.iter().flat_map(|s| s.take_profit.clone()).collect();
+        let avg_tp = if take_profit.is_empty() { 0.0 } else { take_profit.iter().sum::<f64>() / take_profit.len() as f64 };
+
+        Some(serde_json::json!({
+            "entry_zone": [entry_low, entry_high],
+            "stop_loss": stop_loss,
+            "take_profit": [avg_tp],
+            "risk_reward": if stop_loss > 0.0 { (avg_tp - (entry_low + entry_high) / 2.0).abs() / ((entry_low + entry_high) / 2.0 - stop_loss).abs() } else { 2.0 },
+        }))
+    } else {
+        None
+    };
+
+    // 取置信度最高的市场结构
+    let market_structure = valid
+        .iter()
+        .max_by(|a, b| a.market_structure.confidence.partial_cmp(&b.market_structure.confidence).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|a| serde_json::json!({
+            "structure_type": a.market_structure.structure_type.as_str(),
+            "confidence": a.market_structure.confidence,
+            "description": a.market_structure.description,
+        }))
+        .unwrap_or_else(|| serde_json::json!({
+            "structure_type": "ranging",
+            "confidence": 50,
+            "description": "无法确定",
+        }));
+
+    Ok(serde_json::json!({
+        "should_trade": true,
+        "direction": direction,
+        "confidence": avg_confidence,
+        "consensus_strategies": consensus_strategies,
+        "trade_setup": trade_setup,
+        "market_structure": market_structure,
+        "reasoning": format!("{}个策略共识做{}: {}", consensus_count,
+            if direction == "long" { "多" } else { "空" },
+            consensus_strategies.join(" + ")),
+    }))
+}
+
+// ============ 策略配置管理命令 ============
+
+/// 创建策略实例
+#[tauri::command]
+pub async fn create_strategy_instance(
+    state: State<'_, AppState>,
+    request: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    info!("Creating strategy instance: {:?}", request);
+
+    let pool = state.repository.get_pool();
+
+    let strategy_type = request.get("strategy_type")
+        .and_then(|v| v.as_str())
+        .ok_or("Missing strategy_type")?;
+    let display_name = request.get("display_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or(strategy_type);
+    let params = request.get("params")
+        .cloned()
+        .unwrap_or(serde_json::json!({}));
+    let symbols: Vec<String> = request.get("symbols")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_else(|| vec!["BTCUSDT".to_string()]);
+    let auto_trade = request.get("auto_trade")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let position_size_pct = request.get("position_size_pct")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(10.0);
+    let exchange = request.get("exchange")
+        .and_then(|v| v.as_str())
+        .unwrap_or("binance");
+    let market_type = request.get("market_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("futures");
+    let note = request.get("note")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    let id: sqlx::types::Uuid = sqlx::query_scalar(
+        "INSERT INTO strategy_instances (strategy_type, display_name, params, symbols, auto_trade, position_size_pct, exchange, market_type, note) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id"
+    )
+    .bind(strategy_type)
+    .bind(display_name)
+    .bind(params)
+    .bind(&symbols)
+    .bind(auto_trade)
+    .bind(position_size_pct)
+    .bind(exchange)
+    .bind(market_type)
+    .bind(note)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| {
+        error!("Failed to create strategy instance: {}", e);
+        e.to_string()
+    })?;
+
+    info!("Created strategy instance: {}", id);
+
+    Ok(serde_json::json!({
+        "id": id.to_string(),
+        "success": true
+    }))
+}
+
+/// 更新策略实例
+#[tauri::command]
+pub async fn update_strategy_instance(
+    state: State<'_, AppState>,
+    id: String,
+    update: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    info!("Updating strategy instance: {} {:?}", id, update);
+
+    let pool = state.repository.get_pool();
+    let uuid = sqlx::types::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+
+    // 构建动态 UPDATE 语句
+    let mut sets = Vec::new();
+    let mut param_index = 2; // $1 是 id
+
+    if update.get("display_name").is_some() {
+        sets.push(format!("display_name = ${}", param_index));
+        param_index += 1;
+    }
+    if update.get("params").is_some() {
+        sets.push(format!("params = ${}", param_index));
+        param_index += 1;
+    }
+    if update.get("symbols").is_some() {
+        sets.push(format!("symbols = ${}", param_index));
+        param_index += 1;
+    }
+    if update.get("auto_trade").is_some() {
+        sets.push(format!("auto_trade = ${}", param_index));
+        param_index += 1;
+    }
+    if update.get("position_size_pct").is_some() {
+        sets.push(format!("position_size_pct = ${}", param_index));
+        param_index += 1;
+    }
+    if update.get("exchange").is_some() {
+        sets.push(format!("exchange = ${}", param_index));
+        param_index += 1;
+    }
+    if update.get("market_type").is_some() {
+        sets.push(format!("market_type = ${}", param_index));
+        param_index += 1;
+    }
+    if update.get("note").is_some() {
+        sets.push(format!("note = ${}", param_index));
+        param_index += 1;
+    }
+
+    sets.push("updated_at = NOW()".to_string());
+
+    let sql = format!(
+        "UPDATE strategy_instances SET {} WHERE id = $1",
+        sets.join(", ")
+    );
+
+    let mut query = sqlx::query(&sql).bind(uuid);
+
+    if let Some(v) = update.get("display_name") {
+        query = query.bind(v.as_str().unwrap_or(""));
+    }
+    if let Some(v) = update.get("params") {
+        query = query.bind(v.clone());
+    }
+    if let Some(v) = update.get("symbols") {
+        let symbols: Vec<String> = v.as_array()
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+        query = query.bind(symbols);
+    }
+    if let Some(v) = update.get("auto_trade") {
+        query = query.bind(v.as_bool().unwrap_or(false));
+    }
+    if let Some(v) = update.get("position_size_pct") {
+        query = query.bind(v.as_f64().unwrap_or(10.0));
+    }
+    if let Some(v) = update.get("exchange") {
+        query = query.bind(v.as_str().unwrap_or("binance"));
+    }
+    if let Some(v) = update.get("market_type") {
+        query = query.bind(v.as_str().unwrap_or("futures"));
+    }
+    if let Some(v) = update.get("note") {
+        query = query.bind(v.as_str().unwrap_or(""));
+    }
+
+    query.execute(pool).await.map_err(|e| {
+        error!("Failed to update strategy instance: {}", e);
+        e.to_string()
+    })?;
+
+    info!("Updated strategy instance: {}", id);
+
+    Ok(serde_json::json!({
+        "success": true
+    }))
+}
+
+/// 更新策略状态
+#[tauri::command]
+pub async fn update_strategy_status(
+    state: State<'_, AppState>,
+    id: String,
+    status: String,
+) -> Result<serde_json::Value, String> {
+    info!("Updating strategy status: {} -> {}", id, status);
+
+    let pool = state.repository.get_pool();
+    let uuid = sqlx::types::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+
+    sqlx::query(
+        "UPDATE strategy_instances SET status = $2, updated_at = NOW() WHERE id = $1"
+    )
+    .bind(uuid)
+    .bind(&status)
+    .execute(pool)
+    .await
+    .map_err(|e| {
+        error!("Failed to update strategy status: {}", e);
+        e.to_string()
+    })?;
+
+    info!("Updated strategy status: {} -> {}", id, status);
+
+    Ok(serde_json::json!({
+        "success": true
+    }))
+}
+
+/// 删除策略实例
+#[tauri::command]
+pub async fn delete_strategy_instance(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<serde_json::Value, String> {
+    info!("Deleting strategy instance: {}", id);
+
+    let pool = state.repository.get_pool();
+    let uuid = sqlx::types::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+
+    sqlx::query(
+        "DELETE FROM strategy_instances WHERE id = $1"
+    )
+    .bind(uuid)
+    .execute(pool)
+    .await
+    .map_err(|e| {
+        error!("Failed to delete strategy instance: {}", e);
+        e.to_string()
+    })?;
+
+    info!("Deleted strategy instance: {}", id);
+
+    Ok(serde_json::json!({
+        "success": true
+    }))
+}
+
+/// 获取可用的交易对列表（按市场类型和交易所过滤）
+#[tauri::command]
+pub async fn get_available_symbols(
+    state: State<'_, AppState>,
+    market_type: Option<String>,
+    exchange: Option<String>,
+) -> Result<Vec<String>, String> {
+    info!("Getting available symbols, market_type: {:?}, exchange: {:?}", market_type, exchange);
+
+    let pool = state.repository.get_pool();
+
+    let mut sql = String::from("SELECT DISTINCT unified_symbol FROM symbol_mapping WHERE 1=1");
+    let mut params: Vec<String> = Vec::new();
+    let mut param_index = 1;
+
+    if let Some(ref mt) = market_type {
+        sql.push_str(&format!(" AND market_type = ${}", param_index));
+        params.push(mt.clone());
+        param_index += 1;
+    }
+
+    if let Some(ref ex) = exchange {
+        sql.push_str(&format!(" AND exchange = ${}", param_index));
+        params.push(ex.clone());
+    }
+
+    sql.push_str(" ORDER BY unified_symbol");
+
+    let mut query = sqlx::query_scalar(&sql);
+    for param in &params {
+        query = query.bind(param);
+    }
+
+    let symbols: Vec<String> = query
+        .fetch_all(pool)
+        .await
+        .map_err(|e| {
+            error!("Failed to get symbols: {}", e);
+            e.to_string()
+        })?;
+
+    info!("Found {} symbols", symbols.len());
+    Ok(symbols)
 }

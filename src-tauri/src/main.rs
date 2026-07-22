@@ -129,7 +129,17 @@ fn main() {
             get_asset_balances,
             get_spot_prices,
             // 系统状态
-            check_trading_core_status
+            check_trading_core_status,
+            // 策略决策引擎
+            get_strategy_instances,
+            get_strategy_analysis_simple,
+            get_strategy_decision,
+            // 策略配置管理
+            create_strategy_instance,
+            update_strategy_instance,
+            update_strategy_status,
+            delete_strategy_instance,
+            get_available_symbols
         ])
         .setup(|app| {
             tracing::info!("Tauri setup started");
