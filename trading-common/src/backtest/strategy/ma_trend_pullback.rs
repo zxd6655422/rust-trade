@@ -9,6 +9,11 @@
 //! - Ma48: MA48 crossover confirmation
 //! - Bb: Bollinger Band position
 //! - None: only stop loss
+//!
+//! Supports5m diffusion filter (from13th analysis optimization):
+//! - use_5m_expanding: only enter when5m dual MA is expanding
+//! - min_angle_5m: minimum angle threshold
+//! - entry_timeframe: "30m" or "5m" for entry signal detection
 
 use super::base::{Signal, Strategy};
 use crate::data::types::{OHLCData, Timeframe, TickData};
@@ -50,9 +55,14 @@ pub struct MATrendPullbackBacktestStrategy {
     trailing_callback_pct: f64,
     ma48_tp_bars: usize,
     bb_tp_pct: f64,
+    // 5m diffusion filter parameters
+    use_5m_expanding: bool,
+    min_angle_5m: f64,
+    entry_timeframe: String,
 
     // State
     bars: VecDeque<Bar>,
+    bars_5m: VecDeque<Bar>,  // 5m bars for diffusion filter
     position: Position,
     max_profit_pct: f64,
     ma48_cross_count: usize,
@@ -87,7 +97,11 @@ impl MATrendPullbackBacktestStrategy {
             trailing_callback_pct: 5.0,
             ma48_tp_bars: 3,
             bb_tp_pct: 90.0,
+            use_5m_expanding: false,
+            min_angle_5m: 0.0,
+            entry_timeframe: "30m".to_string(),
             bars: VecDeque::new(),
+            bars_5m: VecDeque::new(),
             position: Position::None,
             max_profit_pct: 0.0,
             ma48_cross_count: 0,
@@ -111,6 +125,69 @@ impl MATrendPullbackBacktestStrategy {
         }
         let sum: f64 = self.bars.iter().rev().skip(1).take(period).map(|b| b.close).sum();
         Some(sum / period as f64)
+    }
+
+    /// Calculate SMA from5m bars
+    fn calculate_sma_5m(&self, period: usize) -> Option<f64> {
+        if self.bars_5m.len() < period {
+            return None;
+        }
+        let sum: f64 = self.bars_5m.iter().rev().take(period).map(|b| b.close).sum();
+        Some(sum / period as f64)
+    }
+
+    /// Calculate previous SMA from5m bars
+    fn calculate_sma_5m_prev(&self, period: usize) -> Option<f64> {
+        if self.bars_5m.len() < period + 1 {
+            return None;
+        }
+        let sum: f64 = self.bars_5m.iter().rev().skip(1).take(period).map(|b| b.close).sum();
+        Some(sum / period as f64)
+    }
+
+    /// Check if5m dual MA is expanding
+    fn is_5m_expanding(&self) -> Option<bool> {
+        if self.bars_5m.len() < self.slow_ma_period + 5 {
+            return None;
+        }
+
+        let fast_ma = self.calculate_sma_5m(self.fast_ma_period)?;
+        let slow_ma = self.calculate_sma_5m(self.slow_ma_period)?;
+        let current_spread = fast_ma - slow_ma;
+
+        // Calculate spread5 bars ago
+        let prev_bars: Vec<Bar> = self.bars_5m.iter().rev().skip(5).take(self.slow_ma_period + 5).cloned().collect();
+        if prev_bars.len() < self.slow_ma_period {
+            return None;
+        }
+        let prev_fast: f64 = prev_bars.iter().rev().take(self.fast_ma_period).map(|b| b.close).sum::<f64>() / self.fast_ma_period as f64;
+        let prev_slow: f64 = prev_bars.iter().rev().take(self.slow_ma_period).map(|b| b.close).sum::<f64>() / self.slow_ma_period as f64;
+        let prev_spread = prev_fast - prev_slow;
+
+        Some(current_spread.abs() > prev_spread.abs())
+    }
+
+    /// Calculate approximate angle between dual MAs (in degrees)
+    fn calculate_5m_angle(&self) -> Option<f64> {
+        if self.bars_5m.len() < self.slow_ma_period + 5 {
+            return None;
+        }
+
+        let fast_ma = self.calculate_sma_5m(self.fast_ma_period)?;
+        let slow_ma = self.calculate_sma_5m(self.slow_ma_period)?;
+        let current_spread = fast_ma - slow_ma;
+
+        // Calculate spread5 bars ago
+        let prev_bars: Vec<Bar> = self.bars_5m.iter().rev().skip(5).take(self.slow_ma_period + 5).cloned().collect();
+        if prev_bars.len() < self.slow_ma_period {
+            return None;
+        }
+        let prev_fast: f64 = prev_bars.iter().rev().take(self.fast_ma_period).map(|b| b.close).sum::<f64>() / self.fast_ma_period as f64;
+        let prev_slow: f64 = prev_bars.iter().rev().take(self.slow_ma_period).map(|b| b.close).sum::<f64>() / self.slow_ma_period as f64;
+        let prev_spread = prev_fast - prev_slow;
+
+        let delta = current_spread - prev_spread;
+        Some(delta.atan2(5.0) * (180.0 / std::f64::consts::PI))
     }
 
     /// Calculate current PnL percentage
@@ -240,8 +317,21 @@ impl MATrendPullbackBacktestStrategy {
     }
 
     /// Process a bar and return signal
-    fn process_bar(&mut self, bar: Bar, symbol: &str, price_decimal: Decimal) -> Signal {
-        // Add bar to history
+    fn process_bar(&mut self, bar: Bar, symbol: &str, price_decimal: Decimal, is_5m: bool) -> Signal {
+        // Add bar to appropriate history
+        if is_5m {
+            self.bars_5m.push_back(bar.clone());
+            // Keep reasonable history length for5m bars
+            let max_5m_bars = self.slow_ma_period * 2;
+            while self.bars_5m.len() > max_5m_bars {
+                self.bars_5m.pop_front();
+            }
+            // For5m bars, we don't process entry/exit directly
+            // Just store the data for diffusion filter
+            return Signal::Hold;
+        }
+
+        // 30m bar processing
         self.bars.push_back(bar.clone());
 
         // Keep reasonable history length
@@ -338,6 +428,23 @@ impl MATrendPullbackBacktestStrategy {
                 self.ma48_cross_count = 0;
                 self.last_signal = Some(signal.clone());
                 return signal;
+            }
+        }
+
+        // Check5m diffusion filter (if enabled)
+        if self.use_5m_expanding {
+            if let Some(expanding) = self.is_5m_expanding() {
+                if !expanding {
+                    return Signal::Hold; // 5m is converging, skip entry
+                }
+            }
+
+            if self.min_angle_5m > 0.0 {
+                if let Some(angle) = self.calculate_5m_angle() {
+                    if angle.abs() < self.min_angle_5m {
+                        return Signal::Hold; // Angle too small, skip entry
+                    }
+                }
             }
         }
 
@@ -464,20 +571,31 @@ impl Strategy for MATrendPullbackBacktestStrategy {
         if let Some(bb_pct) = params.get("bb_tp_pct") {
             self.bb_tp_pct = bb_pct.parse().map_err(|_| "Invalid bb_tp_pct")?;
         }
+        if let Some(use_expanding) = params.get("use_5m_expanding") {
+            self.use_5m_expanding = use_expanding.parse().map_err(|_| "Invalid use_5m_expanding")?;
+        }
+        if let Some(min_angle) = params.get("min_angle_5m") {
+            self.min_angle_5m = min_angle.parse().map_err(|_| "Invalid min_angle_5m")?;
+        }
+        if let Some(entry_tf) = params.get("entry_timeframe") {
+            self.entry_timeframe = entry_tf.clone();
+        }
 
         if self.fast_ma_period >= self.slow_ma_period {
             return Err("Fast MA period must be less than slow MA period".to_string());
         }
 
         println!(
-            "MA Trend Pullback Strategy initialized: fast_ma={}, slow_ma={}, stop={:?}, tp={:?}",
-            self.fast_ma_period, self.slow_ma_period, self.stop_mode, self.take_profit_mode
+            "MA Trend Pullback Strategy initialized: fast_ma={}, slow_ma={}, stop={:?}, tp={:?}, entry_tf={}, use_5m_expanding={}, min_angle_5m={}",
+            self.fast_ma_period, self.slow_ma_period, self.stop_mode, self.take_profit_mode,
+            self.entry_timeframe, self.use_5m_expanding, self.min_angle_5m
         );
         Ok(())
     }
 
     fn reset(&mut self) {
         self.bars.clear();
+        self.bars_5m.clear();
         self.position = Position::None;
         self.max_profit_pct = 0.0;
         self.ma48_cross_count = 0;
@@ -493,7 +611,8 @@ impl Strategy for MATrendPullbackBacktestStrategy {
             volume: 0.0,
         };
 
-        self.process_bar(bar, &tick.symbol, tick.price)
+        // Ticks are always treated as30m bars for now
+        self.process_bar(bar, &tick.symbol, tick.price, false)
     }
 
     fn on_ohlc(&mut self, ohlc: &OHLCData) -> Signal {
@@ -505,7 +624,9 @@ impl Strategy for MATrendPullbackBacktestStrategy {
             volume: ohlc.volume.to_f64().unwrap_or(0.0),
         };
 
-        self.process_bar(bar, &ohlc.symbol, ohlc.close)
+        // Determine if this is a5m bar based on timeframe
+        let is_5m = ohlc.timeframe == Timeframe::FiveMinutes;
+        self.process_bar(bar, &ohlc.symbol, ohlc.close, is_5m)
     }
 
     fn supports_ohlc(&self) -> bool {

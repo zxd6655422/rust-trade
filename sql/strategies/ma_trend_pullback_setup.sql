@@ -43,10 +43,14 @@
 --   - 0.3: 过滤小角度扩散，只保留强趋势
 --   - 0: 不限制夹角
 --
+-- entry_timeframe: 入场K线周期 (默认"30m")
+--   - "30m": 用30m K线检测入场信号 (原有逻辑)
+--   - "5m": 用5m K线检测入场信号，趋势仍用30m判断 (更精准入场)
+--
 -- 适用建议:
---   - BTC: 不建议启用 (回测显示收益下降)
---   - ETH: 建议启用, min_angle_5m=1.0 (收益+132%)
---   - SOL: 建议启用, use_5m_expanding=true (收益+104%)
+--   - BTC: 不建议启用扩散 (回测显示收益下降), 用30m入场
+--   - ETH: 建议启用5m入场+扩散+夹角>1° (收益+69.44%)
+--   - SOL: 建议启用30m入场+扩散 (收益+84.45%)
 --
 
 -- ============================================================
@@ -89,9 +93,9 @@ INSERT INTO strategy_instances (
 );
 
 -- ============================================================
--- 2. ETHUSDT 策略实例 (5m扩散过滤 + 移动止盈)
+-- 2. ETHUSDT 策略实例 (5m入场 + 5m扩散过滤 + 移动止盈)
 -- ============================================================
--- 第十三次分析优化: 5m扩散过滤使ETH收益从+29.95%提升到+69.44%
+-- 第十三次分析优化: 5m入场+扩散+夹角>1°使ETH收益从+29.95%提升到+69.44%
 
 INSERT INTO strategy_instances (
     strategy_type,
@@ -115,6 +119,7 @@ INSERT INTO strategy_instances (
         "trailing_activate_pct": 5.0,
         "trailing_callback_pct": 5.0,
         "primary_timeframe": "30m",
+        "entry_timeframe": "5m",
         "slope_threshold": 0,
         "bbw_threshold": 0,
         "vol_threshold": 0,
@@ -127,7 +132,7 @@ INSERT INTO strategy_instances (
     10.0,
     'binance',
     'futures',
-    '双均线趋势回踩策略 - ETH配置 (5m扩散+夹角>1°, 回测+69.44%)'
+    '双均线趋势回踩策略 - ETH配置 (5m入场+5m扩散+夹角>1°, 回测+69.44%)'
 );
 
 -- ============================================================
@@ -189,6 +194,7 @@ SELECT
     params->>'trailing_activate_pct' as trailing_activate,
     params->>'trailing_callback_pct' as trailing_callback,
     params->>'ma48_tp_bars' as ma48_bars,
+    params->>'entry_timeframe' as entry_tf,
     params->>'use_5m_expanding' as use_5m_expanding,
     params->>'min_angle_5m' as min_angle_5m,
     note,

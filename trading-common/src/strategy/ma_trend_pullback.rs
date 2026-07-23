@@ -1,15 +1,138 @@
 //! MA Trend Pullback Strategy (双均线趋势回踩策略)
 //!
-//! 策略逻辑:
-//! - 趋势判断: MA288 > MA488 = 多头, MA288 < MA488 = 空头
-//! - 入场信号: 价格从下方突破MA288(做多) / 从上方跌破MA288(做空)
-//! - 止损: 价格反向穿越MA288
-//! - 止盈: 移动止盈 (激活后跟踪最高盈利，回撤指定比例平仓)
-//! - 5m扩散过滤: 可选，基于5m双均线扩散形态过滤入场信号
+//! ===========================================================================
+//! 策略概述
+//! ===========================================================================
 //!
-//! 适用周期: 30m
-//! 验证结果: BTC +42.79%, ETH +39.47%, SOL +41.47%
-//! 5m扩散优化: BTC +40.46%, ETH +69.44%, SOL +84.45%
+//! 基于双均线(MA288/MA488)判断趋势方向，价格回踩MA288时入场的趋势跟踪策略。
+//!
+//! ===========================================================================
+//! 核心逻辑
+//! ===========================================================================
+//!
+//! 1. 趋势判断 (30m K线):
+//!    - 多头趋势: MA288 > MA488
+//!    - 空头趋势: MA288 < MA488
+//!
+//! 2. 入场信号 (30m或5m K线):
+//!    - 做多: 趋势为多头 + 开盘价在MA288下方 + 收盘价突破MA288上方
+//!    - 做空: 趋势为空头 + 开盘价在MA288上方 + 收盘价跌破MA288下方
+//!
+//! 3. 止损逻辑:
+//!    - MA288止损: 做多时收盘价跌破MA288 / 做空时收盘价突破MA288
+//!    - 固定止损: 亏损超过指定百分比(默认2%)
+//!
+//! 4. 止盈逻辑:
+//!    - 移动止盈(默认): 盈利达到激活阈值(5%)后启动跟踪，回撤指定比例(5%)平仓
+//!    - MA48止盈: 连续N根K线收盘价穿越MA48时平仓
+//!    - BB止盈: 价格触及布林带指定位置(90%)时平仓
+//!
+//! ===========================================================================
+//! 下单操作 (开仓)
+//! ===========================================================================
+//!
+//! 当策略返回 Buy/Sell 信号时，执行以下操作:
+//!
+//! 【做多信号 (SignalType::Buy)】
+//! - 条件: 30m趋势为多头(MA288>MA488) + 价格从下方突破MA288
+//! - 操作: 开多仓 (买入)
+//! - 止损价: MA288 * 0.98 (MA288下方2%)
+//!
+//! 【做空信号 (SignalType::Sell)】
+//! - 条件: 30m趋势为空头(MA288<MA488) + 价格从上方跌破MA288
+//! - 操作: 开空仓 (卖出)
+//! - 止损价: MA288 * 1.02 (MA288上方2%)
+//!
+//! ===========================================================================
+//! 平仓操作 (止损/止盈)
+//! ===========================================================================
+//!
+//! 【止损平仓】
+//! - MA288止损: 做多持仓时，收盘价跌破MA288 → 平多
+//!              做空持仓时，收盘价突破MA288 → 平空
+//! - 固定止损: 亏损超过 fixed_stop_pct (默认2%) → 平仓
+//!
+//! 【止盈平仓】
+//! - 移动止盈: 盈利达到 trailing_activate_pct (5%)后启动跟踪
+//!             从最高盈利回撤 trailing_callback_pct (5%)时平仓
+//! - MA48止盈: 连续 ma48_tp_bars (3)根K线收盘价穿越MA48时平仓
+//! - BB止盈: 价格在布林带位置达到 bb_tp_pct (90%)时平仓
+//!
+//! 【趋势反转平仓】
+//! - 做多持仓时，MA288跌破MA488(趋势转空) → 平多
+//! - 做空持仓时，MA288突破MA488(趋势转多) → 平空
+//!
+//! ===========================================================================
+//! 反手操作说明 (重要)
+//! ===========================================================================
+//!
+//! 根据回测验证，30m入场策略不建议反手操作:
+//!
+//! 【30m入场 - 不反手】(推荐)
+//! - 当持有反向仓位时，收到入场信号 → 只平旧仓，不开新仓
+//! - 等待下一个信号再开仓
+//! - 回测结果: SOL +93.97%, ETH +66.68%, BTC +51.45%
+//!
+//! 【5m入场 - 可反手】
+//! - 当持有反向仓位时，收到入场信号 → 平旧仓 + 开新仓
+//! - 回测结果: ETH +69.44%, BTC +40.46%
+//!
+//! ===========================================================================
+//! 5m扩散过滤 (第十三次分析优化)
+//! ===========================================================================
+//!
+//! 可选功能，通过检测5m双均线扩散形态过滤入场信号:
+//!
+//! - use_5m_expanding: 启用5m扩散过滤
+//!   - 只在5m MA288/MA488价差扩大时入场
+//!   - 过滤收敛阶段的假信号
+//!
+//! - min_angle_5m: 最小夹角阈值
+//!   - 0: 不限制夹角
+//!   - 1.0: 只保留强趋势(推荐ETH)
+//!
+//! - entry_timeframe: 入场K线周期
+//!   - "30m": 用30m K线检测入场信号(默认)
+//!   - "5m": 用5m K线检测入场信号，趋势仍用30m判断
+//!
+//! ===========================================================================
+//! 参数配置推荐
+//! ===========================================================================
+//!
+//! 【BTC配置】
+//! - entry_timeframe: "30m"
+//! - use_5m_expanding: false
+//! - 预期收益: +42.79% ~ +51.45%
+//!
+//! 【ETH配置】(推荐5m入场+扩散)
+//! - entry_timeframe: "5m"
+//! - use_5m_expanding: true
+//! - min_angle_5m: 1.0
+//! - 预期收益: +54.63% ~ +69.44%
+//!
+//! 【SOL配置】(推荐30m入场+扩散)
+//! - entry_timeframe: "30m"
+//! - use_5m_expanding: true
+//! - min_angle_5m: 0
+//! - 预期收益: +84.45% ~ +93.97%
+//!
+//! ===========================================================================
+//! 回测验证结果
+//! ===========================================================================
+//!
+//! 基础策略 (30m + MA288止损, 无扩散过滤):
+//! - BTC: +42.79% (胜率15.2%, 盈亏比10.75)
+//! - ETH: +39.47% (胜率21.4%, 盈亏比7.23)
+//! - SOL: +41.47% (胜率15.3%, 盈亏比2.87)
+//!
+//! 优化策略 (30m + MA288止损 + 5m扩散 + 不反手):
+//! - BTC: +51.45% (胜率16.7%, 盈亏比10.75)
+//! - ETH: +66.68% (胜率14.6%, 盈亏比3.40)
+//! - SOL: +93.97% (胜率25.2%, 盈亏比2.01)
+//!
+//! 5m入场策略 (5m入场 + 30m趋势 + 5m扩散 + 反手):
+//! - BTC: +40.46% (胜率18.4%)
+//! - ETH: +69.44% (胜率23.3%)
 
 use serde::{Deserialize, Serialize};
 
@@ -145,7 +268,12 @@ pub struct MATrendPullbackParams {
     /// 5m diffusion filter: minimum angle threshold in degrees (default: 0, disabled)
     #[serde(default)]
     pub min_angle_5m: f64,
+    /// Entry timeframe: "30m" or "5m" (default: "30m")
+    #[serde(default = "default_entry_timeframe")]
+    pub entry_timeframe: String,
 }
+
+fn default_entry_timeframe() -> String { "30m".to_string() }
 
 fn default_fixed_stop_pct() -> f64 { 2.0 }
 fn default_trailing_activate() -> f64 { 5.0 }
@@ -170,6 +298,7 @@ impl Default for MATrendPullbackParams {
             vol_threshold: 0.0,
             use_5m_expanding: false,
             min_angle_5m: 0.0,
+            entry_timeframe: "30m".to_string(),
         }
     }
 }
@@ -374,11 +503,11 @@ impl MATrendPullbackStrategy {
         let closes = extract_closes(klines);
         let current_price = data.current_price;
 
-        // Calculate MAs
+        // Calculate MAs on 30m (for trend direction)
         let fast_ma = calculate_sma(klines, self.params.fast_ma_period)?;
         let slow_ma = calculate_sma(klines, self.params.slow_ma_period)?;
 
-        // Determine trend direction
+        // Determine trend direction using 30m MAs
         let trend = if fast_ma > slow_ma {
             TrendDirection::Bullish
         } else if fast_ma < slow_ma {
@@ -391,7 +520,7 @@ impl MATrendPullbackStrategy {
             return None;
         }
 
-        // Apply filters
+        // Apply filters (on30m klines)
         // 1. Slope filter
         if self.params.slope_threshold > 0.0 {
             let fast_ma_series = calculate_sma_series(&closes, self.params.fast_ma_period);
@@ -441,19 +570,29 @@ impl MATrendPullbackStrategy {
             }
         }
 
-        // Check for MA crossover signal
-        // We need the previous bar's state to detect crossover
-        if klines.len() < 2 {
+        // Determine entry klines based on entry_timeframe parameter
+        let entry_klines: &Vec<KlineBar> = if self.params.entry_timeframe == "5m" {
+            // Use 5m klines for entry signal if available
+            match &data.klines_5m {
+                Some(klines_5m) if klines_5m.len() >= 2 => klines_5m,
+                _ => klines, // Fallback to 30m if 5m not available
+            }
+        } else {
+            klines // Use 30m klines for entry
+        };
+
+        // Check for MA crossover signal on entry klines
+        if entry_klines.len() < 2 {
             return None;
         }
 
-        let prev_klines = &klines[..klines.len() - 1];
-        let prev_fast_ma = calculate_sma(prev_klines, self.params.fast_ma_period);
-        let prev_slow_ma = calculate_sma(prev_klines, self.params.slow_ma_period);
+        let entry_fast_ma = calculate_sma(entry_klines, self.params.fast_ma_period)?;
+        let prev_entry_klines = &entry_klines[..entry_klines.len() - 1];
+        let prev_entry_fast_ma = calculate_sma(prev_entry_klines, self.params.fast_ma_period);
 
-        // Current bar OHLC
-        let open = klines.last()?.open;
-        let close = klines.last()?.close;
+        // Current entry bar OHLC
+        let open = entry_klines.last()?.open;
+        let close = entry_klines.last()?.close;
 
         // Detect entry signal: price crosses MA288 in trend direction
         let mut signal_type = None;
@@ -462,14 +601,13 @@ impl MATrendPullbackStrategy {
         match trend {
             TrendDirection::Bullish => {
                 // Bullish trend: price crosses above fast MA
-                // Previous: open < fast_ma OR close < fast_ma
-                // Current: close > fast_ma
-                if let Some(prev_fast) = prev_fast_ma {
-                    if open < prev_fast && close > fast_ma {
+                if let Some(prev_fast) = prev_entry_fast_ma {
+                    if open < prev_fast && close > entry_fast_ma {
                         signal_type = Some(SignalType::Buy);
                         reason = format!(
-                            "Bullish trend pullback: price crossed above MA{} (trend: MA{} > MA{})",
+                            "Bullish trend pullback: price crossed above MA{} on {} (trend: MA{} > MA{})",
                             self.params.fast_ma_period,
+                            self.params.entry_timeframe,
                             self.params.fast_ma_period,
                             self.params.slow_ma_period
                         );
@@ -478,14 +616,13 @@ impl MATrendPullbackStrategy {
             }
             TrendDirection::Bearish => {
                 // Bearish trend: price crosses below fast MA
-                // Previous: open > fast_ma OR close > fast_ma
-                // Current: close < fast_ma
-                if let Some(prev_fast) = prev_fast_ma {
-                    if open > prev_fast && close < fast_ma {
+                if let Some(prev_fast) = prev_entry_fast_ma {
+                    if open > prev_fast && close < entry_fast_ma {
                         signal_type = Some(SignalType::Sell);
                         reason = format!(
-                            "Bearish trend pullback: price crossed below MA{} (trend: MA{} < MA{})",
+                            "Bearish trend pullback: price crossed below MA{} on {} (trend: MA{} < MA{})",
                             self.params.fast_ma_period,
+                            self.params.entry_timeframe,
                             self.params.fast_ma_period,
                             self.params.slow_ma_period
                         );
@@ -497,7 +634,7 @@ impl MATrendPullbackStrategy {
 
         let signal_type = signal_type?;
 
-        // Calculate stop loss at fast MA (MA288)
+        // Calculate stop loss at fast MA (MA288) - use30m MA for stop
         let stop_loss = match signal_type {
             SignalType::Buy => Some(fast_ma * 0.98),  // 2% below MA
             SignalType::Sell => Some(fast_ma * 1.02),  // 2% above MA
@@ -505,7 +642,6 @@ impl MATrendPullbackStrategy {
         };
 
         // No fixed take profit - use trailing stop
-        // Take profit is set to None, trailing stop logic is handled externally
         let take_profit = None;
 
         // Signal strength based on MA separation
@@ -523,6 +659,7 @@ impl MATrendPullbackStrategy {
             "open": open,
             "close": close,
             "timeframe": data.timeframe.as_str(),
+            "entry_timeframe": self.params.entry_timeframe,
             "kline_count": klines.len(),
             "stop_mode": format!("{:?}", self.params.stop_mode),
             "take_profit_mode": format!("{:?}", self.params.take_profit_mode),
