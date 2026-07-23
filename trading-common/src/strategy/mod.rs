@@ -6,13 +6,7 @@
 // (backtest::strategy::MultiTimeframeStrategy) strategy types.
 
 pub mod analysis;
-pub mod bollinger;
-pub mod macd;
-pub mod macro_cycle;
-pub mod multi_tf;
-pub mod rsi;
-pub mod trend;
-pub mod volume;
+pub mod ma_trend_pullback;
 
 use crate::data::types::{OHLCData, TickData, Timeframe};
 use std::collections::HashMap;
@@ -52,7 +46,6 @@ pub use crate::backtest::strategy::{
     // Info type
     StrategyInfo,
     // Factory functions (for backward compatibility)
-    create_multi_timeframe_strategy,
     create_strategy,
     get_strategy_info,
     is_multi_timeframe_strategy,
@@ -108,7 +101,7 @@ pub trait UnifiedStrategy: Send + Sync {
     /// Reset strategy internal state for reuse.
     fn reset(&mut self);
 
-    /// Strategy identifier (e.g. "sma", "rsi", "trend").
+    /// Strategy identifier (e.g. "ma_trend_pullback").
     fn strategy_id(&self) -> &str;
 
     /// Human-readable strategy name.
@@ -171,7 +164,7 @@ type StrategyCreator = Box<dyn Fn() -> Result<StrategyModeType, String> + Send +
 
 /// Factory for creating strategy instances by identifier.
 ///
-/// Built-in strategies ("sma", "rsi", "trend") are registered by default.
+/// Built-in strategies ("ma_trend_pullback") are registered by default.
 /// Call `register()` to add custom strategies at runtime.
 pub struct StrategyFactory {
     registry: HashMap<String, StrategyCreator>,
@@ -192,16 +185,10 @@ impl StrategyFactory {
         factory
     }
 
-    /// Register built-in strategies: sma, rsi, trend.
+    /// Register built-in strategies: ma_trend_pullback.
     fn register_builtins(&mut self) {
-        self.register("sma", || {
-            create_strategy("sma").map(StrategyModeType::Tick)
-        });
-        self.register("rsi", || {
-            create_strategy("rsi").map(StrategyModeType::Tick)
-        });
-        self.register("trend", || {
-            create_multi_timeframe_strategy("trend").map(StrategyModeType::MultiTimeframe)
+        self.register("ma_trend_pullback", || {
+            create_strategy("ma_trend_pullback").map(StrategyModeType::Tick)
         });
     }
 
@@ -278,14 +265,6 @@ impl Default for StrategyFactory {
 /// Create a strategy using the default factory.
 ///
 /// Returns the strategy wrapped in a `StrategyModeType` enum.
-///
-/// # Examples
-/// ```ignore
-/// use trading_common::strategy::create;
-///
-/// let strategy = create("sma").unwrap();
-/// let strategy = create("trend").unwrap();
-/// ```
 pub fn create(strategy_id: &str) -> Result<StrategyModeType, String> {
     StrategyFactory::default().create(strategy_id)
 }

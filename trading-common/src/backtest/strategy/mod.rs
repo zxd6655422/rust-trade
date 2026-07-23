@@ -1,17 +1,13 @@
 pub(crate) mod base;
+pub mod ma_trend_pullback;
 pub mod multi_timeframe;
-mod rsi;
-mod sma;
-mod trend_strategy;
 
 pub use base::{Signal, Strategy};
 pub use multi_timeframe::{
     EntryDirection, MultiTimeframeAnalysis, MultiTimeframeStrategy, TrendAnalysis, TrendDirection,
 };
-pub use trend_strategy::TrendStrategy;
 
-use rsi::RsiStrategy;
-use sma::SmaStrategy;
+use ma_trend_pullback::MATrendPullbackBacktestStrategy;
 
 #[derive(Debug, Clone)]
 pub struct StrategyInfo {
@@ -23,8 +19,7 @@ pub struct StrategyInfo {
 
 pub fn create_strategy(strategy_id: &str) -> Result<Box<dyn Strategy>, String> {
     match strategy_id {
-        "sma" => Ok(Box::new(SmaStrategy::new())),
-        "rsi" => Ok(Box::new(RsiStrategy::new())),
+        "ma_trend_pullback" => Ok(Box::new(MATrendPullbackBacktestStrategy::new())),
         _ => Err(format!("Unknown strategy: {}", strategy_id)),
     }
 }
@@ -34,7 +29,6 @@ pub fn create_multi_timeframe_strategy(
     strategy_id: &str,
 ) -> Result<Box<dyn MultiTimeframeStrategy>, String> {
     match strategy_id {
-        "trend" => Ok(Box::new(TrendStrategy::new())),
         _ => Err(format!("Unknown multi-timeframe strategy: {}", strategy_id)),
     }
 }
@@ -42,25 +36,11 @@ pub fn create_multi_timeframe_strategy(
 pub fn list_strategies() -> Vec<StrategyInfo> {
     vec![
         StrategyInfo {
-            id: "sma".to_string(),
-            name: "Simple Moving Average".to_string(),
-            description: "Trading strategy based on short and long-term moving average crossover"
+            id: "ma_trend_pullback".to_string(),
+            name: "MA Trend Pullback".to_string(),
+            description: "Dual MA trend pullback strategy: MA288/MA488 trend detection with MA288 crossover entry and trailing stop"
                 .to_string(),
             is_multi_timeframe: false,
-        },
-        StrategyInfo {
-            id: "rsi".to_string(),
-            name: "RSI Strategy".to_string(),
-            description: "Trading strategy based on Relative Strength Index (RSI)".to_string(),
-            is_multi_timeframe: false,
-        },
-        StrategyInfo {
-            id: "trend".to_string(),
-            name: "Multi-Timeframe Trend".to_string(),
-            description:
-                "Multi-timeframe trend strategy: 4h for trend, 1h for confirmation, 15m for entry"
-                    .to_string(),
-            is_multi_timeframe: true,
         },
     ]
 }
