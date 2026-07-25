@@ -1068,12 +1068,13 @@ impl OrderManager {
         } else {
             // ===== 现货模式: 通过 StopLossManager 轮询检查 =====
             // 现货不支持条件单，通过轮询价格并在触发时下市价单
-            self.stop_loss_manager.add_stop_order(
+            self.stop_loss_manager.create_stop_order(
                 symbol,
-                side,
+                close_side,
                 quantity,
-                sl_price,
-                tp_price,
+                sl_price,  // entry_price 参数，用于计算止损
+                Some(sl_price),
+                Some(tp_price),
             ).await;
 
             info!(
