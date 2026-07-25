@@ -284,6 +284,9 @@ async fn process_strategy(
         market_structure: signal.market_structure.map(|ms| serde_json::to_value(ms).unwrap_or_default()),
         key_levels: signal.key_levels.map(|kl| serde_json::to_value(kl).unwrap_or_default()),
         trade_setup: signal.trade_setup.map(|ts| serde_json::to_value(ts).unwrap_or_default()),
+        // V8 新增字段：目标市场类型
+        // 从策略实例配置获取，默认 "futures"
+        market_type: Some(strategy_instance.market_type.clone()),
     };
 
     let saved_signal = signals::create_signal(pool, signal_request).await?;

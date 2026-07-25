@@ -37,6 +37,8 @@ struct SignalRecord {
     pub entry_allowed: bool,
     pub status: String,
     pub created_at: DateTime<Utc>,
+    /// 目标市场类型: "futures", "spot", "both" (默认 "futures")
+    pub market_type: Option<String>,
     /// 以下字段用于全链路日志追踪
     pub signal_strength: Option<Decimal>,
     pub stop_loss: Option<Decimal>,
@@ -297,6 +299,9 @@ impl SignalPoller {
                 record.overall_confidence, record.strategy_id
             );
 
+            // 获取信号的目标市场类型（默认 "futures"）
+            let signal_market_type = record.market_type.as_deref().unwrap_or("futures");
+
             // 广播到所有已启用的 TradingUnit
             let mut any_success = false;
             let mut last_error = String::new();
@@ -305,6 +310,42 @@ impl SignalPoller {
                 if !unit.enabled { continue; }
 
                 let unit_id = unit.id.clone();
+
+                // 检查信号是否匹配当前 TradingUnit 的市场类型
+                let should_execute = match signal_market_type {
+                    "both" => true,  // "both" 表示所有市场都执行
+                    "futures" => unit.market_type == "futures",
+                    "spot" => unit.market_type == "spot",
+                    _ => {
+                        warn!("[{}] Unknown signal market_type: {}, skipping", unit_id, signal_market_type);
+                        false
+                    }
+                };
+
+                if !should_execute {
+                    debug!(
+                        "[{}] Signal market_type={} doesn't match unit market_type={}, skipping",
+                        unit_id, signal_market_type, unit.market_type
+                    );
+                    continue;
+                }
+
+                // 检查是否已有同方向持仓（避免重复开仓）
+                if let Err(e) = self.check_existing_position(unit, &record.symbol, &record.direction).await {
+                    warn!("[{}] Position check failed: {}", unit_id, e);
+                    // 不阻断，继续执行
+                } else {
+                    // 如果已有同方向持仓，跳过
+                    if self.has_same_direction_position(unit, &record.symbol, &record.direction).await {
+                        info!(
+                            "[{}] Already have {} position for {}, skipping signal",
+                            unit_id, record.direction, record.symbol
+                        );
+                        any_success = true; // 标记为成功（已处理）
+                        continue;
+                    }
+                }
+
                 match unit.order_manager.execute_signal(signal.clone(), Some(signal_id)).await {
                     Ok(result) => {
                         info!(
@@ -336,12 +377,60 @@ impl SignalPoller {
         Ok(())
     }
 
+    /// 检查是否已有同方向持仓
+    async fn check_existing_position(
+        &self,
+        unit: &TradingUnit,
+        symbol: &str,
+        direction: &str,
+    ) -> Result<(), String> {
+        if unit.market_type == "futures" {
+            // 合约模式：查询合约持仓
+            let position = unit.exchange.get_position(symbol).await
+                .map_err(|e| format!("Failed to get position: {}", e))?;
+
+            let has_position = match direction.to_lowercase().as_str() {
+                "bullish" | "buy" => position.quantity > Decimal::ZERO && position.side == crate::exchange::types::PositionSide::Long,
+                "bearish" | "sell" => position.quantity > Decimal::ZERO && position.side == crate::exchange::types::PositionSide::Short,
+                _ => false,
+            };
+
+            if has_position {
+                info!(
+                    "[{}] Existing {} position for {}: qty={}",
+                    unit.id, direction, symbol, position.quantity
+                );
+            }
+        }
+        // 现货模式：不检查持仓（直接查询余额）
+        Ok(())
+    }
+
+    /// 检查是否已有同方向持仓（返回布尔值）
+    async fn has_same_direction_position(
+        &self,
+        unit: &TradingUnit,
+        symbol: &str,
+        direction: &str,
+    ) -> bool {
+        if unit.market_type == "futures" {
+            if let Ok(position) = unit.exchange.get_position(symbol).await {
+                return match direction.to_lowercase().as_str() {
+                    "bullish" | "buy" => position.quantity > Decimal::ZERO && position.side == crate::exchange::types::PositionSide::Long,
+                    "bearish" | "sell" => position.quantity > Decimal::ZERO && position.side == crate::exchange::types::PositionSide::Short,
+                    _ => false,
+                };
+            }
+        }
+        false
+    }
+
     /// 获取待执行信号
     async fn get_pending_signals(&self) -> Result<Vec<SignalRecord>, String> {
         let rows = sqlx::query(
             "SELECT id, symbol, strategy_id, direction, entry_price, \
                     overall_confidence, entry_allowed, status, created_at, \
-                    signal_strength, stop_loss, take_profit, \
+                    market_type, signal_strength, stop_loss, take_profit, \
                     timeframe_details, market_context \
              FROM strategy_signals \
              WHERE status='pending' AND entry_allowed=true \
@@ -362,6 +451,7 @@ impl SignalPoller {
             entry_allowed: r.get::<bool, _>("entry_allowed"),
             status: r.get::<String, _>("status"),
             created_at: r.get::<DateTime<Utc>, _>("created_at"),
+            market_type: r.try_get::<String, _>("market_type").ok(),
             signal_strength: r.try_get::<Decimal, _>("signal_strength").ok(),
             stop_loss: r.try_get::<Decimal, _>("stop_loss").ok(),
             take_profit: r.try_get::<Decimal, _>("take_profit").ok(),

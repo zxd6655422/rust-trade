@@ -185,16 +185,42 @@ CREATE TABLE IF NOT EXISTS strategy_instances (
 -- 策略信号表
 CREATE TABLE IF NOT EXISTS strategy_signals (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-    strategy_id VARCHAR(50) NOT NULL,
-    instance_id VARCHAR(50),
     symbol VARCHAR(20) NOT NULL,
-    signal_type VARCHAR(10) NOT NULL,       -- 'BUY' / 'SELL' / 'HOLD'
-    price DECIMAL(20, 8),
-    quantity DECIMAL(20, 8),
-    confidence DECIMAL(5, 4),
-    reason TEXT,
-    metadata JSONB,
-    created_at TIMESTAMPTZ DEFAULT NOW()
+    strategy_id VARCHAR(50) NOT NULL,
+    direction VARCHAR(20) NOT NULL,           -- bullish/bearish/neutral
+    entry_price DECIMAL(20, 8) NOT NULL,
+    overall_confidence DECIMAL(5, 4) DEFAULT 0,
+    entry_allowed BOOLEAN DEFAULT true,
+    entry_direction VARCHAR(10),              -- long/short
+    timeframe_details JSONB DEFAULT '{}',
+    order_id VARCHAR(100),
+    executed BOOLEAN DEFAULT false,
+    status VARCHAR(20) DEFAULT 'pending',     -- pending/confirmed/invalidated/expired/superseded/executed/failed
+    closed_reason TEXT,
+    evaluated_at TIMESTAMPTZ,
+    best_price DECIMAL(20, 8),
+    worst_price DECIMAL(20, 8),
+    eval_count INTEGER DEFAULT 0,
+    closed_at TIMESTAMPTZ,
+    close_price DECIMAL(20, 8),
+    actual_return_pct DECIMAL(10, 4),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    -- V6 新增字段
+    instance_id UUID,
+    signal_strength DECIMAL(5, 4),
+    market_context JSONB,
+    stop_loss DECIMAL(20, 8),
+    take_profit DECIMAL(20, 8),
+    -- V7 新增字段：策略分析详情
+    market_structure JSONB,
+    key_levels JSONB,
+    trade_setup JSONB,
+    -- V8 新增字段：目标市场类型
+    -- "futures" = 只在合约执行 (默认)
+    -- "spot" = 只在现货执行
+    -- "both" = 同时在合约和现货执行
+    market_type VARCHAR(20) DEFAULT 'futures',
+    CONSTRAINT chk_signal_market_type CHECK (market_type IN ('futures', 'spot', 'both'))
 );
 
 -- 策略分析日志表
@@ -488,6 +514,7 @@ CREATE INDEX IF NOT EXISTS idx_sentiment_symbol_time ON market_sentiment(symbol,
 CREATE INDEX IF NOT EXISTS idx_signals_strategy ON strategy_signals(strategy_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_signals_symbol ON strategy_signals(symbol, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_signals_instance ON strategy_signals(instance_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_signals_market_type ON strategy_signals(market_type);
 
 -- 订单索引
 CREATE INDEX IF NOT EXISTS idx_orders_status ON trading_orders(status);

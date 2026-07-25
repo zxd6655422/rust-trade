@@ -38,6 +38,11 @@ pub struct StrategySignal {
     pub market_structure: Option<serde_json::Value>,
     pub key_levels: Option<serde_json::Value>,
     pub trade_setup: Option<serde_json::Value>,
+    // V8 新增字段：目标市场类型
+    // "futures" = 只在合约执行 (默认)
+    // "spot" = 只在现货执行
+    // "both" = 同时在合约和现货执行
+    pub market_type: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -60,6 +65,11 @@ pub struct CreateSignalRequest {
     pub market_structure: Option<serde_json::Value>,
     pub key_levels: Option<serde_json::Value>,
     pub trade_setup: Option<serde_json::Value>,
+    // V8 新增字段：目标市场类型
+    // "futures" = 只在合约执行 (默认)
+    // "spot" = 只在现货执行
+    // "both" = 同时在合约和现货执行
+    pub market_type: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -103,9 +113,10 @@ pub async fn create_signal(
             overall_confidence, entry_allowed, entry_direction,
             timeframe_details, instance_id, signal_strength,
             market_context, stop_loss, take_profit,
-            market_structure, key_levels, trade_setup
+            market_structure, key_levels, trade_setup,
+            market_type
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
         RETURNING *
         "#
     )
@@ -125,6 +136,7 @@ pub async fn create_signal(
     .bind(&req.market_structure)
     .bind(&req.key_levels)
     .bind(&req.trade_setup)
+    .bind(req.market_type.unwrap_or_else(|| "futures".to_string()))
     .fetch_one(pool)
     .await?;
 

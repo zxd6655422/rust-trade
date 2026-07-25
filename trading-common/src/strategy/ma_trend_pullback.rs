@@ -238,6 +238,11 @@ pub struct MATrendPullbackParams {
     /// Fixed stop loss percentage (only used when stop_mode = fixed)
     #[serde(default = "default_fixed_stop_pct")]
     pub fixed_stop_pct: f64,
+    /// Hard stop loss percentage from entry price (default: 0, disabled)
+    /// Set to 1.0-2.5 depending on coin volatility
+    /// BTC: 1.0, ETH: 1.5, SOL: 2.5
+    #[serde(default)]
+    pub hard_stop_pct: f64,
     /// Take profit mode (default: trailing)
     #[serde(default)]
     pub take_profit_mode: TakeProfitMode,
@@ -262,6 +267,9 @@ pub struct MATrendPullbackParams {
     /// Volume ratio threshold (default: 0, disabled)
     #[serde(default)]
     pub vol_threshold: f64,
+    /// 30m diffusion filter: only enter when 30m dual MA is expanding (default: false)
+    #[serde(default)]
+    pub use_30m_expanding: bool,
     /// 5m diffusion filter: only enter when 5m dual MA is expanding (default: false)
     #[serde(default)]
     pub use_5m_expanding: bool,
@@ -288,6 +296,7 @@ impl Default for MATrendPullbackParams {
             slow_ma_period: 488,
             stop_mode: StopMode::Ma288,
             fixed_stop_pct: 2.0,
+            hard_stop_pct: 0.0,  // Disabled by default, enable per coin
             take_profit_mode: TakeProfitMode::Trailing,
             trailing_activate_pct: 5.0,
             trailing_callback_pct: 5.0,
@@ -296,6 +305,7 @@ impl Default for MATrendPullbackParams {
             slope_threshold: 0.0,
             bbw_threshold: 0.0,
             vol_threshold: 0.0,
+            use_30m_expanding: false,
             use_5m_expanding: false,
             min_angle_5m: 0.0,
             entry_timeframe: "30m".to_string(),
@@ -549,7 +559,16 @@ impl MATrendPullbackStrategy {
             }
         }
 
-        // 4. 5m diffusion filter (optional)
+        // 4. 30m diffusion filter (optional)
+        if self.params.use_30m_expanding {
+            if let Some(expanding) = is_expanding(klines, self.params.fast_ma_period, self.params.slow_ma_period, 5) {
+                if !expanding {
+                    return None; // 30m is converging, skip entry
+                }
+            }
+        }
+
+        // 5. 5m diffusion filter (optional)
         if self.params.use_5m_expanding {
             if let Some(klines_5m) = &data.klines_5m {
                 // Check if 5m dual MA is expanding
@@ -634,11 +653,22 @@ impl MATrendPullbackStrategy {
 
         let signal_type = signal_type?;
 
-        // Calculate stop loss at fast MA (MA288) - use30m MA for stop
-        let stop_loss = match signal_type {
-            SignalType::Buy => Some(fast_ma * 0.98),  // 2% below MA
-            SignalType::Sell => Some(fast_ma * 1.02),  // 2% above MA
-            _ => None,
+        // Calculate stop loss
+        // Priority: hard stop > MA288 stop
+        let stop_loss = if self.params.hard_stop_pct > 0.0 {
+            // Hard stop: based on entry price
+            match signal_type {
+                SignalType::Buy => Some(current_price * (1.0 - self.params.hard_stop_pct / 100.0)),
+                SignalType::Sell => Some(current_price * (1.0 + self.params.hard_stop_pct / 100.0)),
+                _ => None,
+            }
+        } else {
+            // MA288 stop: based on MA value
+            match signal_type {
+                SignalType::Buy => Some(fast_ma * 0.98),  // 2% below MA
+                SignalType::Sell => Some(fast_ma * 1.02),  // 2% above MA
+                _ => None,
+            }
         };
 
         // No fixed take profit - use trailing stop
@@ -662,11 +692,13 @@ impl MATrendPullbackStrategy {
             "entry_timeframe": self.params.entry_timeframe,
             "kline_count": klines.len(),
             "stop_mode": format!("{:?}", self.params.stop_mode),
+            "hard_stop_pct": self.params.hard_stop_pct,
             "take_profit_mode": format!("{:?}", self.params.take_profit_mode),
             "trailing_activate_pct": self.params.trailing_activate_pct,
             "trailing_callback_pct": self.params.trailing_callback_pct,
             "ma48_tp_bars": self.params.ma48_tp_bars,
             "bb_tp_pct": self.params.bb_tp_pct,
+            "use_30m_expanding": self.params.use_30m_expanding,
             "use_5m_expanding": self.params.use_5m_expanding,
             "min_angle_5m": self.params.min_angle_5m,
         });

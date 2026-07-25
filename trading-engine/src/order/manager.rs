@@ -193,15 +193,17 @@ impl OrderManager {
         }
 
         // 3. 设置杠杆和保证金模式（仅合约）
-        if self.leverage > 0 {
-            if let Err(e) = self.exchange.set_leverage(&order_request.symbol, self.leverage).await {
-                warn!("Failed to set leverage for {}: {}", order_request.symbol, e);
-                // 不阻断交易，使用当前杠杆设置
+        if self.market_type == "futures" {
+            if self.leverage > 0 {
+                if let Err(e) = self.exchange.set_leverage(&order_request.symbol, self.leverage).await {
+                    warn!("Failed to set leverage for {}: {}", order_request.symbol, e);
+                    // 不阻断交易，使用当前杠杆设置
+                }
             }
-        }
-        if let Err(e) = self.exchange.set_margin_type(&order_request.symbol, self.margin_type.clone()).await {
-            warn!("Failed to set margin type for {}: {}", order_request.symbol, e);
-            // 不阻断交易，使用当前保证金模式
+            if let Err(e) = self.exchange.set_margin_type(&order_request.symbol, self.margin_type.clone()).await {
+                warn!("Failed to set margin type for {}: {}", order_request.symbol, e);
+                // 不阻断交易，使用当前保证金模式
+            }
         }
 
         // 4. 风控检查
@@ -731,20 +733,44 @@ impl OrderManager {
                 let risk_config = self.risk_engine.config().await;
                 let quantity = self.resolve_quantity(*quantity, *entry_price, account, &risk_config);
 
-                // 检查 USDT 余额是否充足
-                let usdt_balance = account
-                    .balances
-                    .iter()
-                    .find(|b| b.asset == "USDT")
-                    .map(|b| b.free)
-                    .unwrap_or(Decimal::ZERO);
+                // 根据交易模式检查余额
+                if self.market_type == "futures" {
+                    // 合约模式：检查可用保证金余额
+                    let available_margin = account.available_balance;
+                    let total_margin = account.total_equity;
+                    let estimated_margin = if self.leverage > 0 {
+                        quantity * entry_price / Decimal::from(self.leverage)
+                    } else {
+                        quantity * entry_price
+                    };
 
-                let estimated_value = quantity * entry_price;
-                if estimated_value > usdt_balance {
-                    return Err(OrderError::InsufficientBalance(format!(
-                        "Required: {} USDT, Available: {} USDT",
-                        estimated_value, usdt_balance
-                    )));
+                    info!(
+                        "[futures] Margin check: available={}, total={}, estimated={}",
+                        available_margin, total_margin, estimated_margin
+                    );
+
+                    if estimated_margin > available_margin {
+                        return Err(OrderError::InsufficientBalance(format!(
+                            "[futures] Insufficient margin: need {} USDT, available {} USDT (total equity: {})",
+                            estimated_margin, available_margin, total_margin
+                        )));
+                    }
+                } else {
+                    // 现货模式：检查USDT余额
+                    let usdt_balance = account
+                        .balances
+                        .iter()
+                        .find(|b| b.asset == "USDT")
+                        .map(|b| b.free)
+                        .unwrap_or(Decimal::ZERO);
+
+                    let estimated_value = quantity * entry_price;
+                    if estimated_value > usdt_balance {
+                        return Err(OrderError::InsufficientBalance(format!(
+                            "[spot] Insufficient USDT: need {} USDT, available {} USDT",
+                            estimated_value, usdt_balance
+                        )));
+                    }
                 }
 
                 // 尝试获取订单簿最优价格做限价单
@@ -787,18 +813,28 @@ impl OrderManager {
                         )));
                     }
                 } else {
-                    // 现货模式：从账户余额查询 base asset
+                    // 现货模式：实时查询API获取最新余额
+                    let fresh_account = self.exchange.get_account().await
+                        .map_err(|e| OrderError::ExchangeError(
+                            format!("Failed to get fresh account for spot sell: {}", e)
+                        ))?;
+
                     let base_asset = Self::extract_base_asset(symbol);
-                    let balance = account
+                    let balance = fresh_account
                         .balances
                         .iter()
                         .find(|b| b.asset == base_asset)
                         .map(|b| b.free)
                         .unwrap_or(Decimal::ZERO);
 
+                    info!(
+                        "[spot] Real-time balance check: {} {} available (need {})",
+                        balance, base_asset, quantity
+                    );
+
                     if quantity > balance {
                         return Err(OrderError::InsufficientPosition(format!(
-                            "[spot] Sell {} {}: need {} {}, have {} {}",
+                            "[spot] Sell {} {}: need {} {}, have {} {} (real-time API check)",
                             symbol, quantity, quantity, base_asset, balance, base_asset
                         )));
                     }
@@ -955,6 +991,9 @@ impl OrderManager {
 
     /// 下交易所端条件单（止损 + 止盈）
     ///
+    /// 合约: 使用条件单 (STOP_MARKET / TAKE_PROFIT_MARKET)
+    /// 现货: 使用 OCO 订单或普通限价单（止损通过轮询检查触发）
+    ///
     /// 返回 (止损单ID, 止盈单ID)
     async fn place_exchange_stop_orders(
         &self,
@@ -973,56 +1012,74 @@ impl OrderManager {
         let mut sl_order_id = None;
         let mut tp_order_id = None;
 
-        // 下止损单 (STOP_MARKET)
-        let sl_request = ConditionalOrderRequest {
-            symbol: symbol.to_string(),
-            side: close_side.clone(),
-            order_type: OrderType::StopMarket,
-            stop_price: sl_price,
-            quantity: Some(quantity),
-            close_position: false,
-            callback_rate: None,
-            working_type: Some("CONTRACT_PRICE".to_string()),
-            client_order_id: Some(format!("sl_{}_{}", symbol, Utc::now().timestamp_millis())),
-        };
+        if self.market_type == "futures" {
+            // ===== 合约模式: 使用条件单 =====
+            // 下止损单 (STOP_MARKET)
+            let sl_request = ConditionalOrderRequest {
+                symbol: symbol.to_string(),
+                side: close_side.clone(),
+                order_type: OrderType::StopMarket,
+                stop_price: sl_price,
+                quantity: Some(quantity),
+                close_position: false,
+                callback_rate: None,
+                working_type: Some("CONTRACT_PRICE".to_string()),
+                client_order_id: Some(format!("sl_{}_{}", symbol, Utc::now().timestamp_millis())),
+            };
 
-        match self.exchange.place_conditional_order(sl_request).await {
-            Ok(result) => {
-                info!(
-                    "Exchange stop-loss order placed: {} {} strategy_id={}",
-                    symbol, sl_price, result.strategy_id
-                );
-                sl_order_id = Some(result.strategy_id);
+            match self.exchange.place_conditional_order(sl_request).await {
+                Ok(result) => {
+                    info!(
+                        "[futures] Exchange stop-loss order placed: {} {} strategy_id={}",
+                        symbol, sl_price, result.strategy_id
+                    );
+                    sl_order_id = Some(result.strategy_id);
+                }
+                Err(e) => {
+                    warn!("Failed to place exchange stop-loss order for {}: {}", symbol, e);
+                }
             }
-            Err(e) => {
-                warn!("Failed to place exchange stop-loss order for {}: {}", symbol, e);
-            }
-        }
 
-        // 下止盈单 (TAKE_PROFIT_MARKET)
-        let tp_request = ConditionalOrderRequest {
-            symbol: symbol.to_string(),
-            side: close_side,
-            order_type: OrderType::TakeProfitMarket,
-            stop_price: tp_price,
-            quantity: Some(quantity),
-            close_position: false,
-            callback_rate: None,
-            working_type: Some("CONTRACT_PRICE".to_string()),
-            client_order_id: Some(format!("tp_{}_{}", symbol, Utc::now().timestamp_millis())),
-        };
+            // 下止盈单 (TAKE_PROFIT_MARKET)
+            let tp_request = ConditionalOrderRequest {
+                symbol: symbol.to_string(),
+                side: close_side,
+                order_type: OrderType::TakeProfitMarket,
+                stop_price: tp_price,
+                quantity: Some(quantity),
+                close_position: false,
+                callback_rate: None,
+                working_type: Some("CONTRACT_PRICE".to_string()),
+                client_order_id: Some(format!("tp_{}_{}", symbol, Utc::now().timestamp_millis())),
+            };
 
-        match self.exchange.place_conditional_order(tp_request).await {
-            Ok(result) => {
-                info!(
-                    "Exchange take-profit order placed: {} {} strategy_id={}",
-                    symbol, tp_price, result.strategy_id
-                );
-                tp_order_id = Some(result.strategy_id);
+            match self.exchange.place_conditional_order(tp_request).await {
+                Ok(result) => {
+                    info!(
+                        "[futures] Exchange take-profit order placed: {} {} strategy_id={}",
+                        symbol, tp_price, result.strategy_id
+                    );
+                    tp_order_id = Some(result.strategy_id);
+                }
+                Err(e) => {
+                    warn!("Failed to place exchange take-profit order for {}: {}", symbol, e);
+                }
             }
-            Err(e) => {
-                warn!("Failed to place exchange take-profit order for {}: {}", symbol, e);
-            }
+        } else {
+            // ===== 现货模式: 通过 StopLossManager 轮询检查 =====
+            // 现货不支持条件单，通过轮询价格并在触发时下市价单
+            self.stop_loss_manager.add_stop_order(
+                symbol,
+                side,
+                quantity,
+                sl_price,
+                tp_price,
+            ).await;
+
+            info!(
+                "[spot] Stop-loss/take-profit registered via polling: {} SL={} TP={}",
+                symbol, sl_price, tp_price
+            );
         }
 
         (sl_order_id, tp_order_id)

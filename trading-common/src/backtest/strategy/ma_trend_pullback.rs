@@ -50,11 +50,14 @@ pub struct MATrendPullbackBacktestStrategy {
     slow_ma_period: usize,
     stop_mode: StopMode,
     fixed_stop_pct: f64,
+    hard_stop_pct: f64,  // Hard stop loss percentage from entry price
     take_profit_mode: TakeProfitMode,
     trailing_activate_pct: f64,
     trailing_callback_pct: f64,
     ma48_tp_bars: usize,
     bb_tp_pct: f64,
+    // 30m diffusion filter parameters
+    use_30m_expanding: bool,
     // 5m diffusion filter parameters
     use_5m_expanding: bool,
     min_angle_5m: f64,
@@ -64,6 +67,8 @@ pub struct MATrendPullbackBacktestStrategy {
     bars: VecDeque<Bar>,
     bars_5m: VecDeque<Bar>,  // 5m bars for diffusion filter
     position: Position,
+    entry_price: f64,  // Track entry price for hard stop
+    hard_stop_price: f64,  // Hard stop price level
     max_profit_pct: f64,
     ma48_cross_count: usize,
     last_signal: Option<Signal>,
@@ -92,17 +97,21 @@ impl MATrendPullbackBacktestStrategy {
             slow_ma_period: 488,
             stop_mode: StopMode::Ma288,
             fixed_stop_pct: 2.0,
+            hard_stop_pct: 0.0,  // Disabled by default
             take_profit_mode: TakeProfitMode::Trailing,
             trailing_activate_pct: 5.0,
             trailing_callback_pct: 5.0,
             ma48_tp_bars: 3,
             bb_tp_pct: 90.0,
+            use_30m_expanding: false,
             use_5m_expanding: false,
             min_angle_5m: 0.0,
             entry_timeframe: "30m".to_string(),
             bars: VecDeque::new(),
             bars_5m: VecDeque::new(),
             position: Position::None,
+            entry_price: 0.0,
+            hard_stop_price: 0.0,
             max_profit_pct: 0.0,
             ma48_cross_count: 0,
             last_signal: None,
@@ -225,39 +234,69 @@ impl MATrendPullbackBacktestStrategy {
         }
     }
 
-    /// Check stop loss condition
-    fn check_stop_loss(&self, current_price: f64) -> bool {
+    /// Check stop loss condition (hard stop has priority)
+    fn check_stop_loss(&self, bar: &Bar) -> (bool, f64) {
         match &self.position {
-            Position::None => false,
-            Position::Long { .. } => match self.stop_mode {
-                StopMode::Fixed => {
-                    let pnl = self.current_pnl_pct(current_price);
-                    pnl < -self.fixed_stop_pct
+            Position::None => (false, 0.0),
+            Position::Long { .. } => {
+                // 1. Hard stop (priority) - check against bar low
+                if self.hard_stop_pct > 0.0 && bar.low <= self.hard_stop_price {
+                    return (true, self.hard_stop_price);
                 }
-                StopMode::Ma288 => {
-                    let fast_ma = self.calculate_sma(self.fast_ma_period);
-                    let prev_fast_ma = self.calculate_sma_prev(self.fast_ma_period);
-                    if let (Some(ma), Some(prev_ma)) = (fast_ma, prev_fast_ma) {
-                        let prev_price = self.bars.back().map(|b| b.close).unwrap_or(current_price);
-                        prev_price > prev_ma && current_price < ma
-                    } else {
-                        false
+                // 2. MA288 stop - check against close
+                match self.stop_mode {
+                    StopMode::Fixed => {
+                        let pnl = self.current_pnl_pct(bar.close);
+                        if pnl < -self.fixed_stop_pct {
+                            (true, bar.close)
+                        } else {
+                            (false, 0.0)
+                        }
+                    }
+                    StopMode::Ma288 => {
+                        let fast_ma = self.calculate_sma(self.fast_ma_period);
+                        let prev_fast_ma = self.calculate_sma_prev(self.fast_ma_period);
+                        if let (Some(ma), Some(prev_ma)) = (fast_ma, prev_fast_ma) {
+                            let prev_price = self.bars.back().map(|b| b.close).unwrap_or(bar.close);
+                            if prev_price > prev_ma && bar.close < ma {
+                                (true, bar.close)
+                            } else {
+                                (false, 0.0)
+                            }
+                        } else {
+                            (false, 0.0)
+                        }
                     }
                 }
             },
-            Position::Short { .. } => match self.stop_mode {
-                StopMode::Fixed => {
-                    let pnl = self.current_pnl_pct(current_price);
-                    pnl < -self.fixed_stop_pct
+            Position::Short { .. } => {
+                // 1. Hard stop (priority) - check against bar high
+                if self.hard_stop_pct > 0.0 && bar.high >= self.hard_stop_price {
+                    return (true, self.hard_stop_price);
                 }
-                StopMode::Ma288 => {
-                    let fast_ma = self.calculate_sma(self.fast_ma_period);
-                    let prev_fast_ma = self.calculate_sma_prev(self.fast_ma_period);
-                    if let (Some(ma), Some(prev_ma)) = (fast_ma, prev_fast_ma) {
-                        let prev_price = self.bars.back().map(|b| b.close).unwrap_or(current_price);
-                        prev_price < prev_ma && current_price > ma
-                    } else {
-                        false
+                // 2. MA288 stop - check against close
+                match self.stop_mode {
+                    StopMode::Fixed => {
+                        let pnl = self.current_pnl_pct(bar.close);
+                        if pnl < -self.fixed_stop_pct {
+                            (true, bar.close)
+                        } else {
+                            (false, 0.0)
+                        }
+                    }
+                    StopMode::Ma288 => {
+                        let fast_ma = self.calculate_sma(self.fast_ma_period);
+                        let prev_fast_ma = self.calculate_sma_prev(self.fast_ma_period);
+                        if let (Some(ma), Some(prev_ma)) = (fast_ma, prev_fast_ma) {
+                            let prev_price = self.bars.back().map(|b| b.close).unwrap_or(bar.close);
+                            if prev_price < prev_ma && bar.close > ma {
+                                (true, bar.close)
+                            } else {
+                                (false, 0.0)
+                            }
+                        } else {
+                            (false, 0.0)
+                        }
                     }
                 }
             },
@@ -301,7 +340,7 @@ impl MATrendPullbackBacktestStrategy {
     }
 
     /// Check trend reversal
-    fn check_trend_reversal(&self, current_price: f64) -> bool {
+    fn check_trend_reversal(&self, _current_price: f64) -> bool {
         if let (Some(fast_ma), Some(slow_ma)) = (
             self.calculate_sma(self.fast_ma_period),
             self.calculate_sma(self.slow_ma_period),
@@ -364,8 +403,9 @@ impl MATrendPullbackBacktestStrategy {
                 }
             }
 
-            // Check stop loss
-            if self.check_stop_loss(current_price) {
+            // Check stop loss (with hard stop support)
+            let (should_stop, _exit_price) = self.check_stop_loss(&bar);
+            if should_stop {
                 let signal = match &self.position {
                     Position::Long { .. } => Signal::Sell {
                         symbol: symbol.to_string(),
@@ -380,6 +420,8 @@ impl MATrendPullbackBacktestStrategy {
                     Position::None => unreachable!(),
                 };
                 self.position = Position::None;
+                self.entry_price = 0.0;
+                self.hard_stop_price = 0.0;
                 self.max_profit_pct = 0.0;
                 self.ma48_cross_count = 0;
                 self.last_signal = Some(signal.clone());
@@ -431,7 +473,28 @@ impl MATrendPullbackBacktestStrategy {
             }
         }
 
-        // Check5m diffusion filter (if enabled)
+        // Check 30m diffusion filter (if enabled)
+        if self.use_30m_expanding {
+            if let Some(fast_ma) = self.calculate_sma(self.fast_ma_period) {
+                if let Some(slow_ma) = self.calculate_sma(self.slow_ma_period) {
+                    let current_spread = fast_ma - slow_ma;
+                    // Get spread 5 bars ago
+                    if self.bars.len() > self.slow_ma_period + 5 {
+                        let prev_bars: Vec<Bar> = self.bars.iter().rev().skip(5).take(self.slow_ma_period + 5).cloned().collect();
+                        if prev_bars.len() >= self.slow_ma_period {
+                            let prev_fast: f64 = prev_bars.iter().rev().take(self.fast_ma_period).map(|b| b.close).sum::<f64>() / self.fast_ma_period as f64;
+                            let prev_slow: f64 = prev_bars.iter().rev().take(self.slow_ma_period).map(|b| b.close).sum::<f64>() / self.slow_ma_period as f64;
+                            let prev_spread = prev_fast - prev_slow;
+                            if current_spread.abs() <= prev_spread.abs() {
+                                return Signal::Hold; // 30m is converging, skip entry
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Check 5m diffusion filter (if enabled)
         if self.use_5m_expanding {
             if let Some(expanding) = self.is_5m_expanding() {
                 if !expanding {
@@ -460,21 +523,24 @@ impl MATrendPullbackBacktestStrategy {
             if fast_ma > slow_ma {
                 // Entry: price crosses above MA288
                 if prev_price < prev_fast_ma && current_price > fast_ma {
-                    // Close short if exists
+                    // Close short if exists (no reverse opening)
                     if matches!(self.position, Position::Short { .. }) {
                         let signal = Signal::Buy {
                             symbol: symbol.to_string(),
                             quantity: Decimal::from(100),
                             entry_price: price_decimal,
                         };
-                        self.position = Position::Long { entry_price: current_price };
+                        self.position = Position::None;
+                        self.entry_price = 0.0;
+                        self.hard_stop_price = 0.0;
                         self.max_profit_pct = 0.0;
                         self.ma48_cross_count = 0;
                         self.last_signal = Some(signal.clone());
+                        // Don't open new position immediately, wait for next signal
                         return signal;
                     }
 
-                    // Open long
+                    // Open long (only when no position)
                     if self.position == Position::None {
                         let signal = Signal::Buy {
                             symbol: symbol.to_string(),
@@ -482,6 +548,13 @@ impl MATrendPullbackBacktestStrategy {
                             entry_price: price_decimal,
                         };
                         self.position = Position::Long { entry_price: current_price };
+                        self.entry_price = current_price;
+                        // Calculate hard stop price
+                        self.hard_stop_price = if self.hard_stop_pct > 0.0 {
+                            current_price * (1.0 - self.hard_stop_pct / 100.0)
+                        } else {
+                            0.0
+                        };
                         self.max_profit_pct = 0.0;
                         self.ma48_cross_count = 0;
                         self.last_signal = Some(signal.clone());
@@ -493,21 +566,24 @@ impl MATrendPullbackBacktestStrategy {
             else if fast_ma < slow_ma {
                 // Entry: price crosses below MA288
                 if prev_price > prev_fast_ma && current_price < fast_ma {
-                    // Close long if exists
+                    // Close long if exists (no reverse opening)
                     if matches!(self.position, Position::Long { .. }) {
                         let signal = Signal::Sell {
                             symbol: symbol.to_string(),
                             quantity: Decimal::from(100),
                             entry_price: price_decimal,
                         };
-                        self.position = Position::Short { entry_price: current_price };
+                        self.position = Position::None;
+                        self.entry_price = 0.0;
+                        self.hard_stop_price = 0.0;
                         self.max_profit_pct = 0.0;
                         self.ma48_cross_count = 0;
                         self.last_signal = Some(signal.clone());
+                        // Don't open new position immediately, wait for next signal
                         return signal;
                     }
 
-                    // Open short
+                    // Open short (only when no position)
                     if self.position == Position::None {
                         let signal = Signal::Sell {
                             symbol: symbol.to_string(),
@@ -515,6 +591,13 @@ impl MATrendPullbackBacktestStrategy {
                             entry_price: price_decimal,
                         };
                         self.position = Position::Short { entry_price: current_price };
+                        self.entry_price = current_price;
+                        // Calculate hard stop price
+                        self.hard_stop_price = if self.hard_stop_pct > 0.0 {
+                            current_price * (1.0 + self.hard_stop_pct / 100.0)
+                        } else {
+                            0.0
+                        };
                         self.max_profit_pct = 0.0;
                         self.ma48_cross_count = 0;
                         self.last_signal = Some(signal.clone());
@@ -550,6 +633,9 @@ impl Strategy for MATrendPullbackBacktestStrategy {
         if let Some(fixed_stop) = params.get("fixed_stop_pct") {
             self.fixed_stop_pct = fixed_stop.parse().map_err(|_| "Invalid fixed_stop_pct")?;
         }
+        if let Some(hard_stop) = params.get("hard_stop_pct") {
+            self.hard_stop_pct = hard_stop.parse().map_err(|_| "Invalid hard_stop_pct")?;
+        }
         if let Some(tp_mode) = params.get("take_profit_mode") {
             self.take_profit_mode = match tp_mode.as_str() {
                 "trailing" => TakeProfitMode::Trailing,
@@ -571,6 +657,9 @@ impl Strategy for MATrendPullbackBacktestStrategy {
         if let Some(bb_pct) = params.get("bb_tp_pct") {
             self.bb_tp_pct = bb_pct.parse().map_err(|_| "Invalid bb_tp_pct")?;
         }
+        if let Some(use_30m) = params.get("use_30m_expanding") {
+            self.use_30m_expanding = use_30m.parse().map_err(|_| "Invalid use_30m_expanding")?;
+        }
         if let Some(use_expanding) = params.get("use_5m_expanding") {
             self.use_5m_expanding = use_expanding.parse().map_err(|_| "Invalid use_5m_expanding")?;
         }
@@ -586,9 +675,10 @@ impl Strategy for MATrendPullbackBacktestStrategy {
         }
 
         println!(
-            "MA Trend Pullback Strategy initialized: fast_ma={}, slow_ma={}, stop={:?}, tp={:?}, entry_tf={}, use_5m_expanding={}, min_angle_5m={}",
-            self.fast_ma_period, self.slow_ma_period, self.stop_mode, self.take_profit_mode,
-            self.entry_timeframe, self.use_5m_expanding, self.min_angle_5m
+            "MA Trend Pullback Strategy initialized: fast_ma={}, slow_ma={}, stop={:?}, hard_stop={}%, tp={:?}, act={}%, cb={}%, entry_tf={}, use_30m_expanding={}, use_5m_expanding={}, min_angle_5m={}",
+            self.fast_ma_period, self.slow_ma_period, self.stop_mode, self.hard_stop_pct,
+            self.take_profit_mode, self.trailing_activate_pct, self.trailing_callback_pct,
+            self.entry_timeframe, self.use_30m_expanding, self.use_5m_expanding, self.min_angle_5m
         );
         Ok(())
     }
@@ -597,6 +687,8 @@ impl Strategy for MATrendPullbackBacktestStrategy {
         self.bars.clear();
         self.bars_5m.clear();
         self.position = Position::None;
+        self.entry_price = 0.0;
+        self.hard_stop_price = 0.0;
         self.max_profit_pct = 0.0;
         self.ma48_cross_count = 0;
         self.last_signal = None;
