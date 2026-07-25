@@ -15,7 +15,7 @@
 //! - min_angle_5m: minimum angle threshold
 //! - entry_timeframe: "30m" or "5m" for entry signal detection
 
-use super::base::{Signal, Strategy};
+use super::base::{Signal, SignalIntent, Strategy};
 use crate::data::types::{OHLCData, Timeframe, TickData};
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
@@ -411,11 +411,13 @@ impl MATrendPullbackBacktestStrategy {
                         symbol: symbol.to_string(),
                         quantity: Decimal::from(100),
                         entry_price: price_decimal,
+                        intent: SignalIntent::Exit,
                     },
                     Position::Short { .. } => Signal::Buy {
                         symbol: symbol.to_string(),
                         quantity: Decimal::from(100),
                         entry_price: price_decimal,
+                        intent: SignalIntent::Exit,
                     },
                     Position::None => unreachable!(),
                 };
@@ -435,11 +437,13 @@ impl MATrendPullbackBacktestStrategy {
                         symbol: symbol.to_string(),
                         quantity: Decimal::from(100),
                         entry_price: price_decimal,
+                        intent: SignalIntent::Exit,
                     },
                     Position::Short { .. } => Signal::Buy {
                         symbol: symbol.to_string(),
                         quantity: Decimal::from(100),
                         entry_price: price_decimal,
+                        intent: SignalIntent::Exit,
                     },
                     Position::None => unreachable!(),
                 };
@@ -457,11 +461,13 @@ impl MATrendPullbackBacktestStrategy {
                         symbol: symbol.to_string(),
                         quantity: Decimal::from(100),
                         entry_price: price_decimal,
+                        intent: SignalIntent::Exit,
                     },
                     Position::Short { .. } => Signal::Buy {
                         symbol: symbol.to_string(),
                         quantity: Decimal::from(100),
                         entry_price: price_decimal,
+                        intent: SignalIntent::Exit,
                     },
                     Position::None => unreachable!(),
                 };
@@ -529,6 +535,7 @@ impl MATrendPullbackBacktestStrategy {
                             symbol: symbol.to_string(),
                             quantity: Decimal::from(100),
                             entry_price: price_decimal,
+                            intent: SignalIntent::Exit,
                         };
                         self.position = Position::None;
                         self.entry_price = 0.0;
@@ -546,6 +553,7 @@ impl MATrendPullbackBacktestStrategy {
                             symbol: symbol.to_string(),
                             quantity: Decimal::from(100),
                             entry_price: price_decimal,
+                            intent: SignalIntent::Entry,
                         };
                         self.position = Position::Long { entry_price: current_price };
                         self.entry_price = current_price;
@@ -572,6 +580,7 @@ impl MATrendPullbackBacktestStrategy {
                             symbol: symbol.to_string(),
                             quantity: Decimal::from(100),
                             entry_price: price_decimal,
+                            intent: SignalIntent::Exit,
                         };
                         self.position = Position::None;
                         self.entry_price = 0.0;
@@ -589,6 +598,7 @@ impl MATrendPullbackBacktestStrategy {
                             symbol: symbol.to_string(),
                             quantity: Decimal::from(100),
                             entry_price: price_decimal,
+                            intent: SignalIntent::Entry,
                         };
                         self.position = Position::Short { entry_price: current_price };
                         self.entry_price = current_price;

@@ -2,17 +2,30 @@ use crate::data::types::{OHLCData, TickData};
 use rust_decimal::Decimal;
 use std::collections::HashMap;
 
+/// 信号意图
+#[derive(Debug, Clone, PartialEq)]
+pub enum SignalIntent {
+    /// 开仓信号 (开新仓)
+    Entry,
+    /// 平仓信号 (止损/止盈/趋势反转，只平仓不开新仓)
+    Exit,
+    /// 反手信号 (平旧仓 + 开新仓)
+    Reverse,
+}
+
 #[derive(Debug, Clone)]
 pub enum Signal {
     Buy {
         symbol: String,
         quantity: Decimal,
         entry_price: Decimal,
+        intent: SignalIntent,
     },
     Sell {
         symbol: String,
         quantity: Decimal,
         entry_price: Decimal,
+        intent: SignalIntent,
     },
     Hold,
 }

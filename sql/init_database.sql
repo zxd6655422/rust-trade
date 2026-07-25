@@ -220,7 +220,14 @@ CREATE TABLE IF NOT EXISTS strategy_signals (
     -- "spot" = 只在现货执行
     -- "both" = 同时在合约和现货执行
     market_type VARCHAR(20) DEFAULT 'futures',
-    CONSTRAINT chk_signal_market_type CHECK (market_type IN ('futures', 'spot', 'both'))
+    -- V9 新增字段：信号类型和意图
+    -- signal_type: 方向 (BUY/SELL/HOLD)
+    -- signal_intent: 意图 (entry/exit/reverse)
+    signal_type VARCHAR(10) DEFAULT 'HOLD',
+    signal_intent VARCHAR(20) DEFAULT 'entry',
+    CONSTRAINT chk_signal_market_type CHECK (market_type IN ('futures', 'spot', 'both')),
+    CONSTRAINT chk_signal_type CHECK (signal_type IN ('BUY', 'SELL', 'HOLD')),
+    CONSTRAINT chk_signal_intent CHECK (signal_intent IN ('entry', 'exit', 'reverse'))
 );
 
 -- 策略分析日志表
@@ -259,8 +266,12 @@ CREATE TABLE IF NOT EXISTS live_strategy_log (
     instance_id VARCHAR(50),
     symbol VARCHAR(20) NOT NULL,
     action VARCHAR(20) NOT NULL,
+    signal_type VARCHAR(10) DEFAULT 'HOLD',      -- BUY/SELL/HOLD
+    signal_intent VARCHAR(20) DEFAULT 'entry',   -- entry/exit/reverse
     details JSONB,
-    created_at TIMESTAMPTZ DEFAULT NOW()
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    CONSTRAINT chk_live_signal_type CHECK (signal_type IN ('BUY', 'SELL', 'HOLD')),
+    CONSTRAINT chk_live_signal_intent CHECK (signal_intent IN ('entry', 'exit', 'reverse'))
 );
 
 -- =================================================================
@@ -515,6 +526,7 @@ CREATE INDEX IF NOT EXISTS idx_signals_strategy ON strategy_signals(strategy_id,
 CREATE INDEX IF NOT EXISTS idx_signals_symbol ON strategy_signals(symbol, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_signals_instance ON strategy_signals(instance_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_signals_market_type ON strategy_signals(market_type);
+CREATE INDEX IF NOT EXISTS idx_signals_intent ON strategy_signals(signal_intent);
 
 -- 订单索引
 CREATE INDEX IF NOT EXISTS idx_orders_status ON trading_orders(status);
@@ -561,10 +573,12 @@ CREATE INDEX IF NOT EXISTS idx_performance_strategy ON strategy_performance(stra
 -- 策略分析日志索引
 CREATE INDEX IF NOT EXISTS idx_analysis_strategy ON strategy_analysis_log(strategy_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_analysis_instance ON strategy_analysis_log(instance_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_analysis_intent ON strategy_analysis_log(signal_intent);
 
 -- 实时策略日志索引
 CREATE INDEX IF NOT EXISTS idx_live_log_strategy ON live_strategy_log(strategy_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_live_log_instance ON live_strategy_log(instance_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_live_log_intent ON live_strategy_log(signal_intent);
 
 -- 回测结果索引
 CREATE INDEX IF NOT EXISTS idx_backtest_strategy ON backtest_results(strategy_id, created_at DESC);

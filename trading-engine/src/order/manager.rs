@@ -728,6 +728,7 @@ impl OrderManager {
                 symbol,
                 quantity,
                 entry_price,
+                intent: _,
             } => {
                 // 动态计算仓位大小
                 let risk_config = self.risk_engine.config().await;
@@ -793,6 +794,7 @@ impl OrderManager {
                 symbol,
                 quantity,
                 entry_price,
+                intent: _,
             } => {
                 // 动态计算仓位大小
                 let risk_config = self.risk_engine.config().await;

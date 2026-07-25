@@ -2,7 +2,7 @@ pub(crate) mod base;
 pub mod ma_trend_pullback;
 pub mod multi_timeframe;
 
-pub use base::{Signal, Strategy};
+pub use base::{Signal, SignalIntent, Strategy};
 pub use multi_timeframe::{
     EntryDirection, MultiTimeframeAnalysis, MultiTimeframeStrategy, TrendAnalysis, TrendDirection,
 };

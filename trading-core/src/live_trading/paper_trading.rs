@@ -16,6 +16,8 @@ pub struct PaperTradingProcessor {
     initial_capital: Decimal,
     /// 关联的策略实例 ID（可选）
     instance_id: Option<Uuid>,
+    /// 当前信号 ID（全链路追踪）
+    current_signal_id: Option<Uuid>,
 
     //Simple status tracking
     cash: Decimal,
@@ -35,6 +37,7 @@ impl PaperTradingProcessor {
             repository,
             initial_capital,
             instance_id: None,
+            current_signal_id: None,
             cash: initial_capital,
             position: Decimal::ZERO,
             avg_cost: Decimal::ZERO,
@@ -46,6 +49,11 @@ impl PaperTradingProcessor {
     pub fn with_instance_id(mut self, instance_id: Uuid) -> Self {
         self.instance_id = Some(instance_id);
         self
+    }
+
+    /// 设置当前信号 ID（全链路追踪）
+    pub fn set_signal_id(&mut self, signal_id: Option<Uuid>) {
+        self.current_signal_id = signal_id;
     }
 
     /// 获取关联的策略实例 ID
@@ -81,15 +89,23 @@ impl PaperTradingProcessor {
         let processing_time = start_time.elapsed().as_micros() as u64;
         let log = LiveStrategyLog {
             timestamp: tick.timestamp,
+            signal_id: self.current_signal_id, // 关联当前信号ID
             instance_id: self.instance_id,
             strategy_id: self.strategy.name().to_string(),
             symbol: tick.symbol.clone(),
             current_price: tick.price,
             signal_type: signal_type.clone(),
+            signal_intent: "entry".to_string(), // 默认，后续从信号中获取
+            market_type: "futures".to_string(), // 默认，后续从配置中获取
             portfolio_value,
             total_pnl,
             cache_hit,
             processing_time_us: processing_time,
+            entry_price: None,
+            stop_loss: None,
+            take_profit: None,
+            position_quantity: None,
+            unrealized_pnl: None,
         };
 
         self.repository

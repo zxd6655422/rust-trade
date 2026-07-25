@@ -1297,20 +1297,29 @@ impl TickDataRepository {
     pub async fn insert_live_strategy_log(&self, log: &LiveStrategyLog) -> DataResult<()> {
         sqlx::query(
             "INSERT INTO live_strategy_log \
-             (timestamp, instance_id, strategy_id, symbol, current_price, signal_type, \
-              portfolio_value, total_pnl, cache_hit, processing_time_us) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"
+             (timestamp, signal_id, instance_id, strategy_id, symbol, current_price, signal_type, \
+              signal_intent, market_type, portfolio_value, total_pnl, cache_hit, processing_time_us, \
+              entry_price, stop_loss, take_profit, position_quantity, unrealized_pnl) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)"
         )
         .bind(log.timestamp)
+        .bind(log.signal_id)
         .bind(log.instance_id)
         .bind(&log.strategy_id)
         .bind(&log.symbol)
         .bind(log.current_price)
         .bind(&log.signal_type)
+        .bind(&log.signal_intent)
+        .bind(&log.market_type)
         .bind(log.portfolio_value)
         .bind(log.total_pnl)
         .bind(log.cache_hit)
         .bind(log.processing_time_us as i32)
+        .bind(log.entry_price)
+        .bind(log.stop_loss)
+        .bind(log.take_profit)
+        .bind(log.position_quantity)
+        .bind(log.unrealized_pnl)
         .execute(&self.pool)
         .await?;
 
@@ -2326,18 +2335,39 @@ impl TickDataRepository {
         entry_allowed: bool,
         entry_direction: Option<&str>,
         timeframe_details: serde_json::Value,
+        signal_type: Option<&str>,
+        signal_intent: Option<&str>,
+        market_type: Option<&str>,
+        instance_id: Option<uuid::Uuid>,
+        signal_strength: Option<Decimal>,
+        stop_loss: Option<Decimal>,
+        take_profit: Option<Decimal>,
+        market_context: Option<serde_json::Value>,
+        signal_id: Option<uuid::Uuid>,
     ) -> DataResult<uuid::Uuid> {
         let id = uuid::Uuid::new_v4();
         sqlx::query(
             "INSERT INTO strategy_analysis_log \
              (id,symbol,strategy_id,direction,entry_price, \
               overall_confidence,entry_allowed,entry_direction, \
-              timeframe_details,status,evaluated_at,eval_count,best_price,worst_price) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending',NOW(),1,$10,$10)"
+              timeframe_details,status,evaluated_at,eval_count,best_price,worst_price, \
+              signal_type,signal_intent,market_type,instance_id, \
+              signal_strength,stop_loss,take_profit,market_context,signal_id) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending',NOW(),1,$10,$10, \
+                     $11,$12,$13,$14,$15,$16,$17,$18,$19)"
         )
         .bind(id).bind(symbol).bind(strategy_id).bind(direction)
         .bind(entry_price).bind(overall_confidence).bind(entry_allowed)
         .bind(entry_direction).bind(timeframe_details).bind(entry_price)
+        .bind(signal_type.unwrap_or("HOLD"))
+        .bind(signal_intent.unwrap_or("entry"))
+        .bind(market_type.unwrap_or("futures"))
+        .bind(instance_id)
+        .bind(signal_strength)
+        .bind(stop_loss)
+        .bind(take_profit)
+        .bind(market_context)
+        .bind(signal_id)
         .execute(&self.pool).await?;
         debug!("Saved analysis log: id={}, {} {}", id, symbol, direction);
         Ok(id)

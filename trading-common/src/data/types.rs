@@ -196,16 +196,28 @@ impl BacktestDataInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LiveStrategyLog {
     pub timestamp: DateTime<Utc>,
+    /// 关联的策略信号 ID（全链路追踪）
+    pub signal_id: Option<uuid::Uuid>,
     /// 关联的策略实例 ID（可选）
     pub instance_id: Option<uuid::Uuid>,
     pub strategy_id: String,
     pub symbol: String,
     pub current_price: Decimal,
     pub signal_type: String, // BUY/SELL/HOLD
+    /// 信号意图: entry(开仓)/exit(平仓)/reverse(反手)
+    pub signal_intent: String,
+    /// 目标市场: futures/spot/both
+    pub market_type: String,
     pub portfolio_value: Decimal,
     pub total_pnl: Decimal,
     pub cache_hit: bool,
     pub processing_time_us: u64,
+    // 新增字段
+    pub entry_price: Option<Decimal>,
+    pub stop_loss: Option<Decimal>,
+    pub take_profit: Option<Decimal>,
+    pub position_quantity: Option<Decimal>,
+    pub unrealized_pnl: Option<Decimal>,
 }
 
 /// Time frame for OHLC data

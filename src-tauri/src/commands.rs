@@ -1778,6 +1778,15 @@ pub async fn get_strategy_analysis(
             &request.symbol, &strategy_id, dir_str, current_price,
             analysis.overall_confidence, analysis.entry_allowed,
             entry_dir, tf_json,
+            None, // signal_type
+            None, // signal_intent
+            None, // market_type
+            None, // instance_id
+            None, // signal_strength
+            None, // stop_loss
+            None, // take_profit
+            None, // market_context
+            None, // signal_id (后续从信号表获取)
         ).await.map_err(|e| e.to_string())?;
     }
 
