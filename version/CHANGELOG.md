@@ -1,5 +1,28 @@
 # Changelog
 
+## [2026-07-27] Strategy Service 数据层重构计划
+
+### 背景
+- strategy-service 依赖 trading-core → PostgreSQL → Redis 长链路获取K线数据
+- 链路任一环节故障（采集断流、聚合 bug、DB 慢、Redis 同步失败）→ 策略停摆
+- 2026-07-27 凌晨再次出现此问题，3 个币种数据延迟持续增长
+
+### 核心改动
+1. **strategy-service 自主管理K线** — 内存滚动窗口（VecDeque），不依赖 Redis
+2. **混合加载** — 启动时从 DB 加载历史 + 交易所补最新缺口
+3. **WebSocket 实时更新** — 订阅 Binance kline stream，实时维护内存数据
+4. **断连恢复** — 自动重连 + 间隙检测 + REST 补拉
+5. **未完成K线不参与计算** — 只在 K线完成（closed=true）时触发策略
+
+### 详细方案
+→ `version/v1.1/STRATEGY_SERVICE_REDESIGN.md`
+
+### 已修复 Bug
+- **volume 累加 bug** — 9 个聚合函数的 ON CONFLICT 中 volume/trade_count 从累加改为覆盖
+- **文件**：`sql/core/kline_aggregation_all.sql`
+
+---
+
 ## [2026-07-18] 交易事件日志系统
 
 ### 设计目标

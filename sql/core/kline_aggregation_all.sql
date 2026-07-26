@@ -9,7 +9,7 @@
 --   high: GREATEST(已有, 新值) — 取最高
 --   low:  LEAST(已有, 新值) — 取最低
 --   close: 替换为最新收盘价
---   volume/trade_count: 累加（支持增量聚合）
+--   volume/trade_count: 替换为最新聚合值（INSERT 已 SUM，ON CONFLICT 直接覆盖）
 -- =================================================================
 
 -- 先删除旧函数（参数签名变化时 PostgreSQL 不允许直接替换）
@@ -56,8 +56,8 @@ BEGIN
         high = GREATEST(kline_5m.high, EXCLUDED.high),
         low = LEAST(kline_5m.low, EXCLUDED.low),
         close = EXCLUDED.close,
-        volume = kline_5m.volume + EXCLUDED.volume,
-        trade_count = kline_5m.trade_count + EXCLUDED.trade_count;
+        volume = EXCLUDED.volume,
+        trade_count = EXCLUDED.trade_count;
 
     GET DIAGNOSTICS v_count = ROW_COUNT;
     RETURN v_count;
@@ -95,8 +95,8 @@ BEGIN
         high = GREATEST(kline_15m.high, EXCLUDED.high),
         low = LEAST(kline_15m.low, EXCLUDED.low),
         close = EXCLUDED.close,
-        volume = kline_15m.volume + EXCLUDED.volume,
-        trade_count = kline_15m.trade_count + EXCLUDED.trade_count;
+        volume = EXCLUDED.volume,
+        trade_count = EXCLUDED.trade_count;
 
     GET DIAGNOSTICS v_count = ROW_COUNT;
     RETURN v_count;
@@ -134,8 +134,8 @@ BEGIN
         high = GREATEST(kline_30m.high, EXCLUDED.high),
         low = LEAST(kline_30m.low, EXCLUDED.low),
         close = EXCLUDED.close,
-        volume = kline_30m.volume + EXCLUDED.volume,
-        trade_count = kline_30m.trade_count + EXCLUDED.trade_count;
+        volume = EXCLUDED.volume,
+        trade_count = EXCLUDED.trade_count;
 
     GET DIAGNOSTICS v_count = ROW_COUNT;
     RETURN v_count;
@@ -173,8 +173,8 @@ BEGIN
         high = GREATEST(kline_1h.high, EXCLUDED.high),
         low = LEAST(kline_1h.low, EXCLUDED.low),
         close = EXCLUDED.close,
-        volume = kline_1h.volume + EXCLUDED.volume,
-        trade_count = kline_1h.trade_count + EXCLUDED.trade_count;
+        volume = EXCLUDED.volume,
+        trade_count = EXCLUDED.trade_count;
 
     GET DIAGNOSTICS v_count = ROW_COUNT;
     RETURN v_count;
@@ -212,8 +212,8 @@ BEGIN
         high = GREATEST(kline_2h.high, EXCLUDED.high),
         low = LEAST(kline_2h.low, EXCLUDED.low),
         close = EXCLUDED.close,
-        volume = kline_2h.volume + EXCLUDED.volume,
-        trade_count = kline_2h.trade_count + EXCLUDED.trade_count;
+        volume = EXCLUDED.volume,
+        trade_count = EXCLUDED.trade_count;
 
     GET DIAGNOSTICS v_count = ROW_COUNT;
     RETURN v_count;
@@ -251,8 +251,8 @@ BEGIN
         high = GREATEST(kline_4h.high, EXCLUDED.high),
         low = LEAST(kline_4h.low, EXCLUDED.low),
         close = EXCLUDED.close,
-        volume = kline_4h.volume + EXCLUDED.volume,
-        trade_count = kline_4h.trade_count + EXCLUDED.trade_count;
+        volume = EXCLUDED.volume,
+        trade_count = EXCLUDED.trade_count;
 
     GET DIAGNOSTICS v_count = ROW_COUNT;
     RETURN v_count;
@@ -290,8 +290,8 @@ BEGIN
         high = GREATEST(kline_1d.high, EXCLUDED.high),
         low = LEAST(kline_1d.low, EXCLUDED.low),
         close = EXCLUDED.close,
-        volume = kline_1d.volume + EXCLUDED.volume,
-        trade_count = kline_1d.trade_count + EXCLUDED.trade_count;
+        volume = EXCLUDED.volume,
+        trade_count = EXCLUDED.trade_count;
 
     GET DIAGNOSTICS v_count = ROW_COUNT;
     RETURN v_count;
@@ -329,8 +329,8 @@ BEGIN
         high = GREATEST(kline_3d.high, EXCLUDED.high),
         low = LEAST(kline_3d.low, EXCLUDED.low),
         close = EXCLUDED.close,
-        volume = kline_3d.volume + EXCLUDED.volume,
-        trade_count = kline_3d.trade_count + EXCLUDED.trade_count;
+        volume = EXCLUDED.volume,
+        trade_count = EXCLUDED.trade_count;
 
     GET DIAGNOSTICS v_count = ROW_COUNT;
     RETURN v_count;
@@ -368,8 +368,8 @@ BEGIN
         high = GREATEST(kline_1w.high, EXCLUDED.high),
         low = LEAST(kline_1w.low, EXCLUDED.low),
         close = EXCLUDED.close,
-        volume = kline_1w.volume + EXCLUDED.volume,
-        trade_count = kline_1w.trade_count + EXCLUDED.trade_count;
+        volume = EXCLUDED.volume,
+        trade_count = EXCLUDED.trade_count;
 
     GET DIAGNOSTICS v_count = ROW_COUNT;
     RETURN v_count;
