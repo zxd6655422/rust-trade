@@ -347,6 +347,7 @@ impl OrderRepository {
             time_in_force: TimeInForce::Gtc,
             created_at: record.created_at,
             updated_at: record.updated_at,
+            signal_stop_loss: None,  // 从DB加载的历史订单没有策略止损价
         }
     }
 

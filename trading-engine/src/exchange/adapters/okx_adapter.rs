@@ -267,6 +267,7 @@ impl OkxAdapter {
             updated_at: DateTime::parse_from_rfc3339(o["uTime"].as_str().unwrap_or(""))
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_default(),
+            signal_stop_loss: None,  // 从交易所查询的订单没有策略止损价
         })
     }
 

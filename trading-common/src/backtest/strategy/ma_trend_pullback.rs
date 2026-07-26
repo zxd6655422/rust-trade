@@ -412,12 +412,14 @@ impl MATrendPullbackBacktestStrategy {
                         quantity: Decimal::from(100),
                         entry_price: price_decimal,
                         intent: SignalIntent::Exit,
+                        stop_loss: None,
                     },
                     Position::Short { .. } => Signal::Buy {
                         symbol: symbol.to_string(),
                         quantity: Decimal::from(100),
                         entry_price: price_decimal,
                         intent: SignalIntent::Exit,
+                        stop_loss: None,
                     },
                     Position::None => unreachable!(),
                 };
@@ -438,12 +440,14 @@ impl MATrendPullbackBacktestStrategy {
                         quantity: Decimal::from(100),
                         entry_price: price_decimal,
                         intent: SignalIntent::Exit,
+                        stop_loss: None,
                     },
                     Position::Short { .. } => Signal::Buy {
                         symbol: symbol.to_string(),
                         quantity: Decimal::from(100),
                         entry_price: price_decimal,
                         intent: SignalIntent::Exit,
+                        stop_loss: None,
                     },
                     Position::None => unreachable!(),
                 };
@@ -462,12 +466,14 @@ impl MATrendPullbackBacktestStrategy {
                         quantity: Decimal::from(100),
                         entry_price: price_decimal,
                         intent: SignalIntent::Exit,
+                        stop_loss: None,
                     },
                     Position::Short { .. } => Signal::Buy {
                         symbol: symbol.to_string(),
                         quantity: Decimal::from(100),
                         entry_price: price_decimal,
                         intent: SignalIntent::Exit,
+                        stop_loss: None,
                     },
                     Position::None => unreachable!(),
                 };
@@ -536,6 +542,7 @@ impl MATrendPullbackBacktestStrategy {
                             quantity: Decimal::from(100),
                             entry_price: price_decimal,
                             intent: SignalIntent::Exit,
+                            stop_loss: None,
                         };
                         self.position = Position::None;
                         self.entry_price = 0.0;
@@ -549,20 +556,22 @@ impl MATrendPullbackBacktestStrategy {
 
                     // Open long (only when no position)
                     if self.position == Position::None {
+                        // Calculate stop loss price first
+                        let stop_loss_price = if self.hard_stop_pct > 0.0 {
+                            current_price * (1.0 - self.hard_stop_pct / 100.0)
+                        } else {
+                            fast_ma * 0.98  // MA288止损: MA下方2%
+                        };
                         let signal = Signal::Buy {
                             symbol: symbol.to_string(),
                             quantity: Decimal::from(100),
                             entry_price: price_decimal,
                             intent: SignalIntent::Entry,
+                            stop_loss: Some(Decimal::try_from(stop_loss_price).unwrap_or(Decimal::ZERO)),
                         };
                         self.position = Position::Long { entry_price: current_price };
                         self.entry_price = current_price;
-                        // Calculate hard stop price
-                        self.hard_stop_price = if self.hard_stop_pct > 0.0 {
-                            current_price * (1.0 - self.hard_stop_pct / 100.0)
-                        } else {
-                            0.0
-                        };
+                        self.hard_stop_price = stop_loss_price;
                         self.max_profit_pct = 0.0;
                         self.ma48_cross_count = 0;
                         self.last_signal = Some(signal.clone());
@@ -581,6 +590,7 @@ impl MATrendPullbackBacktestStrategy {
                             quantity: Decimal::from(100),
                             entry_price: price_decimal,
                             intent: SignalIntent::Exit,
+                            stop_loss: None,
                         };
                         self.position = Position::None;
                         self.entry_price = 0.0;
@@ -594,20 +604,22 @@ impl MATrendPullbackBacktestStrategy {
 
                     // Open short (only when no position)
                     if self.position == Position::None {
+                        // Calculate stop loss price first
+                        let stop_loss_price = if self.hard_stop_pct > 0.0 {
+                            current_price * (1.0 + self.hard_stop_pct / 100.0)
+                        } else {
+                            fast_ma * 1.02  // MA288止损: MA上方2%
+                        };
                         let signal = Signal::Sell {
                             symbol: symbol.to_string(),
                             quantity: Decimal::from(100),
                             entry_price: price_decimal,
                             intent: SignalIntent::Entry,
+                            stop_loss: Some(Decimal::try_from(stop_loss_price).unwrap_or(Decimal::ZERO)),
                         };
                         self.position = Position::Short { entry_price: current_price };
                         self.entry_price = current_price;
-                        // Calculate hard stop price
-                        self.hard_stop_price = if self.hard_stop_pct > 0.0 {
-                            current_price * (1.0 + self.hard_stop_pct / 100.0)
-                        } else {
-                            0.0
-                        };
+                        self.hard_stop_price = stop_loss_price;
                         self.max_profit_pct = 0.0;
                         self.ma48_cross_count = 0;
                         self.last_signal = Some(signal.clone());

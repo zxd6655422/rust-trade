@@ -185,10 +185,13 @@ impl RiskEngine {
     }
 
     /// 设置初始资金（从交易所账户获取）
+    ///
+    /// capital 应为 account.total_equity（= totalWalletBalance + totalUnrealizedProfit）
+    /// 已是完整权益，无需再加 daily_pnl
     pub async fn set_initial_capital(&self, capital: Decimal) {
         let mut state = self.state.lock().await;
         state.initial_capital = capital;
-        state.current_equity = capital + state.daily_pnl;
+        state.current_equity = capital;
         if state.peak_equity < state.current_equity {
             state.peak_equity = state.current_equity;
         }
@@ -238,9 +241,10 @@ impl RiskEngine {
         }
 
         // 3. 更新权益
+        // account.total_equity = totalWalletBalance + totalUnrealizedProfit
+        // 已经是完整的当前权益，不需要再加 daily_pnl 和 total_unrealized
         state.initial_capital = account.total_equity;
-        let total_unrealized: Decimal = state.positions.values().map(|p| p.unrealized_pnl).sum();
-        state.current_equity = account.total_equity + state.daily_pnl + total_unrealized;
+        state.current_equity = account.total_equity;
         if state.peak_equity < state.current_equity {
             state.peak_equity = state.current_equity;
         }
@@ -526,25 +530,17 @@ impl RiskEngine {
             history.drain(0..500);
         }
 
-        // 更新持仓的当前价格
+        // 更新持仓的当前价格和未实现盈亏
         if let Some(position) = state.positions.get_mut(&tick.symbol) {
             position.current_price = tick.price;
             position.unrealized_pnl =
                 (tick.price - position.avg_entry_price) * position.quantity;
         }
 
-        // 更新当前权益 = 初始资金 + 已实现盈亏 + 未实现盈亏
-        let total_unrealized: Decimal = state
-            .positions
-            .values()
-            .map(|p| p.unrealized_pnl)
-            .sum();
-        state.current_equity = state.initial_capital + state.daily_pnl + total_unrealized;
-
-        // 更新峰值权益
-        if state.current_equity > state.peak_equity {
-            state.peak_equity = state.current_equity;
-        }
+        // 注意：不再在 tick 级别更新 current_equity
+        // current_equity 由 sync_account_balance 每30s从交易所同步一次
+        // account.total_equity = totalWalletBalance + totalUnrealizedProfit，已是完整权益
+        // 避免 daily_pnl 和 total_unrealized 的双重计算
     }
 
     /// 记录交易结果

@@ -483,6 +483,7 @@ impl TradingOperations for MockExchange {
             time_in_force: order.time_in_force.unwrap_or(TimeInForce::Gtc),
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            signal_stop_loss: None,  // Mock交易所不关心策略止损价
         };
         self.orders.write().await.insert(order_id.clone(), order_info);
 

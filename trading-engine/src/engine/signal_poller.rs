@@ -540,12 +540,16 @@ impl SignalPoller {
     /// 将数据库信号转换为交易引擎的 Signal 格式
     ///
     /// quantity 传 0，由 OrderManager 根据账户权益动态计算
+    /// stop_loss 从策略信号表读取，由策略计算（MA288止损 或 hard_stop_pct）
     fn convert_signal(&self, record: &SignalRecord) -> Signal {
         let direction = record.direction.to_lowercase();
         let entry_price = record.entry_price;
         let symbol = record.symbol.clone();
         // quantity = 0 表示由 OrderManager 动态计算仓位
         let quantity = Decimal::ZERO;
+
+        // 从数据库读取策略计算的止损价
+        let stop_loss = record.stop_loss;
 
         // 从数据库读取信号意图，默认为 Entry
         let intent = record.signal_type.as_deref()
@@ -562,6 +566,7 @@ impl SignalPoller {
                 quantity,
                 entry_price,
                 intent,
+                stop_loss,
             }
         } else if direction == "bearish" || direction == "sell" {
             Signal::Sell {
@@ -569,6 +574,7 @@ impl SignalPoller {
                 quantity,
                 entry_price,
                 intent,
+                stop_loss,
             }
         } else {
             warn!("Unknown signal direction: {}, treating as Hold", direction);

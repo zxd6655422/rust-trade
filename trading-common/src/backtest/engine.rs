@@ -96,6 +96,7 @@ impl BacktestEngine {
                     quantity,
                     entry_price,
                     intent: _,
+                    stop_loss: _,
                 } => {
                     let price = if entry_price > rust_decimal::Decimal::ZERO {
                         entry_price
@@ -116,6 +117,7 @@ impl BacktestEngine {
                     quantity,
                     entry_price,
                     intent: _,
+                    stop_loss: _,
                 } => {
                     let price = if entry_price > rust_decimal::Decimal::ZERO {
                         entry_price
@@ -261,6 +263,7 @@ impl BacktestEngine {
                     quantity,
                     entry_price,
                     intent: _,
+                    stop_loss: _,
                 } => {
                     let price = if entry_price > rust_decimal::Decimal::ZERO {
                         entry_price
@@ -281,6 +284,7 @@ impl BacktestEngine {
                     quantity,
                     entry_price,
                     intent: _,
+                    stop_loss: _,
                 } => {
                     let price = if entry_price > rust_decimal::Decimal::ZERO {
                         entry_price

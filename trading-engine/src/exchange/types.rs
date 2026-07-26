@@ -183,6 +183,9 @@ pub struct OrderInfo {
     pub time_in_force: TimeInForce,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// 策略计算的止损价（来自信号表）
+    /// 用于下单成交后设置条件止损单，而非使用固定百分比
+    pub signal_stop_loss: Option<Decimal>,
 }
 
 /// 订单更新 (WebSocket 推送)

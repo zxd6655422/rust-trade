@@ -342,6 +342,7 @@ impl BinanceSpotAdapter {
             time_in_force,
             created_at: DateTime::from_timestamp_millis(o["time"].as_i64()?)?,
             updated_at: DateTime::from_timestamp_millis(o["updateTime"].as_i64()?)?,
+            signal_stop_loss: None,  // 从交易所查询的订单没有策略止损价
         })
     }
 }

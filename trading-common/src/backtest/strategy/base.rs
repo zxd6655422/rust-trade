@@ -20,12 +20,16 @@ pub enum Signal {
         quantity: Decimal,
         entry_price: Decimal,
         intent: SignalIntent,
+        /// 策略计算的止损价（可选，None 则由执行层用默认百分比计算）
+        stop_loss: Option<Decimal>,
     },
     Sell {
         symbol: String,
         quantity: Decimal,
         entry_price: Decimal,
         intent: SignalIntent,
+        /// 策略计算的止损价（可选，None 则由执行层用默认百分比计算）
+        stop_loss: Option<Decimal>,
     },
     Hold,
 }

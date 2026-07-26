@@ -157,6 +157,12 @@ impl OrderManager {
     ///
     /// signal_id: 来自 strategy_signals 表的 UUID，用于全链路追踪
     pub async fn execute_signal(&self, signal: Signal, signal_id: Option<Uuid>) -> Result<OrderResult, OrderError> {
+        // 提取策略计算的止损价（用于成交后设置条件单）
+        let signal_stop_loss = match &signal {
+            Signal::Buy { stop_loss, .. } | Signal::Sell { stop_loss, .. } => *stop_loss,
+            _ => None,
+        };
+
         // 1. 获取账户信息
         let account = self
             .exchange
@@ -234,19 +240,22 @@ impl OrderManager {
                 );
                 let mut modified_request = order_request.clone();
                 modified_request.quantity = quantity;
-                return self.place_and_track_order(modified_request, signal_id).await;
+                return self.place_and_track_order(modified_request, signal_id, signal_stop_loss).await;
             }
         }
 
         // 5. 下单
-        self.place_and_track_order(order_request, signal_id).await
+        self.place_and_track_order(order_request, signal_id, signal_stop_loss).await
     }
 
     /// 下单并跟踪
+    ///
+    /// signal_stop_loss: 策略计算的止损价，成交后用于设置条件止损单
     async fn place_and_track_order(
         &self,
         order: OrderRequest,
         signal_id: Option<Uuid>,
+        signal_stop_loss: Option<Decimal>,
     ) -> Result<OrderResult, OrderError> {
         let result = self
             .exchange
@@ -270,6 +279,7 @@ impl OrderManager {
             time_in_force: TimeInForce::Gtc,
             created_at: result.created_at,
             updated_at: result.updated_at,
+            signal_stop_loss,
         };
 
         let mut active_orders = self.active_orders.lock().await;
@@ -353,10 +363,13 @@ impl OrderManager {
 
                     // 自动创建止损止盈订单
                     let entry_price = update.avg_price.unwrap_or_default();
+                    // 获取策略计算的止损价（如果有）
+                    let signal_sl = order.signal_stop_loss;
                     if entry_price > Decimal::ZERO {
                         // 计算止损止盈价格
-                        let (sl_price, tp_price) = self.calculate_stop_prices(
-                            &update.side, entry_price,
+                        // 优先使用策略计算的止损价，否则用默认百分比
+                        let (sl_price, tp_price) = self.calculate_stop_prices_with_signal(
+                            &update.side, entry_price, signal_sl,
                         );
 
                         // 1. 写入内存（用于价格监控）
@@ -458,8 +471,8 @@ impl OrderManager {
         // 移除止损止盈订单
         self.stop_loss_manager.remove_stop_order(&order_request.symbol).await;
 
-        // 执行平仓订单
-        let result = self.place_and_track_order(order_request.clone(), None).await?;
+        // 执行平仓订单（止损/止盈触发，无策略止损价）
+        let result = self.place_and_track_order(order_request.clone(), None, None).await?;
 
         // 记录止损止盈触发事件
         self.record_stop_event(
@@ -563,7 +576,7 @@ impl OrderManager {
                     client_order_id: None,
                 };
 
-                match self.place_and_track_order(order_request, None).await {
+                match self.place_and_track_order(order_request, None, None).await {
                     Ok(result) => {
                         info!("Risk force close order placed: {}", result.order_id);
                         // 移除止损止盈
@@ -623,7 +636,7 @@ impl OrderManager {
                     client_order_id: None,
                 };
 
-                match self.place_and_track_order(order_request, None).await {
+                match self.place_and_track_order(order_request, None, None).await {
                     Ok(result) => {
                         info!("Risk reduce order placed: {}", result.order_id);
 
@@ -674,7 +687,7 @@ impl OrderManager {
                         client_order_id: None,
                     };
 
-                    match self.place_and_track_order(order_request, None).await {
+                    match self.place_and_track_order(order_request, None, None).await {
                         Ok(result) => {
                             info!(
                                 "Risk close all — {} order placed: {}",
@@ -729,6 +742,7 @@ impl OrderManager {
                 quantity,
                 entry_price,
                 intent: _,
+                stop_loss: _,
             } => {
                 // 动态计算仓位大小
                 let risk_config = self.risk_engine.config().await;
@@ -795,6 +809,7 @@ impl OrderManager {
                 quantity,
                 entry_price,
                 intent: _,
+                stop_loss: _,
             } => {
                 // 动态计算仓位大小
                 let risk_config = self.risk_engine.config().await;
@@ -958,19 +973,24 @@ impl OrderManager {
             return Decimal::ZERO;
         }
 
-        let position_value = equity * risk_pct / stop_loss_pct;
+        let risk_based_value = equity * risk_pct / stop_loss_pct;
+
+        // 仓位上限: max_position_pct * equity
+        let max_position_value = equity * risk_config.max_position_pct;
+        let position_value = risk_based_value.min(max_position_value);
         let calculated_qty = position_value / entry_price;
 
         info!(
-            "Dynamic position sizing: equity={} USDT, risk={}%, sl={}%, position_value={} USDT, qty={}",
+            "Dynamic position sizing: equity={} USDT, risk={}%, sl={}%, risk_based={} USDT, max_position={} USDT ({}%), final={} USDT, qty={}",
             equity, risk_pct * Decimal::from(100), stop_loss_pct * Decimal::from(100),
+            risk_based_value, max_position_value, risk_config.max_position_pct * Decimal::from(100),
             position_value, calculated_qty
         );
 
         calculated_qty
     }
 
-    /// 计算止损止盈价格
+    /// 计算止损止盈价格（使用默认百分比）
     fn calculate_stop_prices(
         &self,
         side: &OrderSide,
@@ -989,6 +1009,39 @@ impl OrderManager {
                 entry_price * (Decimal::ONE - tp_pct),   // 止盈：低于入场价
             ),
         }
+    }
+
+    /// 计算止损止盈价格（优先使用策略计算的止损价）
+    ///
+    /// signal_stop_loss: 策略计算的止损价（MA288止损 或 hard_stop_pct）
+    /// 如果有策略止损价，使用它；否则回退到默认百分比
+    fn calculate_stop_prices_with_signal(
+        &self,
+        side: &OrderSide,
+        entry_price: Decimal,
+        signal_stop_loss: Option<Decimal>,
+    ) -> (Decimal, Decimal) {
+        let tp_pct = self.stop_loss_config.default_take_profit_pct;
+
+        // 止损价：优先使用策略计算的
+        let sl_price = if let Some(sl) = signal_stop_loss {
+            info!("Using strategy stop loss: {} (vs default {}%)", sl, self.stop_loss_config.default_stop_loss_pct * Decimal::from(100));
+            sl
+        } else {
+            let sl_pct = self.stop_loss_config.default_stop_loss_pct;
+            match side {
+                OrderSide::Buy => entry_price * (Decimal::ONE - sl_pct),
+                OrderSide::Sell => entry_price * (Decimal::ONE + sl_pct),
+            }
+        };
+
+        // 止盈价：仍使用默认百分比（策略返回 None，由动态止盈机制处理）
+        let tp_price = match side {
+            OrderSide::Buy => entry_price * (Decimal::ONE + tp_pct),
+            OrderSide::Sell => entry_price * (Decimal::ONE - tp_pct),
+        };
+
+        (sl_price, tp_price)
     }
 
     /// 下交易所端条件单（止损 + 止盈）
@@ -1284,6 +1337,7 @@ mod tests {
     use crate::risk::{RiskConfig, StopLossConfig};
     use rust_decimal::Decimal;
     use std::str::FromStr;
+    use trading_common::backtest::strategy::SignalIntent;
 
     fn create_risk_config() -> RiskConfig {
         RiskConfig {
@@ -1336,9 +1390,11 @@ mod tests {
             symbol: "BTCUSDT".to_string(),
             quantity: Decimal::from_str("0.1").unwrap(),
             entry_price: Decimal::from(50000),
+            intent: SignalIntent::Entry,
+            stop_loss: None,
         };
 
-        let result = manager.execute_signal(signal).await;
+        let result = manager.execute_signal(signal, None).await;
         assert!(result.is_ok());
 
         let order = result.unwrap();
@@ -1355,16 +1411,21 @@ mod tests {
         let buy_signal = Signal::Buy {
             symbol: "BTCUSDT".to_string(),
             quantity: Decimal::from_str("0.1").unwrap(),
+            entry_price: Decimal::from(50000),
+            intent: SignalIntent::Entry,
+            stop_loss: None,
         };
-        manager.execute_signal(buy_signal).await.unwrap();
+        manager.execute_signal(buy_signal, None).await.unwrap();
 
         // 尝试卖出较少的数量（避免精度问题）
         let sell_signal = Signal::Sell {
             symbol: "BTCUSDT".to_string(),
             quantity: Decimal::from_str("0.02").unwrap(),
             entry_price: Decimal::from(50000),
+            intent: SignalIntent::Entry,
+            stop_loss: None,
         };
-        let result = manager.execute_signal(sell_signal).await;
+        let result = manager.execute_signal(sell_signal, None).await;
         assert!(result.is_ok(), "Sell signal failed: {:?}", result.err());
     }
 
@@ -1373,7 +1434,7 @@ mod tests {
         let (_exchange, manager) = setup_exchange_and_manager().await;
 
         let signal = Signal::Hold;
-        let result = manager.execute_signal(signal).await;
+        let result = manager.execute_signal(signal, None).await;
         assert!(result.is_err());
     }
 
@@ -1388,8 +1449,10 @@ mod tests {
             symbol: "BTCUSDT".to_string(),
             quantity: Decimal::from_str("0.1").unwrap(),
             entry_price: Decimal::from(50000),
+            intent: SignalIntent::Entry,
+            stop_loss: None,
         };
-        let result = manager.execute_signal(signal).await.unwrap();
+        let result = manager.execute_signal(signal, None).await.unwrap();
 
         // 模拟订单更新
         let update = OrderUpdate {
@@ -1426,8 +1489,10 @@ mod tests {
             symbol: "BTCUSDT".to_string(),
             quantity: Decimal::from_str("0.1").unwrap(),
             entry_price: Decimal::from(50000),
+            intent: SignalIntent::Entry,
+            stop_loss: Some(Decimal::from(49000)),  // 策略止损价
         };
-        let result = manager.execute_signal(signal).await.unwrap();
+        let result = manager.execute_signal(signal, None).await.unwrap();
 
         // 模拟订单成交，触发止损创建
         let update = OrderUpdate {
@@ -1492,8 +1557,10 @@ mod tests {
             symbol: "BTCUSDT".to_string(),
             quantity: Decimal::from(1), // 价值 50000，超过余额 100
             entry_price: Decimal::from(50000),
+            intent: SignalIntent::Entry,
+            stop_loss: None,
         };
-        let result = manager.execute_signal(signal).await;
+        let result = manager.execute_signal(signal, None).await;
         assert!(result.is_err());
     }
 }
