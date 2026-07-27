@@ -1,7 +1,7 @@
 //! Binance WebSocket 实时数据源
 //!
-//! 连接 Binance Futures/Spot Market Streams，订阅 K线数据。
-//! 流程：连接 → 发送 SUBSCRIBE → 接收数据
+//! 使用直接 URL 流模式：wss://fstream.binance.com/ws/<streamName>
+//! 每个流一个独立连接，自动接收数据，无需 SUBSCRIBE。
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,10 +18,10 @@ use crate::kline_loader;
 use crate::kline_store::{KlineBar, KlineManager};
 use crate::redis_reader::Timeframe;
 
-/// Binance Futures Market Streams URL（/ws 路径，连接后发 SUBSCRIBE）
+/// Binance Futures 直接流 URL
 const BINANCE_WS_FUTURES: &str = "wss://fstream.binance.com/ws";
 
-/// Binance Spot Market Streams URL
+/// Binance Spot 直接流 URL
 const BINANCE_WS_SPOT: &str = "wss://stream.binance.com:9443/ws";
 
 /// 重连参数
@@ -37,7 +37,7 @@ pub struct KlineEvent {
     pub bar: KlineBar,
 }
 
-/// Binance WS kline 消息（直接格式，非组合流包装）
+/// Binance WS kline 消息
 #[derive(Debug, Deserialize)]
 struct WsKlineMessage {
     #[serde(rename = "e")]
@@ -52,7 +52,7 @@ struct WsKline {
     #[serde(rename = "t")]
     open_time: i64,
     #[serde(rename = "i")]
-    interval: String,  // "1m", "5m", "30m" 等
+    interval: String,
     #[serde(rename = "o")]
     open: String,
     #[serde(rename = "h")]
@@ -65,15 +65,6 @@ struct WsKline {
     volume: String,
     #[serde(rename = "x")]
     closed: bool,
-}
-
-/// SUBSCRIBE 响应
-#[derive(Debug, Deserialize)]
-struct SubscribeResponse {
-    result: Option<serde_json::Value>,
-    id: Option<String>,
-    #[serde(rename = "msg")]
-    message: Option<String>,
 }
 
 /// WebSocket 数据源
@@ -100,52 +91,53 @@ impl WsFeed {
         )
     }
 
-    /// 启动：一个连接订阅所有流（Binance 支持单连接多订阅）
+    /// 启动所有订阅（每个流一个独立连接）
     pub async fn run(
         self,
         kline_manager: Arc<RwLock<KlineManager>>,
         market_type: String,
     ) {
-        info!("[WsFeed] Starting with {} subscriptions", self.subscriptions.len());
+        info!("[WsFeed] Starting {} stream connections", self.subscriptions.len());
 
-        let km = kline_manager.clone();
-        let mt = market_type.clone();
-        let subs = self.subscriptions.clone();
-        let sender = self.event_sender.clone();
+        for (symbol, tf) in &self.subscriptions {
+            let km = kline_manager.clone();
+            let mt = market_type.clone();
+            let sym = symbol.clone();
+            let timeframe = *tf;
+            let sender = self.event_sender.clone();
 
-        tokio::spawn(async move {
-            run_connection(subs, km, mt, sender).await;
-        });
+            tokio::spawn(async move {
+                run_single_stream(sym, timeframe, km, mt, sender).await;
+            });
+        }
     }
 }
 
-/// 主连接循环
-async fn run_connection(
-    subscriptions: Vec<(String, Timeframe)>,
+/// 单个流的连接循环
+async fn run_single_stream(
+    symbol: String,
+    tf: Timeframe,
     kline_manager: Arc<RwLock<KlineManager>>,
     market_type: String,
     event_sender: broadcast::Sender<KlineEvent>,
 ) {
+    let stream_name = format!("{}@kline_{}", symbol.to_lowercase(), tf.as_str());
     let base_url = match market_type.as_str() {
         "spot" => BINANCE_WS_SPOT,
         _ => BINANCE_WS_FUTURES,
     };
-
-    // 构建订阅参数
-    let stream_names: Vec<String> = subscriptions
-        .iter()
-        .map(|(symbol, tf)| format!("{}@kline_{}", symbol.to_lowercase(), tf.as_str()))
-        .collect();
+    let url = format!("{}/{}", base_url, stream_name);
 
     let mut attempt = 0u32;
 
     loop {
-        info!("[WsFeed] Connecting to {} (attempt {})...", base_url, attempt + 1);
+        info!("[WsFeed:{}] Connecting (attempt {})...", stream_name, attempt + 1);
 
-        match connect_subscribe_listen(
-            base_url,
-            &stream_names,
-            &subscriptions,
+        match connect_and_listen(
+            &url,
+            &stream_name,
+            &symbol,
+            tf,
             &kline_manager,
             &event_sender,
         )
@@ -153,95 +145,76 @@ async fn run_connection(
         {
             Ok(()) => {
                 attempt = 0;
-                info!("[WsFeed] Connection ended, reconnecting...");
+                info!("[WsFeed:{}] Connection ended, reconnecting...", stream_name);
             }
             Err(e) => {
                 attempt += 1;
-                error!("[WsFeed] Connection error: {}", e);
+                error!("[WsFeed:{}] Error: {}", stream_name, e);
 
                 if attempt >= MAX_RECONNECT_ATTEMPTS {
-                    error!("[WsFeed] Max attempts reached, giving up");
+                    error!("[WsFeed:{}] Max attempts reached, giving up", stream_name);
                     return;
                 }
             }
         }
 
         let delay_ms = (RECONNECT_BASE_MS * 2u64.pow(attempt.min(5))).min(RECONNECT_MAX_MS);
-        warn!("[WsFeed] Reconnecting in {}ms (attempt {})", delay_ms, attempt);
+        warn!("[WsFeed:{}] Reconnecting in {}ms", stream_name, delay_ms);
         sleep(Duration::from_millis(delay_ms)).await;
 
-        // 重连后补拉所有流的缺口
-        for (symbol, tf) in &subscriptions {
-            if let Err(e) = fill_gap_single(symbol, *tf, &kline_manager, &market_type).await {
-                error!("[WsFeed] Gap fill failed for {} {}: {}", symbol, tf.as_str(), e);
-            }
+        // 重连后补拉缺口
+        if let Err(e) = fill_gap_single(&symbol, tf, &kline_manager, &market_type).await {
+            error!("[WsFeed:{}] Gap fill failed: {}", stream_name, e);
         }
     }
 }
 
-/// 连接 → SUBSCRIBE → 监听
-async fn connect_subscribe_listen(
-    base_url: &str,
-    stream_names: &[String],
-    subscriptions: &[(String, Timeframe)],
+/// 连接并监听单个流
+async fn connect_and_listen(
+    url: &str,
+    stream_name: &str,
+    symbol: &str,
+    tf: Timeframe,
     kline_manager: &Arc<RwLock<KlineManager>>,
     event_sender: &broadcast::Sender<KlineEvent>,
 ) -> Result<()> {
-    info!("[WsFeed] Connecting to {}", base_url);
+    info!("[WsFeed:{}] Connecting to {}", stream_name, url);
 
     let connect_result = tokio::time::timeout(
         Duration::from_secs(15),
-        connect_async(base_url),
+        connect_async(url),
     )
     .await;
 
     let (ws_stream, response) = match connect_result {
         Ok(Ok((ws, resp))) => {
-            info!("[WsFeed] Connected! Status: {}", resp.status());
+            info!("[WsFeed:{}] Connected! Status: {}", stream_name, resp.status());
             (ws, resp)
         }
         Ok(Err(e)) => {
-            error!("[WsFeed] Connection failed: {}", e);
+            error!("[WsFeed:{}] Connection failed: {}", stream_name, e);
             return Err(anyhow!("Connection failed: {}", e));
         }
         Err(_) => {
-            error!("[WsFeed] Connection timed out");
+            error!("[WsFeed:{}] Connection timed out", stream_name);
             return Err(anyhow!("Connection timed out"));
         }
     };
 
     let (mut write, mut read) = ws_stream.split();
 
-    // 发送 SUBSCRIBE 消息
-    let subscribe_msg = serde_json::json!({
-        "method": "SUBSCRIBE",
-        "params": stream_names,
-        "id": "1"
-    });
-    let msg_text = subscribe_msg.to_string();
-    info!("[WsFeed] Sending SUBSCRIBE: {}", msg_text);
-    write.send(Message::Text(msg_text)).await?;
-    info!("[WsFeed] SUBSCRIBE sent for {} streams", stream_names.len());
-
     // 启动 ping 任务
-    let mut write_half = write;
+    let ping_name = stream_name.to_string();
     let ping_handle = tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(180));
         loop {
             interval.tick().await;
-            if let Err(e) = write_half.send(Message::Ping(vec![])).await {
-                warn!("[WsFeed] Ping failed: {}", e);
+            if let Err(e) = write.send(Message::Ping(vec![])).await {
+                warn!("[WsFeed:{}] Ping failed: {}", ping_name, e);
                 break;
             }
         }
     });
-
-    // 建立 stream_name -> (symbol, tf) 的映射
-    let stream_map: std::collections::HashMap<String, (String, Timeframe)> = stream_names
-        .iter()
-        .zip(subscriptions.iter())
-        .map(|(name, (sym, tf))| (name.clone(), (sym.clone(), *tf)))
-        .collect();
 
     let mut msg_count: u64 = 0;
 
@@ -255,79 +228,69 @@ async fn connect_subscribe_listen(
         match msg {
             Ok(Message::Text(text)) => {
                 msg_count += 1;
-
-                // 前几条消息打印完整内容用于调试
                 if msg_count <= 5 {
-                    info!("[WsFeed] msg #{}: {}", msg_count, &text[..text.len().min(200)]);
-                } else if msg_count % 100 == 0 {
-                    info!("[WsFeed] msg #{}", msg_count);
+                    info!("[WsFeed:{}] msg #{}: {}", stream_name, msg_count, &text[..text.len().min(300)]);
+                } else if msg_count % 60 == 0 {
+                    info!("[WsFeed:{}] msg #{}", stream_name, msg_count);
                 }
-
-                // 尝试解析为 SUBSCRIBE 响应
-                if text.contains("\"result\"") || text.contains("\"msg\"") {
-                    if let Ok(resp) = serde_json::from_str::<SubscribeResponse>(&text) {
-                        info!("[WsFeed] Subscribe response: {:?}", resp);
-                        continue;
-                    }
-                }
-
-                // 尝试解析为 kline 消息
-                if let Err(e) = handle_kline_message(&text, &stream_map, kline_manager, event_sender).await {
+                if let Err(e) = handle_kline_message(&text, symbol, tf, kline_manager, event_sender).await {
                     if msg_count <= 10 {
-                        warn!("[WsFeed] Parse error (msg #{}): {} - raw: {}", msg_count, e, &text[..text.len().min(200)]);
+                        warn!("[WsFeed:{}] Parse error: {} | raw: {}", stream_name, e, &text[..text.len().min(200)]);
                     }
                 }
             }
             Ok(Message::Binary(data)) => {
                 msg_count += 1;
-                if let Ok(text) = String::from_utf8(data) {
-                    let _ = handle_kline_message(&text, &stream_map, kline_manager, event_sender).await;
+                // Binary 消息也尝试解析
+                if let Ok(text) = String::from_utf8(data.clone()) {
+                    if msg_count <= 5 {
+                        info!("[WsFeed:{}] binary msg #{}: {}", stream_name, msg_count, &text[..text.len().min(300)]);
+                    }
+                    if let Err(e) = handle_kline_message(&text, symbol, tf, kline_manager, event_sender).await {
+                        if msg_count <= 10 {
+                            warn!("[WsFeed:{}] Binary parse error: {} | raw: {}", stream_name, e, &text[..text.len().min(200)]);
+                        }
+                    }
+                } else if msg_count <= 5 {
+                    info!("[WsFeed:{}] binary msg #{}: {} bytes (not UTF-8)", stream_name, msg_count, data.len());
                 }
             }
             Ok(Message::Ping(data)) => {
-                tracing::debug!("[WsFeed] Ping received");
+                tracing::debug!("[WsFeed:{}] Ping", stream_name);
                 let _ = data;
             }
             Ok(Message::Pong(_)) => {
-                tracing::debug!("[WsFeed] Pong received");
+                tracing::debug!("[WsFeed:{}] Pong", stream_name);
             }
             Ok(Message::Close(_)) => {
-                info!("[WsFeed] Server sent close");
+                info!("[WsFeed:{}] Server close", stream_name);
                 break;
             }
-            Ok(Message::Frame(_)) => {}
+            Ok(Message::Frame(frame)) => {
+                msg_count += 1;
+                info!("[WsFeed:{}] Raw frame #{}: {:?}", stream_name, msg_count, frame);
+            }
             Err(e) => {
-                error!("[WsFeed] Read error: {}", e);
+                error!("[WsFeed:{}] Read error: {}", stream_name, e);
                 break;
             }
         }
     }
 
     ping_handle.abort();
-    info!("[WsFeed] Read loop ended after {} messages", msg_count);
+    info!("[WsFeed:{}] Read loop ended after {} messages", stream_name, msg_count);
     Ok(())
 }
 
 /// 处理单条 kline 消息
 async fn handle_kline_message(
     text: &str,
-    stream_map: &std::collections::HashMap<String, (String, Timeframe)>,
+    symbol: &str,
+    tf: Timeframe,
     kline_manager: &Arc<RwLock<KlineManager>>,
     event_sender: &broadcast::Sender<KlineEvent>,
 ) -> Result<()> {
     let msg: WsKlineMessage = serde_json::from_str(text)?;
-
-    // 从 k.i (interval) 字段获取 timeframe
-    let tf = Timeframe::from_str(&msg.k.interval)
-        .ok_or_else(|| anyhow!("Unknown interval: {}", msg.k.interval))?;
-
-    let symbol = msg.symbol.clone();
-
-    // 验证此 (symbol, tf) 在我们的订阅列表中
-    let stream_key = format!("{}@kline_{}", symbol.to_lowercase(), msg.k.interval);
-    if !stream_map.contains_key(&stream_key) {
-        return Ok(()); // 不在订阅列表，忽略
-    }
 
     let bar = KlineBar {
         open_time: msg.k.open_time,
@@ -344,7 +307,7 @@ async fn handle_kline_message(
     // 更新 KlineManager
     {
         let mut manager = kline_manager.write().await;
-        if let Some(store) = manager.get_mut(&symbol, tf) {
+        if let Some(store) = manager.get_mut(symbol, tf) {
             if is_closed {
                 store.push_closed(bar.clone());
             } else {
@@ -356,7 +319,7 @@ async fn handle_kline_message(
     // 广播已完成的K线
     if is_closed {
         let _ = event_sender.send(KlineEvent {
-            symbol,
+            symbol: symbol.to_string(),
             timeframe: tf,
             bar,
         });
@@ -388,8 +351,8 @@ async fn fill_gap_single(
         if gap_ms > duration_ms * 2 {
             let missing = (gap_ms / duration_ms) as usize;
             info!(
-                "[WsFeed] Filling gap for {} {}: {} bars",
-                symbol,
+                "[WsFeed:{}_{}] Filling gap: {} bars",
+                symbol.to_lowercase(),
                 tf.as_str(),
                 missing
             );
