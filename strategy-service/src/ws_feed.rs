@@ -18,11 +18,11 @@ use crate::kline_loader;
 use crate::kline_store::{KlineBar, KlineManager};
 use crate::redis_reader::Timeframe;
 
-/// Binance Futures Market Streams URL（无路径，连接后发 SUBSCRIBE）
-const BINANCE_WS_FUTURES: &str = "wss://fstream.binance.com";
+/// Binance Futures Market Streams URL（/ws 路径，连接后发 SUBSCRIBE）
+const BINANCE_WS_FUTURES: &str = "wss://fstream.binance.com/ws";
 
 /// Binance Spot Market Streams URL
-const BINANCE_WS_SPOT: &str = "wss://stream.binance.com:9443";
+const BINANCE_WS_SPOT: &str = "wss://stream.binance.com:9443/ws";
 
 /// 重连参数
 const RECONNECT_BASE_MS: u64 = 1000;
