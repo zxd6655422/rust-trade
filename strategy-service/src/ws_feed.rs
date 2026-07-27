@@ -23,10 +23,10 @@ use crate::kline_store::{KlineBar, KlineManager};
 use crate::redis_reader::Timeframe;
 
 /// Binance Futures WebSocket 基础 URL
-const BINANCE_WS_FUTURES: &str = "wss://fstream.binance.com/ws";
+const BINANCE_WS_FUTURES: &str = "wss://fstream.binance.com";
 
 /// Binance Spot WebSocket 基础 URL
-const BINANCE_WS_SPOT: &str = "wss://stream.binance.com:9443/ws";
+const BINANCE_WS_SPOT: &str = "wss://stream.binance.com:9443";
 
 /// 重连参数
 const RECONNECT_BASE_MS: u64 = 1000;   // 初始退避 1s

@@ -413,7 +413,8 @@ pub fn check_health(manager: &KlineManager) -> HealthReport {
             let (age_periods, is_stale) = if let Some(latest_time) = latest {
                 let age_ms = now_ms - latest_time;
                 let periods = age_ms as f64 / duration_ms as f64;
-                (periods, periods > 3.0)
+                // 与 engine 的 validate_strategy_data 保持一致：超过 2 个周期即为过旧
+                (periods, periods > 2.0)
             } else {
                 (f64::INFINITY, true)
             };

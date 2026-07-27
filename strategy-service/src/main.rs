@@ -178,14 +178,14 @@ async fn start_services(
     }
 
     // ============================================================
-    // Phase 3: 启动健康检查（每 5 分钟）
+    // Phase 3: 启动健康检查（每 60 秒，快速发现过旧数据）
     // ============================================================
     let _health_handle = kline_loader::start_health_check(
         kline_manager.clone(),
         config.binance.market_type.clone(),
-        300, // 5 分钟
+        60, // 1 分钟
     );
-    info!("Health check started (interval: 300s)");
+    info!("Health check started (interval: 60s)");
 
     // ============================================================
     // Phase 4: 启动动态 Store 管理（每 60 秒）
