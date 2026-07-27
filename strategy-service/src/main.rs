@@ -214,7 +214,7 @@ async fn start_services(
 
     // 启动 HTTP + WebSocket 服务
     let ws_router = websocket::create_ws_router(ws_state.clone());
-    let app = api::create_router(db_pool.clone()).merge(ws_router);
+    let app = api::create_router(db_pool.clone(), Some(kline_manager.clone())).merge(ws_router);
 
     let listener = tokio::net::TcpListener::bind(&format!("{}:{}", config.server.host, config.server.port)).await?;
     info!("HTTP server listening on {}:{}", config.server.host, config.server.port);

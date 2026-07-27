@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use axum::{
     extract::{Path, Query},
     http::StatusCode,
@@ -7,11 +8,15 @@ use axum::{
 };
 use serde::Deserialize;
 use sqlx::PgPool;
+use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::db::{signals, strategies, trades, performance};
+use crate::kline_store::KlineManager;
 
-pub fn create_router(pool: PgPool) -> Router {
+pub fn create_router(pool: PgPool, kline_manager: Option<Arc<RwLock<KlineManager>>>) -> Router {
+    let km = kline_manager.unwrap_or_else(|| Arc::new(RwLock::new(KlineManager::new(0))));
+
     Router::new()
         // 策略管理
         .route("/api/strategies", get(list_strategies).post(create_strategy))
@@ -35,13 +40,17 @@ pub fn create_router(pool: PgPool) -> Router {
         // 策略统计
         .route("/api/strategies/:id/performance", get(get_performance))
         .route("/api/strategies/:id/summary", get(get_summary))
-        .with_state(pool)
+        // K线内存状态
+        .route("/api/kline-status", get(kline_status))
+        .with_state((pool, km))
 }
 
 // ==================== 策略管理 ====================
 
+type AppState = (PgPool, Arc<RwLock<KlineManager>>);
+
 async fn list_strategies(
-    axum::extract::State(pool): axum::extract::State<PgPool>,
+    axum::extract::State((pool, _)): axum::extract::State<AppState>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     match strategies::list_strategies(&pool).await {
         Ok(strategies) => Ok(Json(serde_json::json!({
@@ -56,7 +65,7 @@ async fn list_strategies(
 }
 
 async fn get_strategy(
-    axum::extract::State(pool): axum::extract::State<PgPool>,
+    axum::extract::State((pool, _)): axum::extract::State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     match strategies::get_strategy(&pool, id).await {
@@ -73,7 +82,7 @@ async fn get_strategy(
 }
 
 async fn create_strategy(
-    axum::extract::State(pool): axum::extract::State<PgPool>,
+    axum::extract::State((pool, _)): axum::extract::State<AppState>,
     Json(req): Json<strategies::CreateStrategyRequest>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     match strategies::create_strategy(&pool, req).await {
@@ -89,7 +98,7 @@ async fn create_strategy(
 }
 
 async fn update_strategy(
-    axum::extract::State(pool): axum::extract::State<PgPool>,
+    axum::extract::State((pool, _)): axum::extract::State<AppState>,
     Path(id): Path<Uuid>,
     Json(req): Json<strategies::UpdateStrategyRequest>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
@@ -107,7 +116,7 @@ async fn update_strategy(
 }
 
 async fn update_strategy_status(
-    axum::extract::State(pool): axum::extract::State<PgPool>,
+    axum::extract::State((pool, _)): axum::extract::State<AppState>,
     Path(id): Path<Uuid>,
     Json(req): Json<strategies::UpdateStatusRequest>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
@@ -125,7 +134,7 @@ async fn update_strategy_status(
 }
 
 async fn delete_strategy(
-    axum::extract::State(pool): axum::extract::State<PgPool>,
+    axum::extract::State((pool, _)): axum::extract::State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     match strategies::delete_strategy(&pool, id).await {
@@ -155,7 +164,7 @@ struct SignalQueryParams {
 }
 
 async fn query_signals(
-    axum::extract::State(pool): axum::extract::State<PgPool>,
+    axum::extract::State((pool, _)): axum::extract::State<AppState>,
     Query(params): Query<SignalQueryParams>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let query = signals::SignalQuery {
@@ -181,7 +190,7 @@ async fn query_signals(
 }
 
 async fn get_strategy_signals(
-    axum::extract::State(pool): axum::extract::State<PgPool>,
+    axum::extract::State((pool, _)): axum::extract::State<AppState>,
     Path(id): Path<Uuid>,
     Query(params): Query<SignalQueryParams>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
@@ -210,7 +219,7 @@ struct TradeQueryParams {
 }
 
 async fn query_trades(
-    axum::extract::State(pool): axum::extract::State<PgPool>,
+    axum::extract::State((pool, _)): axum::extract::State<AppState>,
     Query(params): Query<TradeQueryParams>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let query = trades::TradeQuery {
@@ -235,7 +244,7 @@ async fn query_trades(
 }
 
 async fn get_strategy_trades(
-    axum::extract::State(pool): axum::extract::State<PgPool>,
+    axum::extract::State((pool, _)): axum::extract::State<AppState>,
     Path(id): Path<Uuid>,
     Query(params): Query<TradeQueryParams>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
@@ -260,7 +269,7 @@ struct PerformanceQueryParams {
 }
 
 async fn get_performance(
-    axum::extract::State(pool): axum::extract::State<PgPool>,
+    axum::extract::State((pool, _)): axum::extract::State<AppState>,
     Path(id): Path<Uuid>,
     Query(params): Query<PerformanceQueryParams>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
@@ -277,7 +286,7 @@ async fn get_performance(
 }
 
 async fn get_summary(
-    axum::extract::State(pool): axum::extract::State<PgPool>,
+    axum::extract::State((pool, _)): axum::extract::State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     match performance::get_summary(&pool, id).await {
@@ -306,7 +315,7 @@ struct SelectableQueryParams {
 
 /// 获取可用于选择的策略列表（活跃状态）
 async fn get_selectable_strategies(
-    axum::extract::State(pool): axum::extract::State<PgPool>,
+    axum::extract::State((pool, _)): axum::extract::State<AppState>,
     Query(params): Query<SelectableQueryParams>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     match strategies::list_selectable_strategies(&pool, params.market_type.as_deref()).await {
@@ -323,7 +332,7 @@ async fn get_selectable_strategies(
 
 /// 获取所有默认策略配置
 async fn get_all_defaults(
-    axum::extract::State(pool): axum::extract::State<PgPool>,
+    axum::extract::State((pool, _)): axum::extract::State<AppState>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     match strategies::get_all_default_strategies(&pool).await {
         Ok(strategies) => {
@@ -348,7 +357,7 @@ async fn get_all_defaults(
 
 /// 获取指定场景的默认策略
 async fn get_default_by_scenario(
-    axum::extract::State(pool): axum::extract::State<PgPool>,
+    axum::extract::State((pool, _)): axum::extract::State<AppState>,
     Path(default_for): Path<String>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     match strategies::get_default_strategy(&pool, &default_for).await {
@@ -370,7 +379,7 @@ async fn get_default_by_scenario(
 
 /// 设置策略为某个场景的默认策略
 async fn set_default_strategy(
-    axum::extract::State(pool): axum::extract::State<PgPool>,
+    axum::extract::State((pool, _)): axum::extract::State<AppState>,
     Path((id, default_for)): Path<(Uuid, String)>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     match strategies::set_default_strategy(&pool, id, &default_for).await {
@@ -389,7 +398,7 @@ async fn set_default_strategy(
 
 /// 取消策略的默认设置
 async fn unset_default_strategy(
-    axum::extract::State(pool): axum::extract::State<PgPool>,
+    axum::extract::State((pool, _)): axum::extract::State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     match strategies::unset_default_strategy(&pool, id).await {
@@ -404,4 +413,64 @@ async fn unset_default_strategy(
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
+}
+
+// ==================== K线内存状态 ====================
+
+/// 查看 KlineManager 内存中的数据状态
+///
+/// GET /api/kline-status
+///
+/// 返回每个 (symbol, timeframe) 的：
+/// - closed_count: 已完成K线数量
+/// - latest_time: 最新K线时间戳
+/// - latest_time_str: 可读的时间
+/// - age_seconds: 距最新数据的秒数
+/// - current_price: 当前价格
+/// - is_stale: 是否过旧（> 2 个周期）
+async fn kline_status(
+    axum::extract::State((_, km)): axum::extract::State<AppState>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let manager = km.read().await;
+    let now_ms = chrono::Utc::now().timestamp_millis();
+
+    let mut stores = Vec::new();
+    for (symbol, tf) in manager.keys() {
+        if let Some(store) = manager.get(&symbol, tf) {
+            let latest = store.latest_closed_time();
+            let duration_ms = store.timeframe_duration_ms();
+
+            let (age_seconds, is_stale, latest_time_str) = if let Some(latest_time) = latest {
+                let age_ms = now_ms - latest_time;
+                let age_s = age_ms / 1000;
+                let stale = age_ms > duration_ms * 2;
+                let dt = chrono::DateTime::from_timestamp_millis(latest_time)
+                    .map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string())
+                    .unwrap_or_else(|| "unknown".to_string());
+                (Some(age_s), stale, Some(dt))
+            } else {
+                (None, true, None)
+            };
+
+            stores.push(serde_json::json!({
+                "symbol": symbol,
+                "timeframe": tf.as_str(),
+                "closed_count": store.closed_count(),
+                "current_price": store.current_price(),
+                "latest_time": latest,
+                "latest_time_str": latest_time_str,
+                "age_seconds": age_seconds,
+                "is_stale": is_stale,
+            }));
+        }
+    }
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "data": {
+            "stores": stores,
+            "total_stores": stores.len(),
+            "stale_count": stores.iter().filter(|s| s["is_stale"].as_bool().unwrap_or(false)).count(),
+        }
+    })))
 }
