@@ -440,16 +440,19 @@ async fn kline_status(
             let latest = store.latest_closed_time();
             let duration_ms = store.timeframe_duration_ms();
 
-            let (age_seconds, is_stale, latest_time_str) = if let Some(latest_time) = latest {
+            let (age_seconds, is_stale, latest_time_utc, latest_time_beijing) = if let Some(latest_time) = latest {
                 let age_ms = now_ms - latest_time;
                 let age_s = age_ms / 1000;
                 let stale = age_ms > duration_ms * 2;
-                let dt = chrono::DateTime::from_timestamp_millis(latest_time)
+                let utc_str = chrono::DateTime::from_timestamp_millis(latest_time)
                     .map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string())
                     .unwrap_or_else(|| "unknown".to_string());
-                (Some(age_s), stale, Some(dt))
+                let bj_str = chrono::DateTime::from_timestamp_millis(latest_time)
+                    .map(|d| (d + chrono::Duration::hours(8)).format("%Y-%m-%d %H:%M:%S").to_string())
+                    .unwrap_or_else(|| "unknown".to_string());
+                (Some(age_s), stale, Some(utc_str), Some(bj_str))
             } else {
-                (None, true, None)
+                (None, true, None, None)
             };
 
             stores.push(serde_json::json!({
@@ -458,7 +461,8 @@ async fn kline_status(
                 "closed_count": store.closed_count(),
                 "current_price": store.current_price(),
                 "latest_time": latest,
-                "latest_time_str": latest_time_str,
+                "latest_time_utc": latest_time_utc,
+                "latest_time_beijing": latest_time_beijing,
                 "age_seconds": age_seconds,
                 "is_stale": is_stale,
             }));
