@@ -9,11 +9,18 @@ pub mod indicators;
 pub mod websocket;
 pub mod alert;
 pub mod exchange;
+pub mod kline_store;
+pub mod kline_loader;
+pub mod ws_feed;
 
 use std::sync::Arc;
 use anyhow::Result;
+use tokio::sync::RwLock;
 use tracing::{info, error, warn};
 use tracing_subscriber::{fmt, EnvFilter};
+
+use kline_store::KlineManager;
+use kline_loader::{collect_data_requirements, hybrid_load};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -49,11 +56,102 @@ async fn main() -> Result<()> {
     let db_pool = db::create_pool(&config.database).await?;
     info!("Database connected");
 
-    // 初始化 Redis 连接
+    // 初始化 Redis 连接（保留用于其他模块）
     let redis_conn = redis_reader::create_connection(&config.redis).await?;
     info!("Redis connected");
 
-    // 初始化 WebSocket 状态
+    // ============================================================
+    // Phase 1: KlineManager 初始化 — 混合加载
+    // ============================================================
+    info!("Initializing KlineManager...");
+
+    // 1. 查询所有活跃策略
+    let active_strategies = db::strategies::list_active_strategies(&db_pool).await?;
+    info!("Found {} active strategies", active_strategies.len());
+
+    // 2. 收集所有 (symbol, timeframe) 对并计算 max_bars
+    let (pairs, max_bars) = collect_data_requirements(&active_strategies);
+    let max_bars = max_bars.max(config.kline.default_max_bars);
+
+    let (pairs, ws_pairs) = if pairs.is_empty() {
+        warn!("No data requirements found from active strategies, using defaults");
+        let default_pairs = vec![
+            ("BTCUSDT".to_string(), redis_reader::Timeframe::ThirtyMinutes),
+            ("BTCUSDT".to_string(), redis_reader::Timeframe::FiveMinutes),
+            ("ETHUSDT".to_string(), redis_reader::Timeframe::ThirtyMinutes),
+            ("ETHUSDT".to_string(), redis_reader::Timeframe::FiveMinutes),
+            ("SOLUSDT".to_string(), redis_reader::Timeframe::ThirtyMinutes),
+            ("SOLUSDT".to_string(), redis_reader::Timeframe::FiveMinutes),
+        ];
+        (default_pairs.clone(), default_pairs)
+    } else {
+        info!(
+            "Data requirements: {} pairs, max_bars={}",
+            pairs.len(),
+            max_bars
+        );
+        for (symbol, tf) in &pairs {
+            info!("  - {} {}", symbol, tf.as_str());
+        }
+        (pairs.clone(), pairs)
+    };
+
+    // 创建 KlineManager 并初始化 stores
+    let mut manager = KlineManager::new(max_bars);
+    manager.init_stores(&pairs);
+
+    // 混合加载数据
+    let market_type = &config.binance.market_type;
+    for (symbol, tf) in &pairs {
+        if let Err(e) = hybrid_load(
+            &db_pool,
+            &mut manager,
+            symbol,
+            *tf,
+            max_bars,
+            market_type,
+        )
+        .await
+        {
+            error!(
+                "Failed to load data for {} {}: {}",
+                symbol,
+                tf.as_str(),
+                e
+            );
+        }
+    }
+
+    // 打印加载结果
+    for (symbol, tf) in &pairs {
+        if let Some(store) = manager.get(symbol, *tf) {
+            info!(
+                "[{}] {} {} loaded: {} bars, latest={}",
+                symbol,
+                tf.as_str(),
+                store.closed_count(),
+                store.latest_closed_time().map(|t| t.to_string()).unwrap_or_else(|| "none".to_string()),
+                store.current_price(),
+            );
+        }
+    }
+
+    let manager = Arc::new(RwLock::new(manager));
+
+    // 启动引擎、WS 数据源和 HTTP 服务
+    start_services(config, db_pool, redis_conn, manager, ws_pairs).await?;
+
+    Ok(())
+}
+
+async fn start_services(
+    config: config::AppConfig,
+    db_pool: sqlx::PgPool,
+    _redis_conn: redis::aio::ConnectionManager,
+    kline_manager: Arc<RwLock<KlineManager>>,
+    ws_subscriptions: Vec<(String, redis_reader::Timeframe)>,
+) -> Result<()> {
+    // 初始化 WebSocket 状态（信号广播）
     let ws_state = Arc::new(websocket::WsState::new());
     info!("WebSocket state initialized");
 
@@ -62,15 +160,53 @@ async fn main() -> Result<()> {
     let alert_manager = Arc::new(alert::AlertManager::new(alert_config));
     info!("Alert manager initialized");
 
-    // 启动策略执行引擎
+    // ============================================================
+    // Phase 2: 启动 Binance WebSocket 实时数据源
+    // ============================================================
+    if !ws_subscriptions.is_empty() {
+        info!(
+            "Starting Binance WebSocket feed with {} subscriptions...",
+            ws_subscriptions.len()
+        );
+        let _ws_feed_receiver = ws_feed::start_ws_feed(
+            ws_subscriptions,
+            kline_manager.clone(),
+            config.binance.market_type.clone(),
+        )
+        .await;
+        info!("Binance WebSocket feed started");
+    }
+
+    // ============================================================
+    // Phase 3: 启动健康检查（每 5 分钟）
+    // ============================================================
+    let _health_handle = kline_loader::start_health_check(
+        kline_manager.clone(),
+        config.binance.market_type.clone(),
+        300, // 5 分钟
+    );
+    info!("Health check started (interval: 300s)");
+
+    // ============================================================
+    // Phase 4: 启动动态 Store 管理（每 60 秒）
+    // ============================================================
+    let _dynamic_handle = kline_loader::start_dynamic_manager(
+        db_pool.clone(),
+        kline_manager.clone(),
+        config.binance.market_type.clone(),
+        60, // 1 分钟
+    );
+    info!("Dynamic store manager started (interval: 60s)");
+
+    // 启动策略执行引擎（使用 KlineManager）
     let engine_handle = {
         let pool = db_pool.clone();
-        let redis = redis_conn.clone();
+        let km = kline_manager.clone();
         let interval = config.engine.poll_interval_secs;
         let ws = ws_state.clone();
         let alert = alert_manager.clone();
         tokio::spawn(async move {
-            if let Err(e) = engine::run(pool, redis, interval, Some(ws), Some(alert)).await {
+            if let Err(e) = engine::run(pool, km, interval, Some(ws), Some(alert)).await {
                 error!("Strategy engine error: {}", e);
             }
         })
