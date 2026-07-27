@@ -484,14 +484,29 @@ pub async fn health_check_and_refill(
                             let mut mgr = manager.write().await;
                             if let Some(store) = mgr.get_mut(&health.symbol, health.timeframe) {
                                 let count = bars.len();
+                                let first_ts = bars.first().map(|b| b.open_time).unwrap_or(0);
+                                let last_ts = bars.last().map(|b| b.open_time).unwrap_or(0);
                                 store.extend_closed(bars);
+                                let new_latest = store.latest_closed_time().unwrap_or(0);
+                                let new_count = store.closed_count();
                                 tracing::info!(
-                                    "[HealthCheck] Refilled {} {} with {} bars",
+                                    "[HealthCheck] Refilled {} {} with {} bars (first={}, last={}), store now: latest={}, count={}",
                                     health.symbol,
                                     health.timeframe.as_str(),
-                                    count
+                                    count,
+                                    first_ts,
+                                    last_ts,
+                                    new_latest,
+                                    new_count,
                                 );
                             }
+                        } else {
+                            tracing::warn!(
+                                "[HealthCheck] Exchange returned 0 bars for {} {} (after_time={})",
+                                health.symbol,
+                                health.timeframe.as_str(),
+                                latest_time
+                            );
                         }
                     }
                     Err(e) => {

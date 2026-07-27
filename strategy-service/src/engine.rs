@@ -473,11 +473,16 @@ fn validate_strategy_data(
 
         if age_ms > max_age_ms {
             let age_minutes = age_ms / 60000;
+            let latest_dt = chrono::DateTime::from_timestamp_millis(latest.timestamp)
+                .map(|dt| dt.format("%H:%M:%S").to_string())
+                .unwrap_or_else(|| "unknown".to_string());
             return Err(format!(
-                "[{}:{}] 数据过旧: 最新时间戳延迟 {} 分钟",
+                "[{}:{}] 数据过旧: 最新时间戳延迟 {} 分钟 (latest={}, bars={})",
                 symbol,
                 tf.as_str(),
-                age_minutes
+                age_minutes,
+                latest_dt,
+                market_data.klines.len()
             ));
         }
     }

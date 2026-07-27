@@ -131,6 +131,7 @@ impl WsFeed {
         kline_manager: Arc<RwLock<KlineManager>>,
         market_type: String,
     ) {
+        info!("[WsFeed] Starting with {} subscriptions", self.subscriptions.len());
         let mut attempt = 0u32;
 
         loop {
@@ -183,8 +184,16 @@ impl WsFeed {
         let url = self.ws_url();
         info!("[WsFeed] Connecting to: {}", url);
 
-        let (ws_stream, _) = connect_async(&url).await?;
-        info!("[WsFeed] Connected successfully");
+        let connect_result = connect_async(&url).await;
+        match &connect_result {
+            Ok((_, response)) => {
+                info!("[WsFeed] Connected! Status: {}", response.status());
+            }
+            Err(e) => {
+                error!("[WsFeed] Connection failed: {}", e);
+            }
+        }
+        let (ws_stream, _) = connect_result?;
 
         let (mut write, mut read) = ws_stream.split();
 
@@ -200,9 +209,14 @@ impl WsFeed {
         });
 
         // 读取消息
+        let mut msg_count: u64 = 0;
         while let Some(msg) = read.next().await {
             match msg {
                 Ok(Message::Text(text)) => {
+                    msg_count += 1;
+                    if msg_count <= 3 || msg_count % 100 == 0 {
+                        info!("[WsFeed] Received message #{}: {} bytes", msg_count, text.len());
+                    }
                     if let Err(e) = self.handle_message(&text, kline_manager).await {
                         warn!("[WsFeed] Error handling message: {}", e);
                     }
