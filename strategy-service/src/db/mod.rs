@@ -2,6 +2,7 @@ pub mod strategies;
 pub mod signals;
 pub mod trades;
 pub mod performance;
+pub mod positions;
 
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;

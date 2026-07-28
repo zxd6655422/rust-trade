@@ -1,20 +1,57 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
 use chrono::Utc;
 use rust_decimal::Decimal;
+use rust_decimal::prelude::ToPrimitive;
 use sqlx::PgPool;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
-use crate::db::{signals, strategies as db_strategies};
+use crate::db::{signals, strategies as db_strategies, positions};
 use crate::exchange;
 use crate::kline_store::{KlineBar, KlineManager};
 use crate::redis_reader::{MarketData, MultiTimeframeData, Timeframe};
 use crate::strategies::{self, SignalType};
 use crate::websocket::{WsMessage, WsState};
 use crate::alert::{AlertManager, create_signal_alert, create_trade_alert};
+
+/// 持仓状态跟踪（用于止损止盈判断）
+#[derive(Debug, Clone)]
+struct PositionState {
+    /// 持仓方向: "LONG" / "SHORT"
+    side: String,
+    /// 入场价格
+    entry_price: f64,
+    /// 持仓期间最高盈利百分比
+    max_profit_pct: f64,
+}
+
+/// 止盈止损退出原因
+#[derive(Debug, Clone)]
+enum ExitReason {
+    /// MA288 止损: close 穿越 MA288
+    Ma288Stop,
+    /// 硬止损: 价格触碰固定止损价
+    HardStop,
+    /// 移动止盈: 盈利达激活阈值后回撤
+    TrailingTp,
+    /// 趋势反转: MA288 < MA488 (平多) 或 MA288 > MA488 (平空)
+    TrendReversal,
+}
+
+impl std::fmt::Display for ExitReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ExitReason::Ma288Stop => write!(f, "MA288止损"),
+            ExitReason::HardStop => write!(f, "硬止损"),
+            ExitReason::TrailingTp => write!(f, "移动止盈"),
+            ExitReason::TrendReversal => write!(f, "趋势反转"),
+        }
+    }
+}
 
 /// 策略执行引擎配置
 pub struct EngineConfig {
@@ -139,6 +176,9 @@ pub async fn run_with_config(
 
     let mut interval = tokio::time::interval(Duration::from_secs(config.poll_interval_secs));
 
+    // 持仓状态跟踪: key = "instance_id:symbol"
+    let mut position_states: HashMap<String, PositionState> = HashMap::new();
+
     loop {
         interval.tick().await;
 
@@ -168,6 +208,7 @@ pub async fn run_with_config(
                     &config,
                     &ws_state,
                     &alert_manager,
+                    &mut position_states,
                 )
                 .await
                 {
@@ -189,7 +230,10 @@ async fn process_strategy(
     config: &EngineConfig,
     ws_state: &Option<Arc<WsState>>,
     alert_manager: &Option<Arc<AlertManager>>,
+    position_states: &mut HashMap<String, PositionState>,
 ) -> Result<()> {
+    let state_key = format!("{}:{}", strategy_instance.id, symbol);
+
     debug!(
         "[{}][{}] 开始分析 (策略ID={}, 市场={})",
         symbol, strategy_instance.strategy_type, strategy_instance.id, strategy_instance.market_type
@@ -308,6 +352,11 @@ async fn process_strategy(
         }
     };
 
+    // 保存 30m klines 用于退出条件检查（释放锁前）
+    let klines_30m: Vec<KlineBar> = manager.get(symbol, Timeframe::ThirtyMinutes)
+        .map(|store| store.closed_bars(500).into_iter().cloned().collect())
+        .unwrap_or_default();
+
     // 释放 KlineManager 读锁
     drop(manager);
 
@@ -323,6 +372,90 @@ async fn process_strategy(
         }
     };
 
+    // ============================================================
+    // 持仓退出检查（止损/止盈/趋势反转）
+    // ============================================================
+    if let Ok(Some(position)) = positions::get_active_position(
+        pool, &strategy_instance.exchange, &strategy_instance.market_type, symbol,
+    ).await {
+        // 有活跃持仓，检查退出条件
+        let exit_reason = check_exit_conditions(
+            &position.side,
+            position.avg_entry_price.to_f64().unwrap_or(0.0),
+            current_price_f64,
+            &klines_30m,
+            &strategy_instance.params,
+            position_states.get_mut(&state_key),
+        );
+
+        if let Some(reason) = exit_reason {
+            info!(
+                "[{}][{}] 🔴 退出信号: {} 价格={:.4} 原因={} (持仓: {} @ {:.4})",
+                symbol, strategy_instance.strategy_type,
+                if position.side == "LONG" { "平多" } else { "平空" },
+                current_price_f64, reason,
+                position.side, position.avg_entry_price
+            );
+
+            // 产生退出信号
+            let exit_direction = if position.side == "LONG" { "bearish" } else { "bullish" };
+            let exit_signal_type = if position.side == "LONG" { "SELL" } else { "BUY" };
+
+            let exit_request = signals::CreateSignalRequest {
+                strategy_id: strategy_instance.strategy_type.clone(),
+                symbol: symbol.to_string(),
+                direction: exit_direction.to_string(),
+                entry_price: rust_decimal::Decimal::try_from(current_price_f64)?,
+                overall_confidence: rust_decimal::Decimal::try_from(1.0)?,
+                entry_allowed: true,
+                entry_direction: None,
+                timeframe_details: None,
+                instance_id: Some(strategy_instance.id),
+                signal_strength: None,
+                market_context: Some(serde_json::json!({
+                    "exit_reason": format!("{}", reason),
+                    "entry_price": position.avg_entry_price,
+                    "position_side": position.side,
+                })),
+                stop_loss: None,
+                take_profit: None,
+                market_structure: None,
+                key_levels: None,
+                trade_setup: None,
+                market_type: Some(strategy_instance.market_type.clone()),
+                signal_type: Some(exit_signal_type.to_string()),
+                signal_intent: Some("exit".to_string()),
+            };
+
+            let saved = signals::create_signal(pool, exit_request).await?;
+            info!("[{}] 退出信号已保存: id={}", symbol, saved.id);
+
+            // 广播退出信号
+            if let Some(ws) = ws_state {
+                let ws_msg = WsMessage {
+                    msg_type: "signal".to_string(),
+                    data: serde_json::json!({
+                        "id": saved.id,
+                        "symbol": symbol,
+                        "direction": exit_direction,
+                        "signal_intent": "exit",
+                        "exit_reason": format!("{}", reason),
+                        "price": current_price_f64,
+                    }),
+                };
+                ws.broadcast_signal(ws_msg);
+            }
+
+            // 清除持仓状态
+            position_states.remove(&state_key);
+
+            return Ok(());
+        }
+    }
+
+    // ============================================================
+    // 入场信号处理
+    // ============================================================
     let signal = match signal {
         Some(signal) => {
             info!(
@@ -394,6 +527,13 @@ async fn process_strategy(
         SignalType::Hold => None,
     };
 
+    // 确定 signal_type (BUY/SELL/HOLD)
+    let signal_type_str = match signal.signal_type {
+        SignalType::Buy => "BUY",
+        SignalType::Sell => "SELL",
+        SignalType::Hold => "HOLD",
+    };
+
     let signal_request = signals::CreateSignalRequest {
         strategy_id: strategy_instance.strategy_type.clone(),
         symbol: symbol.to_string(),
@@ -412,6 +552,8 @@ async fn process_strategy(
         key_levels: signal.key_levels.map(|kl| serde_json::to_value(kl).unwrap_or_default()),
         trade_setup: signal.trade_setup.map(|ts| serde_json::to_value(ts).unwrap_or_default()),
         market_type: Some(strategy_instance.market_type.clone()),
+        signal_type: Some(signal_type_str.to_string()),
+        signal_intent: Some("entry".to_string()),
     };
 
     let saved_signal = signals::create_signal(pool, signal_request).await?;
@@ -424,6 +566,25 @@ async fn process_strategy(
         signal.signal_strength,
         signal.reason
     );
+
+    // 更新持仓状态跟踪（入场信号产生时）
+    match signal.signal_type {
+        SignalType::Buy => {
+            position_states.insert(state_key.clone(), PositionState {
+                side: "LONG".to_string(),
+                entry_price: current_price_f64,
+                max_profit_pct: 0.0,
+            });
+        }
+        SignalType::Sell => {
+            position_states.insert(state_key.clone(), PositionState {
+                side: "SHORT".to_string(),
+                entry_price: current_price_f64,
+                max_profit_pct: 0.0,
+            });
+        }
+        _ => {}
+    }
 
     // 广播信号到 WebSocket
     if let Some(ws) = ws_state {
@@ -599,4 +760,202 @@ fn calc_return_pct(direction: &str, entry_price: Decimal, current_price: Decimal
         "bearish" => -pct,
         _ => Decimal::ZERO,
     }
+}
+
+// ============================================================
+// 退出条件检查（止损/止盈/趋势反转）
+// ============================================================
+
+/// 计算 SMA（简单移动平均）
+fn calc_sma(klines: &[KlineBar], period: usize) -> Option<f64> {
+    if klines.len() < period || period == 0 {
+        return None;
+    }
+    let start = klines.len() - period;
+    let sum: f64 = klines[start..].iter().map(|k| k.close).sum();
+    Some(sum / period as f64)
+}
+
+/// 检查 MA288 止损条件（动态交叉检查，与 JS 回测一致）
+///
+/// 做多持仓: 前一根 close > 前一根 MA288 且 当前 close < 当前 MA288
+/// 做空持仓: 前一根 close < 前一根 MA288 且 当前 close > 当前 MA288
+fn check_ma288_stop(
+    side: &str,
+    klines: &[KlineBar],
+    ma_period: usize,
+) -> bool {
+    if klines.len() < ma_period + 1 {
+        return false;
+    }
+
+    // 当前 MA288 (最后 ma_period 根 K 线)
+    let cur_ma = match calc_sma(klines, ma_period) {
+        Some(v) => v,
+        None => return false,
+    };
+
+    // 前一根 MA288 (去掉最后一根 K 线)
+    let prev_klines = &klines[..klines.len() - 1];
+    let prev_ma = match calc_sma(prev_klines, ma_period) {
+        Some(v) => v,
+        None => return false,
+    };
+
+    let cur_close = klines.last().unwrap().close;
+    let prev_close = klines[klines.len() - 2].close;
+
+    match side {
+        "LONG" => prev_close > prev_ma && cur_close < cur_ma,
+        "SHORT" => prev_close < prev_ma && cur_close > cur_ma,
+        _ => false,
+    }
+}
+
+/// 检查移动止盈条件
+///
+/// 盈利 >= trailing_activate_pct 后，从最高盈利回撤 >= trailing_callback_pct 时触发
+fn check_trailing_tp(
+    side: &str,
+    entry_price: f64,
+    current_price: f64,
+    max_profit_pct: &mut f64,
+    trailing_activate_pct: f64,
+    trailing_callback_pct: f64,
+) -> bool {
+    if entry_price <= 0.0 {
+        return false;
+    }
+
+    let pnl_pct = match side {
+        "LONG" => (current_price - entry_price) / entry_price * 100.0,
+        "SHORT" => (entry_price - current_price) / entry_price * 100.0,
+        _ => return false,
+    };
+
+    *max_profit_pct = max_profit_pct.max(pnl_pct);
+
+    if *max_profit_pct < trailing_activate_pct {
+        return false; // 未达到激活阈值
+    }
+
+    let drawdown = *max_profit_pct - pnl_pct;
+    drawdown >= trailing_callback_pct
+}
+
+/// 检查趋势反转（MA288 < MA488 时平多，MA288 > MA488 时平空）
+fn check_trend_reversal(side: &str, klines: &[KlineBar], fast_period: usize, slow_period: usize) -> bool {
+    let fast_ma = match calc_sma(klines, fast_period) {
+        Some(v) => v,
+        None => return false,
+    };
+    let slow_ma = match calc_sma(klines, slow_period) {
+        Some(v) => v,
+        None => return false,
+    };
+
+    match side {
+        "LONG" => fast_ma < slow_ma,   // MA288 < MA488 = 趋势转空
+        "SHORT" => fast_ma > slow_ma,  // MA288 > MA488 = 趋势转多
+        _ => false,
+    }
+}
+
+/// 综合检查退出条件
+///
+/// 优先级: 硬止损 > MA288止损 > 移动止盈 > 趋势反转
+fn check_exit_conditions(
+    side: &str,
+    entry_price: f64,
+    current_price: f64,
+    klines_30m: &[KlineBar],
+    params: &serde_json::Value,
+    position_state: Option<&mut PositionState>,
+) -> Option<ExitReason> {
+    // 解析策略参数
+    let hard_stop_pct = params.get("hard_stop_pct")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let stop_mode = params.get("stop_mode")
+        .and_then(|v| v.as_str())
+        .unwrap_or("ma288");
+    let fast_ma_period = params.get("fast_ma_period")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(288) as usize;
+    let slow_ma_period = params.get("slow_ma_period")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(488) as usize;
+    let take_profit_mode = params.get("take_profit_mode")
+        .and_then(|v| v.as_str())
+        .unwrap_or("none");
+    let trailing_activate_pct = params.get("trailing_activate_pct")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(5.0);
+    let trailing_callback_pct = params.get("trailing_callback_pct")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(5.0);
+
+    // 1. 硬止损（优先级最高）
+    if hard_stop_pct > 0.0 {
+        let hard_stop_price = match side {
+            "LONG" => entry_price * (1.0 - hard_stop_pct / 100.0),
+            "SHORT" => entry_price * (1.0 + hard_stop_pct / 100.0),
+            _ => 0.0,
+        };
+        let triggered = match side {
+            "LONG" => current_price <= hard_stop_price,
+            "SHORT" => current_price >= hard_stop_price,
+            _ => false,
+        };
+        if triggered {
+            debug!(
+                "[退出] 硬止损触发: {} entry={:.4} current={:.4} stop={:.4}",
+                side, entry_price, current_price, hard_stop_price
+            );
+            return Some(ExitReason::HardStop);
+        }
+    }
+
+    // 2. MA288 止损（动态交叉检查）
+    if stop_mode == "ma288" {
+        if check_ma288_stop(side, klines_30m, fast_ma_period) {
+            debug!(
+                "[退出] MA288止损触发: {} entry={:.4} current={:.4}",
+                side, entry_price, current_price
+            );
+            return Some(ExitReason::Ma288Stop);
+        }
+    }
+
+    // 3. 移动止盈
+    if take_profit_mode == "trailing" {
+        // 需要持仓状态来跟踪 max_profit_pct
+        if let Some(state) = position_state {
+            if check_trailing_tp(
+                side,
+                entry_price,
+                current_price,
+                &mut state.max_profit_pct,
+                trailing_activate_pct,
+                trailing_callback_pct,
+            ) {
+                debug!(
+                    "[退出] 移动止盈触发: {} entry={:.4} current={:.4} max_profit={:.2}%",
+                    side, entry_price, current_price, state.max_profit_pct
+                );
+                return Some(ExitReason::TrailingTp);
+            }
+        }
+    }
+
+    // 4. 趋势反转
+    if check_trend_reversal(side, klines_30m, fast_ma_period, slow_ma_period) {
+        debug!(
+            "[退出] 趋势反转触发: {} entry={:.4} current={:.4}",
+            side, entry_price, current_price
+        );
+        return Some(ExitReason::TrendReversal);
+    }
+
+    None
 }

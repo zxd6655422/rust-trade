@@ -13,7 +13,7 @@ use crate::exchange::traits::Exchange;
 use crate::exchange::types::*;
 use crate::risk::{RiskConfig, RiskDecision, RiskEngine, RiskAction, StopLossConfig, StopLossManager, StopAction};
 use crate::storage::{EventPublisher, EventRepository, OrderRepository, OrderSource, StopOrderRepository};
-use trading_common::backtest::strategy::Signal;
+use trading_common::backtest::strategy::{Signal, SignalIntent};
 use trading_common::data::event_types::TradingEvent;
 
 /// 将数量截断到 step_size 精度
@@ -365,11 +365,13 @@ impl OrderManager {
                     let entry_price = update.avg_price.unwrap_or_default();
                     // 获取策略计算的止损价（如果有）
                     let signal_sl = order.signal_stop_loss;
+                    // 策略通过 exit 信号管理止盈，禁用引擎默认止盈
+                    let signal_tp: Option<Decimal> = None;
                     if entry_price > Decimal::ZERO {
                         // 计算止损止盈价格
                         // 优先使用策略计算的止损价，否则用默认百分比
                         let (sl_price, tp_price) = self.calculate_stop_prices_with_signal(
-                            &update.side, entry_price, signal_sl,
+                            &update.side, entry_price, signal_sl, signal_tp,
                         );
 
                         // 1. 写入内存（用于价格监控）
@@ -741,12 +743,33 @@ impl OrderManager {
                 symbol,
                 quantity,
                 entry_price,
-                intent: _,
+                intent,
                 stop_loss: _,
             } => {
-                // 动态计算仓位大小
-                let risk_config = self.risk_engine.config().await;
-                let quantity = self.resolve_quantity(*quantity, *entry_price, account, &risk_config);
+                // Exit 信号 (平空): 使用当前空头持仓数量
+                // Entry 信号 (开多): 动态计算仓位大小
+                let quantity = if *intent == SignalIntent::Exit {
+                    if self.market_type == "futures" {
+                        let position = self.exchange.get_position(symbol).await
+                            .map_err(|e| OrderError::ExchangeError(
+                                format!("Failed to get futures position for {}: {}", symbol, e)
+                            ))?;
+                        if position.quantity <= Decimal::ZERO {
+                            return Err(OrderError::InsufficientPosition(format!(
+                                "[exit] No short position to close for {}", symbol
+                            )));
+                        }
+                        info!("[exit] Using full short position quantity: {} for {}", position.quantity, symbol);
+                        position.quantity
+                    } else {
+                        // 现货: 使用传入的 quantity
+                        let risk_config = self.risk_engine.config().await;
+                        self.resolve_quantity(*quantity, *entry_price, account, &risk_config)
+                    }
+                } else {
+                    let risk_config = self.risk_engine.config().await;
+                    self.resolve_quantity(*quantity, *entry_price, account, &risk_config)
+                };
 
                 // 根据交易模式检查余额
                 if self.market_type == "futures" {
@@ -808,12 +831,27 @@ impl OrderManager {
                 symbol,
                 quantity,
                 entry_price,
-                intent: _,
+                intent,
                 stop_loss: _,
             } => {
-                // 动态计算仓位大小
-                let risk_config = self.risk_engine.config().await;
-                let quantity = self.resolve_quantity(*quantity, *entry_price, account, &risk_config);
+                // Exit 信号: 使用当前持仓数量（全平）
+                // Entry 信号: 动态计算仓位大小
+                let quantity = if *intent == SignalIntent::Exit && self.market_type == "futures" {
+                    let position = self.exchange.get_position(symbol).await
+                        .map_err(|e| OrderError::ExchangeError(
+                            format!("Failed to get futures position for {}: {}", symbol, e)
+                        ))?;
+                    if position.quantity <= Decimal::ZERO {
+                        return Err(OrderError::InsufficientPosition(format!(
+                            "[exit] No position to close for {}", symbol
+                        )));
+                    }
+                    info!("[exit] Using full position quantity: {} for {}", position.quantity, symbol);
+                    position.quantity
+                } else {
+                    let risk_config = self.risk_engine.config().await;
+                    self.resolve_quantity(*quantity, *entry_price, account, &risk_config)
+                };
 
                 // 根据交易模式选择不同的持仓校验方式
                 if self.market_type == "futures" {
@@ -1014,15 +1052,15 @@ impl OrderManager {
     /// 计算止损止盈价格（优先使用策略计算的止损价）
     ///
     /// signal_stop_loss: 策略计算的止损价（MA288止损 或 hard_stop_pct）
+    /// signal_take_profit: 策略计算的止盈价（如果为 None，表示策略自行管理止盈）
     /// 如果有策略止损价，使用它；否则回退到默认百分比
     fn calculate_stop_prices_with_signal(
         &self,
         side: &OrderSide,
         entry_price: Decimal,
         signal_stop_loss: Option<Decimal>,
+        signal_take_profit: Option<Decimal>,
     ) -> (Decimal, Decimal) {
-        let tp_pct = self.stop_loss_config.default_take_profit_pct;
-
         // 止损价：优先使用策略计算的
         let sl_price = if let Some(sl) = signal_stop_loss {
             info!("Using strategy stop loss: {} (vs default {}%)", sl, self.stop_loss_config.default_stop_loss_pct * Decimal::from(100));
@@ -1035,10 +1073,20 @@ impl OrderManager {
             }
         };
 
-        // 止盈价：仍使用默认百分比（策略返回 None，由动态止盈机制处理）
-        let tp_price = match side {
-            OrderSide::Buy => entry_price * (Decimal::ONE + tp_pct),
-            OrderSide::Sell => entry_price * (Decimal::ONE - tp_pct),
+        // 止盈价：优先使用策略计算的
+        // 如果策略未提供止盈价（None），设置极大值以禁用引擎默认止盈
+        // 策略会通过 exit 信号自行管理止盈
+        let tp_price = if let Some(tp) = signal_take_profit {
+            info!("Using strategy take profit: {}", tp);
+            tp
+        } else {
+            // 策略自行管理止盈，禁用引擎默认止盈
+            let disabled_tp = match side {
+                OrderSide::Buy => entry_price * Decimal::from(100),   // 10000% 止盈 (effectively disabled)
+                OrderSide::Sell => entry_price / Decimal::from(100),  // 0.01 止盈 (effectively disabled)
+            };
+            info!("Strategy manages take profit, engine TP disabled (set to {})", disabled_tp);
+            disabled_tp
         };
 
         (sl_price, tp_price)

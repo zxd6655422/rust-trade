@@ -43,6 +43,11 @@ pub struct StrategySignal {
     // "spot" = 只在现货执行
     // "both" = 同时在合约和现货执行
     pub market_type: Option<String>,
+    // V9 新增字段：信号方向和意图
+    // signal_type: "BUY" / "SELL" / "HOLD"
+    // signal_intent: "entry" / "exit" / "reverse"
+    pub signal_type: Option<String>,
+    pub signal_intent: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -70,6 +75,9 @@ pub struct CreateSignalRequest {
     // "spot" = 只在现货执行
     // "both" = 同时在合约和现货执行
     pub market_type: Option<String>,
+    // V9 新增字段：信号方向和意图
+    pub signal_type: Option<String>,   // "BUY" / "SELL" / "HOLD"
+    pub signal_intent: Option<String>, // "entry" / "exit" / "reverse"
 }
 
 #[derive(Debug, Deserialize)]
@@ -114,9 +122,9 @@ pub async fn create_signal(
             timeframe_details, instance_id, signal_strength,
             market_context, stop_loss, take_profit,
             market_structure, key_levels, trade_setup,
-            market_type
+            market_type, signal_type, signal_intent
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
         RETURNING *
         "#
     )
@@ -137,6 +145,8 @@ pub async fn create_signal(
     .bind(&req.key_levels)
     .bind(&req.trade_setup)
     .bind(req.market_type.unwrap_or_else(|| "futures".to_string()))
+    .bind(req.signal_type.unwrap_or_else(|| "HOLD".to_string()))
+    .bind(req.signal_intent.unwrap_or_else(|| "entry".to_string()))
     .fetch_one(pool)
     .await?;
 

@@ -39,8 +39,10 @@ struct SignalRecord {
     pub created_at: DateTime<Utc>,
     /// 目标市场类型: "futures", "spot", "both" (默认 "futures")
     pub market_type: Option<String>,
-    /// 信号类型: "entry", "exit", "reverse" (默认 "entry")
+    /// 信号方向: "BUY", "SELL", "HOLD"
     pub signal_type: Option<String>,
+    /// 信号意图: "entry", "exit", "reverse" (默认 "entry")
+    pub signal_intent: Option<String>,
     /// 以下字段用于全链路日志追踪
     pub signal_strength: Option<Decimal>,
     pub stop_loss: Option<Decimal>,
@@ -444,8 +446,8 @@ impl SignalPoller {
         let rows = sqlx::query(
             "SELECT id, symbol, strategy_id, direction, entry_price, \
                     overall_confidence, entry_allowed, status, created_at, \
-                    market_type, signal_type, signal_strength, stop_loss, take_profit, \
-                    timeframe_details, market_context \
+                    market_type, signal_type, signal_intent, signal_strength, \
+                    stop_loss, take_profit, timeframe_details, market_context \
              FROM strategy_signals \
              WHERE status='pending' AND entry_allowed=true \
              ORDER BY created_at DESC LIMIT $1"
@@ -467,6 +469,7 @@ impl SignalPoller {
             created_at: r.get::<DateTime<Utc>, _>("created_at"),
             market_type: r.try_get::<String, _>("market_type").ok(),
             signal_type: r.try_get::<String, _>("signal_type").ok(),
+            signal_intent: r.try_get::<String, _>("signal_intent").ok(),
             signal_strength: r.try_get::<Decimal, _>("signal_strength").ok(),
             stop_loss: r.try_get::<Decimal, _>("stop_loss").ok(),
             take_profit: r.try_get::<Decimal, _>("take_profit").ok(),
@@ -552,9 +555,9 @@ impl SignalPoller {
         let stop_loss = record.stop_loss;
 
         // 从数据库读取信号意图，默认为 Entry
-        let intent = record.signal_type.as_deref()
+        let intent = record.signal_intent.as_deref()
             .map(|t| match t {
-                "exit" | "close" | "stop_loss" | "take_profit" => SignalIntent::Exit,
+                "exit" => SignalIntent::Exit,
                 "reverse" => SignalIntent::Reverse,
                 _ => SignalIntent::Entry,
             })
