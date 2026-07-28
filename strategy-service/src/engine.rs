@@ -6,7 +6,7 @@ use chrono::Utc;
 use rust_decimal::Decimal;
 use sqlx::PgPool;
 use tokio::sync::RwLock;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::db::{signals, strategies as db_strategies};
 use crate::exchange;
@@ -190,6 +190,11 @@ async fn process_strategy(
     ws_state: &Option<Arc<WsState>>,
     alert_manager: &Option<Arc<AlertManager>>,
 ) -> Result<()> {
+    debug!(
+        "[{}][{}] 开始分析 (策略ID={}, 市场={})",
+        symbol, strategy_instance.strategy_type, strategy_instance.id, strategy_instance.market_type
+    );
+
     // 创建策略实例
     let strategy = strategies::create_strategy(&strategy_instance.strategy_type, &strategy_instance.params)?;
 
@@ -217,6 +222,16 @@ async fn process_strategy(
 
             match multi_data {
                 Some(data) => {
+                    // 日志: 数据概况
+                    let tf_summary: Vec<String> = data.all.iter().map(|d| {
+                        let bar_count = d.klines.len();
+                        format!("{}: {}根", d.timeframe.as_str(), bar_count)
+                    }).collect();
+                    debug!(
+                        "[{}] 数据就绪: {}, 当前价={:.4}",
+                        symbol, tf_summary.join(", "), data.primary.current_price
+                    );
+
                     // 数据完整性验证（策略层）
                     if let Err(reason) = validate_strategy_data(&data.primary, symbol) {
                         warn!("[{}] 跳过策略执行: {}", symbol, reason);
@@ -243,6 +258,10 @@ async fn process_strategy(
 
             match market_data {
                 Some(data) => {
+                    debug!(
+                        "[{}] 数据就绪: {} {}根, 当前价={:.4}",
+                        symbol, data.timeframe.as_str(), data.klines.len(), data.current_price
+                    );
                     if let Err(reason) = validate_strategy_data(&data, symbol) {
                         warn!("[{}] 跳过策略执行: {}", symbol, reason);
                         return Ok(());
@@ -269,6 +288,10 @@ async fn process_strategy(
 
         match market_data {
             Some(data) => {
+                debug!(
+                    "[{}] 数据就绪: {} {}根, 当前价={:.4}",
+                    symbol, data.timeframe.as_str(), data.klines.len(), data.current_price
+                );
                 if let Err(reason) = validate_strategy_data(&data, symbol) {
                     warn!("[{}] 跳过策略执行: {}", symbol, reason);
                     return Ok(());
@@ -301,8 +324,25 @@ async fn process_strategy(
     };
 
     let signal = match signal {
-        Some(signal) => signal,
-        None => return Ok(()), // 没有信号
+        Some(signal) => {
+            info!(
+                "[{}][{}] ✅ 信号产生: {} 价格={:.4} 强度={:.2} 原因={}",
+                symbol, strategy_instance.strategy_type,
+                match signal.signal_type {
+                    SignalType::Buy => "做多",
+                    SignalType::Sell => "做空",
+                    SignalType::Hold => "持有",
+                },
+                current_price_f64,
+                signal.signal_strength,
+                signal.reason
+            );
+            signal
+        },
+        None => {
+            debug!("[{}][{}] 无信号(详见策略内部日志)", symbol, strategy_instance.strategy_type);
+            return Ok(());
+        },
     };
 
     // 检查是否应该忽略信号（避免频繁交易）

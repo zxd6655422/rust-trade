@@ -507,6 +507,10 @@ impl MATrendPullbackStrategy {
         let klines = &data.klines;
         let min_bars = self.params.slow_ma_period.max(self.params.fast_ma_period) + 10;
         if klines.len() < min_bars {
+            tracing::debug!(
+                "[{}] 数据不足: 需要{}根K线, 实际{}根",
+                data.symbol, min_bars, klines.len()
+            );
             return None;
         }
 
@@ -526,7 +530,15 @@ impl MATrendPullbackStrategy {
             TrendDirection::Neutral
         };
 
+        let spread_pct = (fast_ma - slow_ma).abs() / slow_ma * 100.0;
+        tracing::debug!(
+            "[{}] 趋势分析: MA{}={:.4}, MA{}={:.4}, 价差={:.4}%, 方向={:?}, 当前价={:.4}",
+            data.symbol, self.params.fast_ma_period, fast_ma,
+            self.params.slow_ma_period, slow_ma, spread_pct, trend, current_price
+        );
+
         if trend == TrendDirection::Neutral {
+            tracing::debug!("[{}] 跳过: 双均线交叉(中性), 无趋势方向", data.symbol);
             return None;
         }
 
@@ -535,6 +547,11 @@ impl MATrendPullbackStrategy {
         if self.params.slope_threshold > 0.0 {
             let fast_ma_series = calculate_sma_series(&closes, self.params.fast_ma_period);
             if let Some(slope) = calculate_slope(&fast_ma_series, 5) {
+                tracing::debug!(
+                    "[{}] 过滤器1-斜率: slope={:.6}, 阈值={:.6}, {}",
+                    data.symbol, slope.abs(), self.params.slope_threshold,
+                    if slope.abs() < self.params.slope_threshold { "❌ 未通过" } else { "✅ 通过" }
+                );
                 if slope.abs() < self.params.slope_threshold {
                     return None;
                 }
@@ -544,6 +561,11 @@ impl MATrendPullbackStrategy {
         // 2. BBW filter
         if self.params.bbw_threshold > 0.0 {
             if let Some(bbw) = calculate_bbw(klines, 100) {
+                tracing::debug!(
+                    "[{}] 过滤器2-BBW: bbw={:.6}, 阈值={:.6}, {}",
+                    data.symbol, bbw, self.params.bbw_threshold,
+                    if bbw < self.params.bbw_threshold { "❌ 未通过" } else { "✅ 通过" }
+                );
                 if bbw < self.params.bbw_threshold {
                     return None;
                 }
@@ -553,6 +575,11 @@ impl MATrendPullbackStrategy {
         // 3. Volume filter
         if self.params.vol_threshold > 0.0 {
             if let Some(vol_ratio) = calculate_vol_ratio(klines) {
+                tracing::debug!(
+                    "[{}] 过滤器3-成交量: vol_ratio={:.4}, 阈值={:.4}, {}",
+                    data.symbol, vol_ratio, self.params.vol_threshold,
+                    if vol_ratio < self.params.vol_threshold { "❌ 未通过" } else { "✅ 通过" }
+                );
                 if vol_ratio < self.params.vol_threshold {
                     return None;
                 }
@@ -562,6 +589,11 @@ impl MATrendPullbackStrategy {
         // 4. 30m diffusion filter (optional)
         if self.params.use_30m_expanding {
             if let Some(expanding) = is_expanding(klines, self.params.fast_ma_period, self.params.slow_ma_period, 5) {
+                tracing::debug!(
+                    "[{}] 过滤器4-30m扩散: expanding={}, {}",
+                    data.symbol, expanding,
+                    if !expanding { "❌ 未通过(收敛)" } else { "✅ 通过(扩散)" }
+                );
                 if !expanding {
                     return None; // 30m is converging, skip entry
                 }
@@ -573,6 +605,11 @@ impl MATrendPullbackStrategy {
             if let Some(klines_5m) = &data.klines_5m {
                 // Check if 5m dual MA is expanding
                 if let Some(expanding) = is_expanding(klines_5m, self.params.fast_ma_period, self.params.slow_ma_period, 5) {
+                    tracing::debug!(
+                        "[{}] 过滤器5a-5m扩散: expanding={}, {}",
+                        data.symbol, expanding,
+                        if !expanding { "❌ 未通过(收敛)" } else { "✅ 通过(扩散)" }
+                    );
                     if !expanding {
                         return None; // 5m is converging, skip entry
                     }
@@ -581,11 +618,18 @@ impl MATrendPullbackStrategy {
                 // Check minimum angle threshold
                 if self.params.min_angle_5m > 0.0 {
                     if let Some(angle) = calculate_angle(klines_5m, self.params.fast_ma_period, self.params.slow_ma_period, 5) {
+                        tracing::debug!(
+                            "[{}] 过滤器5b-5m角度: angle={:.4}°, 阈值={:.4}°, {}",
+                            data.symbol, angle.abs(), self.params.min_angle_5m,
+                            if angle.abs() < self.params.min_angle_5m { "❌ 未通过" } else { "✅ 通过" }
+                        );
                         if angle.abs() < self.params.min_angle_5m {
                             return None; // Angle too small, skip entry
                         }
                     }
                 }
+            } else {
+                tracing::debug!("[{}] 过滤器5-5m扩散: 无5m数据, 跳过此过滤器", data.symbol);
             }
         }
 
@@ -594,7 +638,10 @@ impl MATrendPullbackStrategy {
             // Use 5m klines for entry signal if available
             match &data.klines_5m {
                 Some(klines_5m) if klines_5m.len() >= 2 => klines_5m,
-                _ => klines, // Fallback to 30m if 5m not available
+                _ => {
+                    tracing::debug!("[{}] 入场时间框架回退: 5m数据不足, 使用30m", data.symbol);
+                    klines
+                },
             }
         } else {
             klines // Use 30m klines for entry
@@ -602,6 +649,7 @@ impl MATrendPullbackStrategy {
 
         // Check for MA crossover signal on entry klines
         if entry_klines.len() < 2 {
+            tracing::debug!("[{}] 入场K线不足: 需要至少2根, 实际{}根", data.symbol, entry_klines.len());
             return None;
         }
 
@@ -613,6 +661,13 @@ impl MATrendPullbackStrategy {
         let open = entry_klines.last()?.open;
         let close = entry_klines.last()?.close;
 
+        tracing::debug!(
+            "[{}] 入场条件检查: {}入场, open={:.4}, close={:.4}, MA{}={:.4}, 前一根MA{}={:.4}",
+            data.symbol, self.params.entry_timeframe,
+            open, close, self.params.fast_ma_period, entry_fast_ma,
+            self.params.fast_ma_period, prev_entry_fast_ma.unwrap_or(0.0)
+        );
+
         // Detect entry signal: price crosses MA288 in trend direction
         let mut signal_type = None;
         let mut reason = String::new();
@@ -621,7 +676,15 @@ impl MATrendPullbackStrategy {
             TrendDirection::Bullish => {
                 // Bullish trend: price crosses above fast MA
                 if let Some(prev_fast) = prev_entry_fast_ma {
-                    if open < prev_fast && close > entry_fast_ma {
+                    let crossed = open < prev_fast && close > entry_fast_ma;
+                    tracing::debug!(
+                        "[{}] 做多条件: open({:.4}) < 前MA{}({:.4})? {} AND close({:.4}) > MA{}({:.4})? {} → {}",
+                        data.symbol, open, self.params.fast_ma_period, prev_fast,
+                        open < prev_fast, close, self.params.fast_ma_period, entry_fast_ma,
+                        close > entry_fast_ma,
+                        if crossed { "✅ 触发做多信号" } else { "❌ 未触发" }
+                    );
+                    if crossed {
                         signal_type = Some(SignalType::Buy);
                         reason = format!(
                             "Bullish trend pullback: price crossed above MA{} on {} (trend: MA{} > MA{})",
@@ -631,12 +694,22 @@ impl MATrendPullbackStrategy {
                             self.params.slow_ma_period
                         );
                     }
+                } else {
+                    tracing::debug!("[{}] 做多条件: 无法计算前一根MA{}, 跳过", data.symbol, self.params.fast_ma_period);
                 }
             }
             TrendDirection::Bearish => {
                 // Bearish trend: price crosses below fast MA
                 if let Some(prev_fast) = prev_entry_fast_ma {
-                    if open > prev_fast && close < entry_fast_ma {
+                    let crossed = open > prev_fast && close < entry_fast_ma;
+                    tracing::debug!(
+                        "[{}] 做空条件: open({:.4}) > 前MA{}({:.4})? {} AND close({:.4}) < MA{}({:.4})? {} → {}",
+                        data.symbol, open, self.params.fast_ma_period, prev_fast,
+                        open > prev_fast, close, self.params.fast_ma_period, entry_fast_ma,
+                        close < entry_fast_ma,
+                        if crossed { "✅ 触发做空信号" } else { "❌ 未触发" }
+                    );
+                    if crossed {
                         signal_type = Some(SignalType::Sell);
                         reason = format!(
                             "Bearish trend pullback: price crossed below MA{} on {} (trend: MA{} < MA{})",
@@ -646,12 +719,20 @@ impl MATrendPullbackStrategy {
                             self.params.slow_ma_period
                         );
                     }
+                } else {
+                    tracing::debug!("[{}] 做空条件: 无法计算前一根MA{}, 跳过", data.symbol, self.params.fast_ma_period);
                 }
             }
             _ => {}
         }
 
-        let signal_type = signal_type?;
+        let signal_type = match signal_type {
+            Some(s) => s,
+            None => {
+                tracing::debug!("[{}] 最终结果: 无入场信号, 等待下一根K线", data.symbol);
+                return None;
+            }
+        };
 
         // Calculate stop loss
         // Priority: hard stop > MA288 stop
