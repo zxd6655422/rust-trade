@@ -35,10 +35,6 @@ enum StopMode {
 enum TakeProfitMode {
     /// Trailing stop (activate + callback)
     Trailing,
-    /// MA48 crossover confirmation
-    Ma48,
-    /// Bollinger Band position
-    Bb,
     /// No take profit (only stop loss)
     None,
 }
@@ -54,8 +50,6 @@ pub struct MATrendPullbackBacktestStrategy {
     take_profit_mode: TakeProfitMode,
     trailing_activate_pct: f64,
     trailing_callback_pct: f64,
-    ma48_tp_bars: usize,
-    bb_tp_pct: f64,
     // 30m diffusion filter parameters
     use_30m_expanding: bool,
     // 5m diffusion filter parameters
@@ -69,7 +63,6 @@ pub struct MATrendPullbackBacktestStrategy {
     position: Position,
     entry_price: f64,  // Track entry price for hard stop
     hard_stop_price: f64,  // Hard stop price level
-    max_profit_pct: f64,
     ma48_cross_count: usize,
     last_signal: Option<Signal>,
 }
@@ -101,8 +94,6 @@ impl MATrendPullbackBacktestStrategy {
             take_profit_mode: TakeProfitMode::Trailing,
             trailing_activate_pct: 5.0,
             trailing_callback_pct: 5.0,
-            ma48_tp_bars: 3,
-            bb_tp_pct: 90.0,
             use_30m_expanding: false,
             use_5m_expanding: false,
             min_angle_5m: 0.0,
@@ -113,7 +104,6 @@ impl MATrendPullbackBacktestStrategy {
             entry_price: 0.0,
             hard_stop_price: 0.0,
             max_profit_pct: 0.0,
-            ma48_cross_count: 0,
             last_signal: None,
         }
     }
@@ -212,28 +202,6 @@ impl MATrendPullbackBacktestStrategy {
         }
     }
 
-    /// Calculate Bollinger Band position (0-100%)
-    fn calculate_bb_position(&self, period: usize) -> Option<f64> {
-        if self.bars.len() < period {
-            return None;
-        }
-
-        let closes: Vec<f64> = self.bars.iter().rev().take(period).map(|b| b.close).collect();
-        let mean: f64 = closes.iter().sum::<f64>() / period as f64;
-        let variance: f64 = closes.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / period as f64;
-        let std = variance.sqrt();
-
-        let upper = mean + 2.0 * std;
-        let lower = mean - 2.0 * std;
-        let current_price = *closes.first()?;
-
-        if upper - lower > 0.0 {
-            Some((current_price - lower) / (upper - lower) * 100.0)
-        } else {
-            Some(50.0)
-        }
-    }
-
     /// Check stop loss condition (hard stop has priority)
     fn check_stop_loss(&self, bar: &Bar) -> (bool, f64) {
         match &self.position {
@@ -318,21 +286,6 @@ impl MATrendPullbackBacktestStrategy {
                         let drawdown = self.max_profit_pct - current_pnl;
                         drawdown >= self.trailing_callback_pct
                     }
-                    TakeProfitMode::Ma48 => {
-                        // MA48 crossover check is handled in process_bar
-                        self.ma48_cross_count >= self.ma48_tp_bars
-                    }
-                    TakeProfitMode::Bb => {
-                        if let Some(bb_pos) = self.calculate_bb_position(100) {
-                            match &self.position {
-                                Position::Long { .. } => bb_pos >= self.bb_tp_pct,
-                                Position::Short { .. } => bb_pos <= (100.0 - self.bb_tp_pct),
-                                _ => false,
-                            }
-                        } else {
-                            false
-                        }
-                    }
                     TakeProfitMode::None => false,
                 }
             }
@@ -387,22 +340,6 @@ impl MATrendPullbackBacktestStrategy {
             let current_pnl = self.current_pnl_pct(current_price);
             self.max_profit_pct = self.max_profit_pct.max(current_pnl);
 
-            // Update MA48 cross count for MA48 take profit mode
-            if self.take_profit_mode == TakeProfitMode::Ma48 {
-                if let Some(ma48) = self.calculate_sma(48) {
-                    let is_cross = match &self.position {
-                        Position::Long { .. } => current_price < ma48,
-                        Position::Short { .. } => current_price > ma48,
-                        Position::None => false,
-                    };
-                    if is_cross {
-                        self.ma48_cross_count += 1;
-                    } else {
-                        self.ma48_cross_count = 0;
-                    }
-                }
-            }
-
             // Check stop loss (with hard stop support)
             let (should_stop, _exit_price) = self.check_stop_loss(&bar);
             if should_stop {
@@ -427,7 +364,6 @@ impl MATrendPullbackBacktestStrategy {
                 self.entry_price = 0.0;
                 self.hard_stop_price = 0.0;
                 self.max_profit_pct = 0.0;
-                self.ma48_cross_count = 0;
                 self.last_signal = Some(signal.clone());
                 return signal;
             }
@@ -453,7 +389,6 @@ impl MATrendPullbackBacktestStrategy {
                 };
                 self.position = Position::None;
                 self.max_profit_pct = 0.0;
-                self.ma48_cross_count = 0;
                 self.last_signal = Some(signal.clone());
                 return signal;
             }
@@ -479,7 +414,6 @@ impl MATrendPullbackBacktestStrategy {
                 };
                 self.position = Position::None;
                 self.max_profit_pct = 0.0;
-                self.ma48_cross_count = 0;
                 self.last_signal = Some(signal.clone());
                 return signal;
             }
@@ -548,7 +482,7 @@ impl MATrendPullbackBacktestStrategy {
                         self.entry_price = 0.0;
                         self.hard_stop_price = 0.0;
                         self.max_profit_pct = 0.0;
-                        self.ma48_cross_count = 0;
+                        
                         self.last_signal = Some(signal.clone());
                         // Don't open new position immediately, wait for next signal
                         return signal;
@@ -573,7 +507,7 @@ impl MATrendPullbackBacktestStrategy {
                         self.entry_price = current_price;
                         self.hard_stop_price = stop_loss_price;
                         self.max_profit_pct = 0.0;
-                        self.ma48_cross_count = 0;
+                        
                         self.last_signal = Some(signal.clone());
                         return signal;
                     }
@@ -596,7 +530,7 @@ impl MATrendPullbackBacktestStrategy {
                         self.entry_price = 0.0;
                         self.hard_stop_price = 0.0;
                         self.max_profit_pct = 0.0;
-                        self.ma48_cross_count = 0;
+                        
                         self.last_signal = Some(signal.clone());
                         // Don't open new position immediately, wait for next signal
                         return signal;
@@ -621,7 +555,7 @@ impl MATrendPullbackBacktestStrategy {
                         self.entry_price = current_price;
                         self.hard_stop_price = stop_loss_price;
                         self.max_profit_pct = 0.0;
-                        self.ma48_cross_count = 0;
+                        
                         self.last_signal = Some(signal.clone());
                         return signal;
                     }
@@ -661,8 +595,6 @@ impl Strategy for MATrendPullbackBacktestStrategy {
         if let Some(tp_mode) = params.get("take_profit_mode") {
             self.take_profit_mode = match tp_mode.as_str() {
                 "trailing" => TakeProfitMode::Trailing,
-                "ma48" => TakeProfitMode::Ma48,
-                "bb" => TakeProfitMode::Bb,
                 "none" => TakeProfitMode::None,
                 _ => return Err("Invalid take_profit_mode".to_string()),
             };
@@ -672,12 +604,6 @@ impl Strategy for MATrendPullbackBacktestStrategy {
         }
         if let Some(callback) = params.get("trailing_callback_pct") {
             self.trailing_callback_pct = callback.parse().map_err(|_| "Invalid trailing_callback_pct")?;
-        }
-        if let Some(bars) = params.get("ma48_tp_bars") {
-            self.ma48_tp_bars = bars.parse().map_err(|_| "Invalid ma48_tp_bars")?;
-        }
-        if let Some(bb_pct) = params.get("bb_tp_pct") {
-            self.bb_tp_pct = bb_pct.parse().map_err(|_| "Invalid bb_tp_pct")?;
         }
         if let Some(use_30m) = params.get("use_30m_expanding") {
             self.use_30m_expanding = use_30m.parse().map_err(|_| "Invalid use_30m_expanding")?;
@@ -712,7 +638,7 @@ impl Strategy for MATrendPullbackBacktestStrategy {
         self.entry_price = 0.0;
         self.hard_stop_price = 0.0;
         self.max_profit_pct = 0.0;
-        self.ma48_cross_count = 0;
+        
         self.last_signal = None;
     }
 

@@ -863,14 +863,14 @@ fn check_trend_reversal(side: &str, klines: &[KlineBar], fast_period: usize, slo
 
 /// 综合检查退出条件
 ///
-/// 优先级: 硬止损 > MA288止损 > 移动止盈 > 趋势反转
+/// 优先级: 硬止损 > MA288止损 > MA48止盈 > BB止盈 > 移动止盈 > 趋势反转
 fn check_exit_conditions(
     side: &str,
     entry_price: f64,
     current_price: f64,
     klines_30m: &[KlineBar],
     params: &serde_json::Value,
-    position_state: Option<&mut PositionState>,
+    mut position_state: Option<&mut PositionState>,
 ) -> Option<ExitReason> {
     // 解析策略参数
     let hard_stop_pct = params.get("hard_stop_pct")
@@ -894,6 +894,9 @@ fn check_exit_conditions(
     let trailing_callback_pct = params.get("trailing_callback_pct")
         .and_then(|v| v.as_f64())
         .unwrap_or(5.0);
+    let ma48_tp_bars = params.get("ma48_tp_bars")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(3) as usize;
 
     // 1. 硬止损（优先级最高）
     if hard_stop_pct > 0.0 {
@@ -930,7 +933,7 @@ fn check_exit_conditions(
     // 3. 移动止盈
     if take_profit_mode == "trailing" {
         // 需要持仓状态来跟踪 max_profit_pct
-        if let Some(state) = position_state {
+        if let Some(ref mut state) = position_state {
             if check_trailing_tp(
                 side,
                 entry_price,
@@ -948,7 +951,7 @@ fn check_exit_conditions(
         }
     }
 
-    // 4. 趋势反转
+    // 6. 趋势反转
     if check_trend_reversal(side, klines_30m, fast_ma_period, slow_ma_period) {
         debug!(
             "[退出] 趋势反转触发: {} entry={:.4} current={:.4}",

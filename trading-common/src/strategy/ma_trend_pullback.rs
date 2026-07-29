@@ -212,10 +212,6 @@ impl Default for StopMode {
 pub enum TakeProfitMode {
     /// Trailing stop (activate + callback)
     Trailing,
-    /// MA48 crossover confirmation
-    Ma48,
-    /// Bollinger Band position
-    Bb,
     /// No take profit (only stop loss)
     None,
 }
@@ -252,12 +248,6 @@ pub struct MATrendPullbackParams {
     /// Trailing stop callback percentage from peak profit (default: 5.0)
     #[serde(default = "default_trailing_callback")]
     pub trailing_callback_pct: f64,
-    /// MA48 take profit: number of bars to confirm crossover (default: 3)
-    #[serde(default = "default_ma48_tp_bars")]
-    pub ma48_tp_bars: usize,
-    /// Bollinger Band take profit: position percentage (default: 90)
-    #[serde(default = "default_bb_tp_pct")]
-    pub bb_tp_pct: f64,
     /// Minimum slope threshold for trend filter (default: 0, disabled)
     #[serde(default)]
     pub slope_threshold: f64,
@@ -286,8 +276,6 @@ fn default_entry_timeframe() -> String { "30m".to_string() }
 fn default_fixed_stop_pct() -> f64 { 2.0 }
 fn default_trailing_activate() -> f64 { 5.0 }
 fn default_trailing_callback() -> f64 { 5.0 }
-fn default_ma48_tp_bars() -> usize { 3 }
-fn default_bb_tp_pct() -> f64 { 90.0 }
 
 impl Default for MATrendPullbackParams {
     fn default() -> Self {
@@ -300,8 +288,6 @@ impl Default for MATrendPullbackParams {
             take_profit_mode: TakeProfitMode::Trailing,
             trailing_activate_pct: 5.0,
             trailing_callback_pct: 5.0,
-            ma48_tp_bars: 3,
-            bb_tp_pct: 90.0,
             slope_threshold: 0.0,
             bbw_threshold: 0.0,
             vol_threshold: 0.0,
@@ -777,8 +763,6 @@ impl MATrendPullbackStrategy {
             "take_profit_mode": format!("{:?}", self.params.take_profit_mode),
             "trailing_activate_pct": self.params.trailing_activate_pct,
             "trailing_callback_pct": self.params.trailing_callback_pct,
-            "ma48_tp_bars": self.params.ma48_tp_bars,
-            "bb_tp_pct": self.params.bb_tp_pct,
             "use_30m_expanding": self.params.use_30m_expanding,
             "use_5m_expanding": self.params.use_5m_expanding,
             "min_angle_5m": self.params.min_angle_5m,
