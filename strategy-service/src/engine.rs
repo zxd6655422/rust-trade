@@ -122,9 +122,8 @@ fn build_multi_timeframe_data(
         return None;
     }
 
-    // 按时间框架级别排序
-    all_data.sort_by_key(|d| d.timeframe.level());
-
+    // 保持 required_timeframes() 的顺序，第一个是主时间框架
+    // 不按 level 排序，避免5m(level=2)抢了30m(level=4)的primary位置
     let primary = all_data.first().cloned()?;
     let secondary = if all_data.len() > 1 {
         Some(all_data[1].clone())
