@@ -63,6 +63,7 @@ pub struct MATrendPullbackBacktestStrategy {
     position: Position,
     entry_price: f64,  // Track entry price for hard stop
     hard_stop_price: f64,  // Hard stop price level
+    max_profit_pct: f64,  // Track max profit for trailing stop
     ma48_cross_count: usize,
     last_signal: Option<Signal>,
 }
@@ -104,6 +105,7 @@ impl MATrendPullbackBacktestStrategy {
             entry_price: 0.0,
             hard_stop_price: 0.0,
             max_profit_pct: 0.0,
+            ma48_cross_count: 0,
             last_signal: None,
         }
     }
