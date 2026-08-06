@@ -643,18 +643,21 @@ impl MATrendPullbackStrategy {
         let prev_entry_klines = &entry_klines[..entry_klines.len() - 1];
         let prev_entry_fast_ma = calculate_sma(prev_entry_klines, self.params.fast_ma_period);
 
-        // Current entry bar OHLC
+        // Current entry bar OHLC + previous close
+        // 使用前一根K线的close（而非当前open）判断穿越前状态，与JS回测保持一致
+        let prev_close = entry_klines[entry_klines.len() - 2].close;
         let open = entry_klines.last()?.open;
         let close = entry_klines.last()?.close;
 
         tracing::debug!(
-            "[{}] 入场条件检查: {}入场, open={:.4}, close={:.4}, MA{}={:.4}, 前一根MA{}={:.4}",
+            "[{}] 入场条件检查: {}入场, prev_close={:.4}, open={:.4}, close={:.4}, MA{}={:.4}, 前一根MA{}={:.4}",
             data.symbol, self.params.entry_timeframe,
-            open, close, self.params.fast_ma_period, entry_fast_ma,
+            prev_close, open, close, self.params.fast_ma_period, entry_fast_ma,
             self.params.fast_ma_period, prev_entry_fast_ma.unwrap_or(0.0)
         );
 
         // Detect entry signal: price crosses MA288 in trend direction
+        // 使用 prev_close（前一根收盘价）判断穿越前状态，与回测逻辑一致
         let mut signal_type = None;
         let mut reason = String::new();
 
@@ -662,11 +665,11 @@ impl MATrendPullbackStrategy {
             TrendDirection::Bullish => {
                 // Bullish trend: price crosses above fast MA
                 if let Some(prev_fast) = prev_entry_fast_ma {
-                    let crossed = open < prev_fast && close > entry_fast_ma;
+                    let crossed = prev_close < prev_fast && close > entry_fast_ma;
                     tracing::debug!(
-                        "[{}] 做多条件: open({:.4}) < 前MA{}({:.4})? {} AND close({:.4}) > MA{}({:.4})? {} → {}",
-                        data.symbol, open, self.params.fast_ma_period, prev_fast,
-                        open < prev_fast, close, self.params.fast_ma_period, entry_fast_ma,
+                        "[{}] 做多条件: prev_close({:.4}) < 前MA{}({:.4})? {} AND close({:.4}) > MA{}({:.4})? {} → {}",
+                        data.symbol, prev_close, self.params.fast_ma_period, prev_fast,
+                        prev_close < prev_fast, close, self.params.fast_ma_period, entry_fast_ma,
                         close > entry_fast_ma,
                         if crossed { "✅ 触发做多信号" } else { "❌ 未触发" }
                     );
@@ -687,11 +690,11 @@ impl MATrendPullbackStrategy {
             TrendDirection::Bearish => {
                 // Bearish trend: price crosses below fast MA
                 if let Some(prev_fast) = prev_entry_fast_ma {
-                    let crossed = open > prev_fast && close < entry_fast_ma;
+                    let crossed = prev_close > prev_fast && close < entry_fast_ma;
                     tracing::debug!(
-                        "[{}] 做空条件: open({:.4}) > 前MA{}({:.4})? {} AND close({:.4}) < MA{}({:.4})? {} → {}",
-                        data.symbol, open, self.params.fast_ma_period, prev_fast,
-                        open > prev_fast, close, self.params.fast_ma_period, entry_fast_ma,
+                        "[{}] 做空条件: prev_close({:.4}) > 前MA{}({:.4})? {} AND close({:.4}) < MA{}({:.4})? {} → {}",
+                        data.symbol, prev_close, self.params.fast_ma_period, prev_fast,
+                        prev_close > prev_fast, close, self.params.fast_ma_period, entry_fast_ma,
                         close < entry_fast_ma,
                         if crossed { "✅ 触发做空信号" } else { "❌ 未触发" }
                     );
@@ -720,8 +723,9 @@ impl MATrendPullbackStrategy {
             }
         };
 
-        // Calculate stop loss
-        // Priority: hard stop > MA288 stop
+        // Calculate stop loss (仅用于 Engine 层静态止损，作为盘中安全网)
+        // 注意: MA288 穿越止损由 strategy-service 的 check_exit_conditions() 独立处理，
+        // 两层同时生效，互不覆盖。
         let stop_loss = if self.params.hard_stop_pct > 0.0 {
             // Hard stop: based on entry price
             match signal_type {
