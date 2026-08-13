@@ -142,6 +142,11 @@ impl KlineStore {
         self.bars.iter().filter(|b| b.closed).count()
     }
 
+    /// 总 K 线数量（含进行中的 forming bar）
+    pub fn total_count(&self) -> usize {
+        self.bars.len()
+    }
+
     /// 当前价格（最后一根K线的收盘价）
     pub fn current_price(&self) -> f64 {
         self.bars.back().map(|b| b.close).unwrap_or(0.0)

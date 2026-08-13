@@ -244,18 +244,20 @@ pub async fn hybrid_load(
         .ok_or_else(|| anyhow!("Store not found for {} {} ({})", symbol, tf.as_str(), market_type))?;
 
     let exchange_bars = load_full_from_exchange(symbol, tf, max_bars, market_type).await?;
+    let fetched = exchange_bars.len();
     store.extend_closed(exchange_bars);
 
-    let loaded = store.closed_count();
-    if loaded < max_bars {
-        warn!(
-            "[KlineLoader] {} {} ({}) 加载不完整: {} / {} bars",
-            symbol, tf.as_str(), market_type, loaded, max_bars
+    let total = store.total_count();
+    let closed = store.closed_count();
+    if fetched >= max_bars {
+        info!(
+            "[KlineLoader] {} {} ({}) 加载完整: {} bars (已收盘 {}, 进行中 {})",
+            symbol, tf.as_str(), market_type, total, closed, total.saturating_sub(closed)
         );
     } else {
-        info!(
-            "[KlineLoader] {} {} ({}) 加载完整: {} bars",
-            symbol, tf.as_str(), market_type, loaded
+        warn!(
+            "[KlineLoader] {} {} ({}) 加载不完整: 拉取 {} / {} bars (已收盘 {})",
+            symbol, tf.as_str(), market_type, fetched, max_bars, closed
         );
     }
 

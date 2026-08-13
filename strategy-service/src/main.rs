@@ -112,12 +112,12 @@ async fn main() -> Result<()> {
     for (symbol, tf, market_type) in &pairs {
         match manager.get(symbol, *tf, market_type) {
             Some(store) => {
-                let count = store.closed_count();
-                if count >= max_bars {
+                let total = store.total_count();
+                if total >= max_bars {
                     loaded_complete += 1;
-                    info!("[K线] {} {} ({}) 加载完整: {} bars", symbol, tf.as_str(), market_type, count);
+                    info!("[K线] {} {} ({}) 加载完整: {} bars (已收盘 {})", symbol, tf.as_str(), market_type, total, store.closed_count());
                 } else {
-                    warn!("[K线] {} {} ({}) 加载不完整: {} / {} bars", symbol, tf.as_str(), market_type, count, max_bars);
+                    warn!("[K线] {} {} ({}) 加载不完整: {} / {} bars (已收盘 {})", symbol, tf.as_str(), market_type, total, max_bars, store.closed_count());
                 }
             }
             None => {
