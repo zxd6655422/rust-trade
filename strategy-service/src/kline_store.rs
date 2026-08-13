@@ -51,20 +51,22 @@ impl KlineBar {
     }
 }
 
-/// 单个 (symbol, timeframe) 的K线滚动窗口
+/// 单个 (symbol, timeframe, market_type) 的K线滚动窗口
 pub struct KlineStore {
     pub symbol: String,
     pub timeframe: Timeframe,
+    pub market_type: String,
     bars: VecDeque<KlineBar>,
     max_size: usize,
     last_update: DateTime<Utc>,
 }
 
 impl KlineStore {
-    pub fn new(symbol: String, timeframe: Timeframe, max_size: usize) -> Self {
+    pub fn new(symbol: String, timeframe: Timeframe, market_type: String, max_size: usize) -> Self {
         KlineStore {
             symbol,
             timeframe,
+            market_type,
             bars: VecDeque::with_capacity(max_size),
             max_size,
             last_update: Utc::now(),
@@ -163,7 +165,7 @@ impl KlineStore {
 
 /// 全局K线管理器
 pub struct KlineManager {
-    stores: HashMap<(String, Timeframe), KlineStore>,
+    stores: HashMap<(String, Timeframe, String), KlineStore>,
     max_bars: usize,
 }
 
@@ -175,38 +177,38 @@ impl KlineManager {
         }
     }
 
-    /// 获取指定 symbol+timeframe 的 store
-    pub fn get(&self, symbol: &str, tf: Timeframe) -> Option<&KlineStore> {
-        self.stores.get(&(symbol.to_string(), tf))
+    /// 获取指定 symbol+timeframe+market_type 的 store
+    pub fn get(&self, symbol: &str, tf: Timeframe, market_type: &str) -> Option<&KlineStore> {
+        self.stores.get(&(symbol.to_string(), tf, market_type.to_string()))
     }
 
-    /// 获取指定 symbol+timeframe 的 store（可变引用）
-    pub fn get_mut(&mut self, symbol: &str, tf: Timeframe) -> Option<&mut KlineStore> {
-        self.stores.get_mut(&(symbol.to_string(), tf))
+    /// 获取指定 symbol+timeframe+market_type 的 store（可变引用）
+    pub fn get_mut(&mut self, symbol: &str, tf: Timeframe, market_type: &str) -> Option<&mut KlineStore> {
+        self.stores.get_mut(&(symbol.to_string(), tf, market_type.to_string()))
     }
 
     /// 启动时创建所有需要的 store
-    pub fn init_stores(&mut self, pairs: &[(String, Timeframe)]) {
-        for (symbol, tf) in pairs {
-            let key = (symbol.clone(), *tf);
+    pub fn init_stores(&mut self, pairs: &[(String, Timeframe, String)]) {
+        for (symbol, tf, market_type) in pairs {
+            let key = (symbol.clone(), *tf, market_type.clone());
             if !self.stores.contains_key(&key) {
-                info!("[KlineManager] Creating store for {} {}", symbol, tf.as_str());
+                info!("[KlineManager] Creating store for {} {} ({})", symbol, tf.as_str(), market_type);
                 self.stores.insert(
                     key,
-                    KlineStore::new(symbol.clone(), *tf, self.max_bars),
+                    KlineStore::new(symbol.clone(), *tf, market_type.clone(), self.max_bars),
                 );
             }
         }
     }
 
     /// 获取所有 store 的键
-    pub fn keys(&self) -> Vec<(String, Timeframe)> {
+    pub fn keys(&self) -> Vec<(String, Timeframe, String)> {
         self.stores.keys().cloned().collect()
     }
 
     /// 移除指定的 store
-    pub fn remove(&mut self, symbol: &str, tf: Timeframe) -> bool {
-        self.stores.remove(&(symbol.to_string(), tf)).is_some()
+    pub fn remove(&mut self, symbol: &str, tf: Timeframe, market_type: &str) -> bool {
+        self.stores.remove(&(symbol.to_string(), tf, market_type.to_string())).is_some()
     }
 
     /// 获取全局 max_bars 配置

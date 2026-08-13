@@ -69,42 +69,26 @@ async fn main() -> Result<()> {
     let active_strategies = db::strategies::list_active_strategies(&db_pool).await?;
     info!("Found {} active strategies", active_strategies.len());
 
-    // 2. 收集所有 (symbol, timeframe) 对并计算 max_bars
+    // 2. 收集所有 (symbol, timeframe, market_type) 对并计算 max_bars
     let (pairs, max_bars) = collect_data_requirements(&active_strategies);
     let max_bars = max_bars.max(config.kline.default_max_bars);
 
-    let (pairs, ws_pairs) = if pairs.is_empty() {
-        warn!("No data requirements found from active strategies, using defaults");
-        let default_pairs = vec![
-            ("BTCUSDT".to_string(), redis_reader::Timeframe::ThirtyMinutes),
-            ("BTCUSDT".to_string(), redis_reader::Timeframe::FiveMinutes),
-            ("ETHUSDT".to_string(), redis_reader::Timeframe::ThirtyMinutes),
-            ("ETHUSDT".to_string(), redis_reader::Timeframe::FiveMinutes),
-            ("SOLUSDT".to_string(), redis_reader::Timeframe::ThirtyMinutes),
-            ("SOLUSDT".to_string(), redis_reader::Timeframe::FiveMinutes),
-        ];
-        (default_pairs.clone(), default_pairs)
-    } else {
-        info!(
-            "Data requirements: {} pairs, max_bars={}",
-            pairs.len(),
-            max_bars
-        );
-        for (symbol, tf) in &pairs {
-            info!("  - {} {}", symbol, tf.as_str());
-        }
-        (pairs.clone(), pairs)
-    };
+    info!(
+        "Data requirements: {} pairs, max_bars={}",
+        pairs.len(),
+        max_bars
+    );
+    for (symbol, tf, market_type) in &pairs {
+        info!("  - {} {} ({})", symbol, tf.as_str(), market_type);
+    }
 
     // 创建 KlineManager 并初始化 stores
     let mut manager = KlineManager::new(max_bars);
     manager.init_stores(&pairs);
 
-    // 混合加载数据
-    let market_type = &config.binance.market_type;
-    for (symbol, tf) in &pairs {
+    // 从交易所加载数据（按策略配置的市场）
+    for (symbol, tf, market_type) in &pairs {
         if let Err(e) = hybrid_load(
-            &db_pool,
             &mut manager,
             symbol,
             *tf,
@@ -114,32 +98,39 @@ async fn main() -> Result<()> {
         .await
         {
             error!(
-                "Failed to load data for {} {}: {}",
+                "Failed to load data for {} {} ({}): {}",
                 symbol,
                 tf.as_str(),
+                market_type,
                 e
             );
         }
     }
 
-    // 打印加载结果
-    for (symbol, tf) in &pairs {
-        if let Some(store) = manager.get(symbol, *tf) {
-            info!(
-                "[{}] {} {} loaded: {} bars, latest={}",
-                symbol,
-                tf.as_str(),
-                store.closed_count(),
-                store.latest_closed_time().map(|t| t.to_string()).unwrap_or_else(|| "none".to_string()),
-                store.current_price(),
-            );
+    // 打印加载结果（用于启动时检查 K 线是否加载完整）
+    let mut loaded_complete = 0usize;
+    for (symbol, tf, market_type) in &pairs {
+        match manager.get(symbol, *tf, market_type) {
+            Some(store) => {
+                let count = store.closed_count();
+                if count >= max_bars {
+                    loaded_complete += 1;
+                    info!("[K线] {} {} ({}) 加载完整: {} bars", symbol, tf.as_str(), market_type, count);
+                } else {
+                    warn!("[K线] {} {} ({}) 加载不完整: {} / {} bars", symbol, tf.as_str(), market_type, count, max_bars);
+                }
+            }
+            None => {
+                warn!("[K线] {} {} ({}) store 未创建", symbol, tf.as_str(), market_type);
+            }
         }
     }
+    info!("[K线] 加载完成: {}/{} 个 store 数据完整 (target={} bars)", loaded_complete, pairs.len(), max_bars);
 
     let manager = Arc::new(RwLock::new(manager));
 
     // 启动引擎、WS 数据源和 HTTP 服务
-    start_services(config, db_pool, redis_conn, manager, ws_pairs).await?;
+    start_services(config, db_pool, redis_conn, manager, pairs).await?;
 
     Ok(())
 }
@@ -149,7 +140,7 @@ async fn start_services(
     db_pool: sqlx::PgPool,
     _redis_conn: redis::aio::ConnectionManager,
     kline_manager: Arc<RwLock<KlineManager>>,
-    ws_subscriptions: Vec<(String, redis_reader::Timeframe)>,
+    ws_subscriptions: Vec<(String, redis_reader::Timeframe, String)>,
 ) -> Result<()> {
     // 初始化 WebSocket 状态（信号广播）
     let ws_state = Arc::new(websocket::WsState::new());
@@ -171,7 +162,6 @@ async fn start_services(
         let _ws_feed_receiver = ws_feed::start_ws_feed(
             ws_subscriptions,
             kline_manager.clone(),
-            config.binance.market_type.clone(),
         )
         .await;
         info!("Binance WebSocket feed started");
@@ -182,7 +172,6 @@ async fn start_services(
     // ============================================================
     let _health_handle = kline_loader::start_health_check(
         kline_manager.clone(),
-        config.binance.market_type.clone(),
         60, // 1 分钟
     );
     info!("Health check started (interval: 60s)");
@@ -193,7 +182,6 @@ async fn start_services(
     let _dynamic_handle = kline_loader::start_dynamic_manager(
         db_pool.clone(),
         kline_manager.clone(),
-        config.binance.market_type.clone(),
         60, // 1 分钟
     );
     info!("Dynamic store manager started (interval: 60s)");

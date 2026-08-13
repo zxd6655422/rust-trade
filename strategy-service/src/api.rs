@@ -435,8 +435,8 @@ async fn kline_status(
     let now_ms = chrono::Utc::now().timestamp_millis();
 
     let mut stores = Vec::new();
-    for (symbol, tf) in manager.keys() {
-        if let Some(store) = manager.get(&symbol, tf) {
+    for (symbol, tf, market_type) in manager.keys() {
+        if let Some(store) = manager.get(&symbol, tf, &market_type) {
             let latest = store.latest_closed_time();
             let duration_ms = store.timeframe_duration_ms();
 
@@ -458,6 +458,7 @@ async fn kline_status(
             stores.push(serde_json::json!({
                 "symbol": symbol,
                 "timeframe": tf.as_str(),
+                "market_type": market_type,
                 "closed_count": store.closed_count(),
                 "current_price": store.current_price(),
                 "latest_time": latest,

@@ -29,83 +29,17 @@ const KLINE_LOW: usize = 3;
 const KLINE_CLOSE: usize = 4;
 const KLINE_VOLUME: usize = 5;
 
-/// 从 DB 加载K线数据
-///
-/// 自动根据 timeframe 选择正确的表名和列名：
-/// - kline_1m: 列名 "timestamp"
-/// - kline_5m ~ kline_1w: 列名 "open_time"
-pub async fn load_from_db(
-    pool: &PgPool,
-    symbol: &str,
-    tf: Timeframe,
-    limit: usize,
-) -> Result<Vec<KlineBar>> {
-    let (table, time_col) = match tf {
-        Timeframe::OneMinute => ("kline_1m", "timestamp"),
-        _ => {
-            let table = format!("kline_{}", tf.as_str());
-            // 需要泄漏一个 String 来得到 &'static str
-            // 这里用 Box::leak 简化，实际数量有限不会造成内存问题
-            let table_str: &'static str = Box::leak(table.into_boxed_str());
-            (table_str, "open_time")
-        }
-    };
-
-    let query = format!(
-        "SELECT {time_col} as t, open, high, low, close, volume
-         FROM {table}
-         WHERE symbol = $1
-         ORDER BY {time_col} DESC
-         LIMIT $2"
-    );
-
-    // 使用 sqlx::query_scalar 不能直接映射到 KlineBar，手动处理
-    let rows: Vec<(chrono::DateTime<Utc>, rust_decimal::Decimal, rust_decimal::Decimal, rust_decimal::Decimal, rust_decimal::Decimal, rust_decimal::Decimal)> =
-        sqlx::query_as(&query)
-            .bind(symbol)
-            .bind(limit as i64)
-            .fetch_all(pool)
-            .await?;
-
-    let mut bars: Vec<KlineBar> = rows
-        .into_iter()
-        .map(|(ts, open, high, low, close, volume)| {
-            KlineBar {
-                open_time: ts.timestamp_millis(),
-                open: open.to_string().parse::<f64>().unwrap_or(0.0),
-                high: high.to_string().parse::<f64>().unwrap_or(0.0),
-                low: low.to_string().parse::<f64>().unwrap_or(0.0),
-                close: close.to_string().parse::<f64>().unwrap_or(0.0),
-                volume: volume.to_string().parse::<f64>().unwrap_or(0.0),
-                closed: true,
-            }
-        })
-        .collect();
-
-    // DB 查询是 DESC 排序，反转为时间正序
-    bars.reverse();
-
-    info!(
-        "[KlineLoader] Loaded {} bars for {} {} from DB",
-        bars.len(),
-        symbol,
-        tf.as_str()
-    );
-
-    Ok(bars)
-}
-
 /// 从 Binance REST API 获取K线数据
 ///
 /// # 参数
 /// - `symbol`: 交易对（如 "BTCUSDT"）
-/// - `interval`: 时间框架字符串（如 "30m"）
+/// - `tf`: 时间框架（如 30m / 5m），用于拼 URL 和判断 K 线是否已收盘
 /// - `limit`: 获取数量（最大 1000）
 /// - `end_time`: 结束时间戳（毫秒），None 表示最新
 /// - `market_type`: "spot" 或 "futures"
 pub async fn fetch_klines_from_exchange(
     symbol: &str,
-    interval: &str,
+    tf: Timeframe,
     limit: usize,
     end_time: Option<i64>,
     market_type: &str,
@@ -122,7 +56,7 @@ pub async fn fetch_klines_from_exchange(
 
     let mut url = format!(
         "{}{}?symbol={}&interval={}&limit={}",
-        base_url, path, symbol, interval, limit.min(1000)
+        base_url, path, symbol, tf.as_str(), limit.min(1000)
     );
 
     if let Some(end) = end_time {
@@ -139,6 +73,11 @@ pub async fn fetch_klines_from_exchange(
     }
 
     let raw: Vec<Vec<serde_json::Value>> = resp.json().await?;
+
+    // 按时间戳判断 K 线是否已收盘：open_time + 周期 <= 当前时间 → 已收盘；
+    // 否则为当前时间框架下正在形成的 K 线（closed=false），由下游走 update_current。
+    let now_ms = Utc::now().timestamp_millis();
+    let duration_ms = tf.as_duration().num_milliseconds();
 
     let bars: Vec<KlineBar> = raw
         .iter()
@@ -157,7 +96,7 @@ pub async fn fetch_klines_from_exchange(
                 low,
                 close,
                 volume,
-                closed: true,
+                closed: open_time + duration_ms <= now_ms,
             })
         })
         .collect();
@@ -183,7 +122,7 @@ pub async fn fill_gap_from_exchange(
 
     let bars = fetch_klines_from_exchange(
         symbol,
-        tf.as_str(),
+        tf,
         needed.min(1000),
         None, // 不指定 endTime，获取最新的
         market_type,
@@ -229,7 +168,7 @@ pub async fn load_full_from_exchange(
         let limit = (required - all.len()).min(1000);
         let batch = fetch_klines_from_exchange(
             symbol,
-            tf.as_str(),
+            tf,
             limit,
             end_time,
             market_type,
@@ -289,86 +228,36 @@ pub struct GapInfo {
     pub missing_bars: usize,
 }
 
-/// 混合加载流程
+/// 从交易所全量加载 K 线（历史 + 最新）
 ///
-/// 1. 从 DB 加载历史数据
-/// 2. 检查 DB 最新时间 vs 交易所最新时间
-/// 3. 如果有缺口：从交易所补拉
-/// 4. 如果 DB 无数据：从交易所全量加载
+/// 策略服务的实时 K 线统一从交易所拉取（按策略配置的 market_type），
+/// 不再依赖 DB（DB 现货数据仅用于回测）。
 pub async fn hybrid_load(
-    pool: &PgPool,
     manager: &mut KlineManager,
     symbol: &str,
     tf: Timeframe,
     max_bars: usize,
     market_type: &str,
 ) -> Result<()> {
-    // Step 1: 从 DB 加载
-    let db_bars = load_from_db(pool, symbol, tf, max_bars).await?;
-
     let store = manager
-        .get_mut(symbol, tf)
-        .ok_or_else(|| anyhow!("Store not found for {} {}", symbol, tf.as_str()))?;
+        .get_mut(symbol, tf, market_type)
+        .ok_or_else(|| anyhow!("Store not found for {} {} ({})", symbol, tf.as_str(), market_type))?;
 
-    if db_bars.is_empty() {
-        // DB 无数据，从交易所全量加载
-        info!(
-            "[KlineLoader] No DB data for {} {}, loading from exchange",
-            symbol,
-            tf.as_str()
+    let exchange_bars = load_full_from_exchange(symbol, tf, max_bars, market_type).await?;
+    store.extend_closed(exchange_bars);
+
+    let loaded = store.closed_count();
+    if loaded < max_bars {
+        warn!(
+            "[KlineLoader] {} {} ({}) 加载不完整: {} / {} bars",
+            symbol, tf.as_str(), market_type, loaded, max_bars
         );
-        let exchange_bars = load_full_from_exchange(symbol, tf, max_bars, market_type).await?;
-        store.extend_closed(exchange_bars);
-        return Ok(());
-    }
-
-    // Step 2: 检查是否需要从交易所补拉
-    let db_latest = db_bars.last().map(|b| b.open_time).unwrap_or(0);
-
-    // 拉取交易所最新 1 根K线来获取最新时间
-    let latest_bars = fetch_klines_from_exchange(symbol, tf.as_str(), 1, None, market_type).await?;
-
-    if let Some(latest_bar) = latest_bars.first() {
-        let exchange_latest = latest_bar.open_time;
-        let duration_ms = tf.as_duration().num_milliseconds();
-
-        if exchange_latest > db_latest + duration_ms {
-            // 有缺口，从交易所补拉
-            let gap_bars = ((exchange_latest - db_latest) / duration_ms) as usize;
-            info!(
-                "[KlineLoader] Gap detected for {} {} ({} bars), filling from exchange",
-                symbol,
-                tf.as_str(),
-                gap_bars
-            );
-
-            let fill_bars = fill_gap_from_exchange(
-                symbol,
-                tf,
-                db_latest,
-                gap_bars + 10, // 多拉几根保险
-                market_type,
-            )
-            .await?;
-
-            // 先加载 DB 数据，再追加缺口数据
-            store.extend_closed(db_bars);
-            store.extend_closed(fill_bars);
-        } else {
-            // 无缺口，直接使用 DB 数据
-            store.extend_closed(db_bars);
-        }
     } else {
-        // 交易所也无数据，使用 DB 数据
-        store.extend_closed(db_bars);
+        info!(
+            "[KlineLoader] {} {} ({}) 加载完整: {} bars",
+            symbol, tf.as_str(), market_type, loaded
+        );
     }
-
-    info!(
-        "[KlineLoader] Hybrid load complete: {} {} has {} closed bars",
-        symbol,
-        tf.as_str(),
-        store.closed_count()
-    );
 
     Ok(())
 }
@@ -382,6 +271,7 @@ pub async fn hybrid_load(
 pub struct StoreHealth {
     pub symbol: String,
     pub timeframe: Timeframe,
+    pub market_type: String,
     pub closed_count: usize,
     pub latest_closed_time: Option<i64>,
     pub age_periods: f64,      // 距最新数据有多少个周期
@@ -404,8 +294,8 @@ pub fn check_health(manager: &KlineManager) -> HealthReport {
     let mut stale_count = 0;
     let mut empty_count = 0;
 
-    for (symbol, tf) in manager.keys() {
-        if let Some(store) = manager.get(&symbol, tf) {
+    for (symbol, tf, market_type) in manager.keys() {
+        if let Some(store) = manager.get(&symbol, tf, &market_type) {
             let now_ms = Utc::now().timestamp_millis();
             let latest = store.latest_closed_time();
             let duration_ms = store.timeframe_duration_ms();
@@ -425,8 +315,9 @@ pub fn check_health(manager: &KlineManager) -> HealthReport {
             if is_empty { empty_count += 1; }
 
             stores.push(StoreHealth {
-                symbol: symbol.clone(),
+                symbol,
                 timeframe: tf,
+                market_type,
                 closed_count: store.closed_count(),
                 latest_closed_time: latest,
                 age_periods,
@@ -450,7 +341,6 @@ pub fn check_health(manager: &KlineManager) -> HealthReport {
 /// 对过旧的 Store 从交易所补拉数据
 pub async fn health_check_and_refill(
     manager: &Arc<tokio::sync::RwLock<KlineManager>>,
-    market_type: &str,
 ) -> HealthReport {
     // 先读取健康状态
     let report = {
@@ -475,14 +365,14 @@ pub async fn health_check_and_refill(
                     health.timeframe,
                     latest_time,
                     needed,
-                    market_type,
+                    &health.market_type,
                 )
                 .await
                 {
                     Ok(bars) => {
                         if !bars.is_empty() {
                             let mut mgr = manager.write().await;
-                            if let Some(store) = mgr.get_mut(&health.symbol, health.timeframe) {
+                            if let Some(store) = mgr.get_mut(&health.symbol, health.timeframe, &health.market_type) {
                                 let count = bars.len();
                                 let first_ts = bars.first().map(|b| b.open_time).unwrap_or(0);
                                 let last_ts = bars.last().map(|b| b.open_time).unwrap_or(0);
@@ -528,14 +418,13 @@ pub async fn health_check_and_refill(
 /// 启动定期健康检查任务
 pub fn start_health_check(
     manager: Arc<tokio::sync::RwLock<KlineManager>>,
-    market_type: String,
     interval_secs: u64,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
         loop {
             interval.tick().await;
-            let report = health_check_and_refill(&manager, &market_type).await;
+            let report = health_check_and_refill(&manager).await;
 
             if report.stale_count > 0 || report.empty_count > 0 {
                 tracing::warn!(
@@ -559,8 +448,8 @@ pub fn start_health_check(
 /// 返回去重后的 (symbol, timeframe) 列表和所需的最大K线数
 pub fn collect_data_requirements(
     strategies: &[crate::db::strategies::StrategyInstance],
-) -> (Vec<(String, Timeframe)>, usize) {
-    let mut pairs: Vec<(String, Timeframe)> = Vec::new();
+) -> (Vec<(String, Timeframe, String)>, usize) {
+    let mut pairs: Vec<(String, Timeframe, String)> = Vec::new();
     let mut max_bars: usize = 500; // 最小需求
 
     for strategy in strategies {
@@ -581,7 +470,8 @@ pub fn collect_data_requirements(
 
         for symbol in &strategy.symbols {
             for tf in &timeframes {
-                let pair = (symbol.clone(), *tf);
+                // 每个 (symbol, timeframe, market_type) 独立建 store，spot/futures 隔离
+                let pair = (symbol.clone(), *tf, strategy.market_type.clone());
                 if !pairs.contains(&pair) {
                     pairs.push(pair);
                 }
@@ -608,18 +498,17 @@ pub fn collect_data_requirements(
 pub async fn ensure_stores_for_strategies(
     pool: &PgPool,
     manager: &Arc<RwLock<KlineManager>>,
-    market_type: &str,
-) -> Result<Vec<(String, Timeframe)>> {
+) -> Result<Vec<(String, Timeframe, String)>> {
     // 查询当前活跃策略
     let strategies = crate::db::strategies::list_active_strategies(pool).await?;
     let (required_pairs, _) = collect_data_requirements(&strategies);
 
     // 检查哪些 Store 缺失
-    let missing: Vec<(String, Timeframe)> = {
+    let missing: Vec<(String, Timeframe, String)> = {
         let mgr = manager.read().await;
         required_pairs
             .iter()
-            .filter(|(symbol, tf)| mgr.get(symbol, *tf).is_none())
+            .filter(|(symbol, tf, market_type)| mgr.get(symbol, *tf, market_type).is_none())
             .cloned()
             .collect()
     };
@@ -639,23 +528,24 @@ pub async fn ensure_stores_for_strategies(
         mgr.max_bars()
     };
 
-    for (symbol, tf) in &missing {
-        info!("[Dynamic] Creating store for {} {}", symbol, tf.as_str());
+    for (symbol, tf, market_type) in &missing {
+        info!("[Dynamic] Creating store for {} {} ({})", symbol, tf.as_str(), market_type);
 
         // 创建 Store
         {
             let mut mgr = manager.write().await;
-            mgr.init_stores(&[(symbol.clone(), *tf)]);
+            mgr.init_stores(&[(symbol.clone(), *tf, market_type.clone())]);
         }
 
-        // 从 DB + 交易所加载数据
+        // 从交易所加载数据（按策略配置的市场）
         {
             let mut mgr = manager.write().await;
-            if let Err(e) = hybrid_load(pool, &mut mgr, symbol, *tf, max_bars, market_type).await {
+            if let Err(e) = hybrid_load(&mut mgr, symbol, *tf, max_bars, market_type).await {
                 error!(
-                    "[Dynamic] Failed to load data for {} {}: {}",
+                    "[Dynamic] Failed to load data for {} {} ({}): {}",
                     symbol,
                     tf.as_str(),
+                    market_type,
                     e
                 );
             }
@@ -672,13 +562,13 @@ pub async fn ensure_stores_for_strategies(
 pub async fn cleanup_unused_stores(
     pool: &PgPool,
     manager: &Arc<RwLock<KlineManager>>,
-) -> Result<Vec<(String, Timeframe)>> {
+) -> Result<Vec<(String, Timeframe, String)>> {
     // 查询当前活跃策略
     let strategies = crate::db::strategies::list_active_strategies(pool).await?;
     let (required_pairs, _) = collect_data_requirements(&strategies);
 
     // 找出不再需要的 Store
-    let unused: Vec<(String, Timeframe)> = {
+    let unused: Vec<(String, Timeframe, String)> = {
         let mgr = manager.read().await;
         mgr.keys()
             .into_iter()
@@ -698,9 +588,9 @@ pub async fn cleanup_unused_stores(
     // 移除不再使用的 Store
     {
         let mut mgr = manager.write().await;
-        for (symbol, tf) in &unused {
-            if mgr.remove(symbol, *tf) {
-                info!("[Dynamic] Removed unused store: {} {}", symbol, tf.as_str());
+        for (symbol, tf, market_type) in &unused {
+            if mgr.remove(symbol, *tf, market_type) {
+                info!("[Dynamic] Removed unused store: {} {} ({})", symbol, tf.as_str(), market_type);
             }
         }
     }
@@ -715,7 +605,6 @@ pub async fn cleanup_unused_stores(
 pub fn start_dynamic_manager(
     pool: PgPool,
     manager: Arc<RwLock<KlineManager>>,
-    market_type: String,
     check_interval_secs: u64,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -724,13 +613,13 @@ pub fn start_dynamic_manager(
             interval.tick().await;
 
             // 确保所有策略所需的 Store 存在
-            match ensure_stores_for_strategies(&pool, &manager, &market_type).await {
+            match ensure_stores_for_strategies(&pool, &manager).await {
                 Ok(new_stores) => {
                     if !new_stores.is_empty() {
                         info!(
                             "[Dynamic] Created {} new stores: {:?}",
                             new_stores.len(),
-                            new_stores.iter().map(|(s, t)| format!("{} {}", s, t.as_str())).collect::<Vec<_>>()
+                            new_stores.iter().map(|(s, t, m)| format!("{} {} ({})", s, t.as_str(), m)).collect::<Vec<_>>()
                         );
                         // TODO: 新增 WS 订阅
                     }
@@ -747,7 +636,7 @@ pub fn start_dynamic_manager(
                         info!(
                             "[Dynamic] Found {} unused stores: {:?}",
                             unused.len(),
-                            unused.iter().map(|(s, t)| format!("{} {}", s, t.as_str())).collect::<Vec<_>>()
+                            unused.iter().map(|(s, t, m)| format!("{} {} ({})", s, t.as_str(), m)).collect::<Vec<_>>()
                         );
                         // TODO: 取消 WS 订阅
                     }

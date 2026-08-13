@@ -84,8 +84,9 @@ fn build_market_data(
     symbol: &str,
     tf: Timeframe,
     limit: usize,
+    market_type: &str,
 ) -> Option<MarketData> {
-    let store = manager.get(symbol, tf)?;
+    let store = manager.get(symbol, tf, market_type)?;
     let bars = store.closed_bars(limit);
 
     if bars.is_empty() {
@@ -109,11 +110,12 @@ fn build_multi_timeframe_data(
     symbol: &str,
     timeframes: &[Timeframe],
     limit: usize,
+    market_type: &str,
 ) -> Option<MultiTimeframeData> {
     let mut all_data: Vec<MarketData> = Vec::new();
 
     for &tf in timeframes {
-        if let Some(data) = build_market_data(manager, symbol, tf, limit) {
+        if let Some(data) = build_market_data(manager, symbol, tf, limit, market_type) {
             all_data.push(data);
         }
     }
@@ -261,6 +263,7 @@ async fn process_strategy(
                 symbol,
                 &timeframes,
                 config.default_kline_limit,
+                &strategy_instance.market_type,
             );
 
             match multi_data {
@@ -297,6 +300,7 @@ async fn process_strategy(
                 symbol,
                 config.default_timeframe,
                 config.default_kline_limit,
+                &strategy_instance.market_type,
             );
 
             match market_data {
@@ -327,6 +331,7 @@ async fn process_strategy(
             symbol,
             config.default_timeframe,
             config.default_kline_limit,
+            &strategy_instance.market_type,
         );
 
         match market_data {
@@ -352,7 +357,7 @@ async fn process_strategy(
     };
 
     // 保存 30m klines 用于退出条件检查（释放锁前）
-    let klines_30m: Vec<KlineBar> = manager.get(symbol, Timeframe::ThirtyMinutes)
+    let klines_30m: Vec<KlineBar> = manager.get(symbol, Timeframe::ThirtyMinutes, &strategy_instance.market_type)
         .map(|store| store.closed_bars(500).into_iter().cloned().collect())
         .unwrap_or_default();
 

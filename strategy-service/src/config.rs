@@ -7,7 +7,6 @@ pub struct AppConfig {
     pub redis: RedisConfig,
     pub engine: EngineConfig,
     pub kline: KlineConfig,
-    pub binance: BinanceConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -50,21 +49,6 @@ impl Default for KlineConfig {
     }
 }
 
-/// Binance API 配置
-#[derive(Debug, Clone)]
-pub struct BinanceConfig {
-    /// 市场类型: "futures" 或 "spot"
-    pub market_type: String,
-}
-
-impl Default for BinanceConfig {
-    fn default() -> Self {
-        Self {
-            market_type: "futures".to_string(),
-        }
-    }
-}
-
 fn get_env(key: &str) -> Result<String> {
     std::env::var(key).map_err(|_| anyhow::anyhow!("configuration property \"{}\" not found", key))
 }
@@ -93,9 +77,6 @@ impl AppConfig {
             kline: KlineConfig {
                 default_max_bars: get_env_or("KLINE_DEFAULT_MAX_BARS", "1000").parse()?,
                 enable_gap_fill: get_env_or("KLINE_ENABLE_GAP_FILL", "true").parse()?,
-            },
-            binance: BinanceConfig {
-                market_type: get_env_or("BINANCE_MARKET_TYPE", "futures"),
             },
         };
 

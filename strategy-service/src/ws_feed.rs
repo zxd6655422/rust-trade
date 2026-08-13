@@ -27,15 +27,13 @@ pub struct KlineEvent {
 
 /// 数据源配置
 pub struct WsFeed {
-    subscriptions: Vec<(String, Timeframe)>,
+    subscriptions: Vec<(String, Timeframe, String)>,
     event_sender: broadcast::Sender<KlineEvent>,
-    market_type: String,
 }
 
 impl WsFeed {
     pub fn new(
-        subscriptions: Vec<(String, Timeframe)>,
-        market_type: String,
+        subscriptions: Vec<(String, Timeframe, String)>,
         buffer_size: usize,
     ) -> (Self, broadcast::Receiver<KlineEvent>) {
         let (sender, receiver) = broadcast::channel(buffer_size);
@@ -43,7 +41,6 @@ impl WsFeed {
             WsFeed {
                 subscriptions,
                 event_sender: sender,
-                market_type,
             },
             receiver,
         )
@@ -53,18 +50,17 @@ impl WsFeed {
     pub async fn run(
         self,
         kline_manager: Arc<RwLock<KlineManager>>,
-        market_type: String,
     ) {
         let mode = std::env::var("KLINE_FEED_MODE").unwrap_or_else(|_| "poll".to_string());
 
         match mode.as_str() {
             "ws" => {
                 info!("[KlineFeed] Starting in WebSocket mode");
-                self.run_ws(kline_manager, market_type).await;
+                self.run_ws(kline_manager).await;
             }
             _ => {
                 info!("[KlineFeed] Starting in polling mode (interval: 30s)");
-                self.run_poll(kline_manager, market_type).await;
+                self.run_poll(kline_manager).await;
             }
         }
     }
@@ -73,7 +69,6 @@ impl WsFeed {
     async fn run_poll(
         self,
         kline_manager: Arc<RwLock<KlineManager>>,
-        market_type: String,
     ) {
         let poll_interval = Duration::from_secs(30);
 
@@ -86,11 +81,11 @@ impl WsFeed {
         let mut interval = tokio::time::interval(poll_interval);
 
         // 首次立即执行
-        poll_all(&self.subscriptions, &kline_manager, &market_type).await;
+        poll_all(&self.subscriptions, &kline_manager).await;
 
         loop {
             interval.tick().await;
-            poll_all(&self.subscriptions, &kline_manager, &market_type).await;
+            poll_all(&self.subscriptions, &kline_manager).await;
         }
     }
 
@@ -98,23 +93,21 @@ impl WsFeed {
     async fn run_ws(
         self,
         kline_manager: Arc<RwLock<KlineManager>>,
-        market_type: String,
     ) {
         use futures_util::{SinkExt, StreamExt};
         use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-        let base_url = match market_type.as_str() {
-            "spot" => "wss://stream.binance.com:9443/ws",
-            _ => "wss://fstream.binance.com/ws",
-        };
-
-        // 每个流一个连接
-        for (symbol, tf) in &self.subscriptions {
+        // 每个流一个连接，各自使用自己的 market_type
+        for (symbol, tf, market_type) in &self.subscriptions {
             let km = kline_manager.clone();
             let mt = market_type.clone();
             let sym = symbol.clone();
             let timeframe = *tf;
             let sender = self.event_sender.clone();
+            let base_url = match market_type.as_str() {
+                "spot" => "wss://stream.binance.com:9443/ws",
+                _ => "wss://fstream.binance.com/ws",
+            };
             let url = format!("{}/{}@kline_{}", base_url, sym.to_lowercase(), tf.as_str());
 
             tokio::spawn(async move {
@@ -144,15 +137,12 @@ impl WsFeed {
                                 match msg {
                                     Ok(Message::Text(text)) => {
                                         msg_count += 1;
-                                        if msg_count <= 3 {
-                                            info!("[WsFeed:{}_{}] msg #{}: {}", sym, timeframe.as_str(), msg_count, &text[..text.len().min(200)]);
-                                        }
                                         if let Ok(kline_msg) = serde_json::from_str::<WsKlineMessage>(&text) {
                                             let bar = kline_msg.to_kline_bar();
                                             let is_closed = bar.closed;
                                             {
                                                 let mut mgr = km.write().await;
-                                                if let Some(store) = mgr.get_mut(&sym, timeframe) {
+                                                if let Some(store) = mgr.get_mut(&sym, timeframe, &mt) {
                                                     if is_closed { store.push_closed(bar.clone()); }
                                                     else { store.update_current(bar.clone()); }
                                                 }
@@ -231,18 +221,17 @@ impl WsKlineMessage {
 
 /// 轮询所有订阅
 async fn poll_all(
-    subscriptions: &[(String, Timeframe)],
+    subscriptions: &[(String, Timeframe, String)],
     kline_manager: &Arc<RwLock<KlineManager>>,
-    market_type: &str,
 ) {
-    for (symbol, tf) in subscriptions {
+    for (symbol, tf, market_type) in subscriptions {
         if let Err(e) = poll_single(symbol, *tf, kline_manager, market_type).await {
-            warn!("[KlinePoll] Failed to poll {} {}: {}", symbol, tf.as_str(), e);
+            warn!("[KlinePoll] Failed to poll {} {} ({}): {}", symbol, tf.as_str(), market_type, e);
         }
     }
 }
 
-/// 轮询单个 (symbol, timeframe)
+/// 轮询单个 (symbol, timeframe, market_type)
 async fn poll_single(
     symbol: &str,
     tf: Timeframe,
@@ -252,7 +241,7 @@ async fn poll_single(
     // 从交易所拉取最新 2 根 K线（1 根已完成 + 1 根进行中）
     let bars = kline_loader::fetch_klines_from_exchange(
         symbol,
-        tf.as_str(),
+        tf,
         2,
         None,
         market_type,
@@ -264,7 +253,7 @@ async fn poll_single(
     }
 
     let mut manager = kline_manager.write().await;
-    if let Some(store) = manager.get_mut(symbol, tf) {
+    if let Some(store) = manager.get_mut(symbol, tf, market_type) {
         for bar in &bars {
             if bar.closed {
                 // 检查是否是新数据（避免重复）
@@ -286,17 +275,15 @@ async fn poll_single(
 
 /// 启动数据源任务
 pub async fn start_ws_feed(
-    subscriptions: Vec<(String, Timeframe)>,
+    subscriptions: Vec<(String, Timeframe, String)>,
     kline_manager: Arc<RwLock<KlineManager>>,
-    market_type: String,
 ) -> broadcast::Receiver<KlineEvent> {
     let buffer_size = 1024;
-    let (feed, receiver) = WsFeed::new(subscriptions, market_type.clone(), buffer_size);
+    let (feed, receiver) = WsFeed::new(subscriptions, buffer_size);
 
     let km = kline_manager.clone();
-    let mt = market_type.clone();
     tokio::spawn(async move {
-        feed.run(km, mt).await;
+        feed.run(km).await;
     });
 
     receiver
