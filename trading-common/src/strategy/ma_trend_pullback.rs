@@ -257,6 +257,12 @@ pub struct MATrendPullbackParams {
     /// Volume ratio threshold (default: 0, disabled)
     #[serde(default)]
     pub vol_threshold: f64,
+    /// Realized volatility 48-period threshold (default: 0, disabled)
+    /// Skip entry when realized_vol_48 >= threshold
+    /// Per-coin recommended values from studies/001:
+    /// BTC: 0.426, ETH: 0.445, SOL: 0.790, BNB: 0.488, SUI: 0.788, HYPE: 0.646
+    #[serde(default)]
+    pub realized_vol_threshold: f64,
     /// 30m diffusion filter: only enter when 30m dual MA is expanding (default: false)
     #[serde(default)]
     pub use_30m_expanding: bool,
@@ -291,6 +297,7 @@ impl Default for MATrendPullbackParams {
             slope_threshold: 0.0,
             bbw_threshold: 0.0,
             vol_threshold: 0.0,
+            realized_vol_threshold: 0.0,
             use_30m_expanding: false,
             use_5m_expanding: false,
             min_angle_5m: 0.0,
@@ -415,6 +422,38 @@ fn calculate_vol_ratio(klines: &[KlineBar]) -> Option<f64> {
     } else {
         None
     }
+}
+
+/// Realized volatility over 48 periods (population std of simple returns * 100)
+/// Matches the Python implementation in indicators.py::_rolling_std_returns
+fn calculate_realized_vol_48(klines: &[KlineBar]) -> Option<f64> {
+    if klines.len() < 49 {
+        return None;
+    }
+
+    let closes = extract_closes(klines);
+    let n = closes.len();
+
+    // Calculate simple returns: rets[i] = closes[i] / closes[i-1] - 1
+    let mut rets = vec![0.0f64; n];
+    for i in 1..n {
+        if closes[i - 1] != 0.0 {
+            rets[i] = closes[i] / closes[i - 1] - 1.0;
+        }
+    }
+
+    // Rolling population std over last 48 returns (inclusive of current bar)
+    let window = 48usize;
+    if n < window {
+        return None;
+    }
+
+    let start = n - window;
+    let sum: f64 = rets[start..n].iter().sum();
+    let sum_sq: f64 = rets[start..n].iter().map(|x| x * x).sum();
+    let mean = sum / window as f64;
+    let variance = (sum_sq / window as f64 - mean * mean).max(0.0);
+    Some(variance.sqrt() * 100.0)
 }
 
 /// Calculate dual MA spread (fast_ma - slow_ma)
@@ -567,6 +606,20 @@ impl MATrendPullbackStrategy {
                     if vol_ratio < self.params.vol_threshold { "❌ 未通过" } else { "✅ 通过" }
                 );
                 if vol_ratio < self.params.vol_threshold {
+                    return None;
+                }
+            }
+        }
+
+        // 3b. Realized volatility filter (skip high-vol entries)
+        if self.params.realized_vol_threshold > 0.0 {
+            if let Some(rv48) = calculate_realized_vol_48(klines) {
+                tracing::debug!(
+                    "[{}] 过滤器3b-波动率: realized_vol_48={:.4}, 阈值={:.4}, {}",
+                    data.symbol, rv48, self.params.realized_vol_threshold,
+                    if rv48 >= self.params.realized_vol_threshold { "❌ 未通过(高波动)" } else { "✅ 通过" }
+                );
+                if rv48 >= self.params.realized_vol_threshold {
                     return None;
                 }
             }
@@ -767,6 +820,8 @@ impl MATrendPullbackStrategy {
             "take_profit_mode": format!("{:?}", self.params.take_profit_mode),
             "trailing_activate_pct": self.params.trailing_activate_pct,
             "trailing_callback_pct": self.params.trailing_callback_pct,
+            "realized_vol_threshold": self.params.realized_vol_threshold,
+            "realized_vol_48": calculate_realized_vol_48(klines).unwrap_or(0.0),
             "use_30m_expanding": self.params.use_30m_expanding,
             "use_5m_expanding": self.params.use_5m_expanding,
             "min_angle_5m": self.params.min_angle_5m,

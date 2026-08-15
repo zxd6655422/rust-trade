@@ -77,11 +77,12 @@ def run_backtest(symbol: str, params: strat.Params, bars, ind: IndicatorSet) -> 
                     if pos["max_profit"] - pnl >= params.trailing_callback_pct:
                         exit_price, reason = close, "移动止盈"
 
-            if exit_price is None:
-                if side == "LONG" and fma < sma:
-                    exit_price, reason = close, "趋势反转"
-                elif side == "SHORT" and fma > sma:
-                    exit_price, reason = close, "趋势反转"
+            # 趋势反转出场 — 已禁用（生产系统无此逻辑）
+            # if exit_price is None:
+            #     if side == "LONG" and fma < sma:
+            #         exit_price, reason = close, "趋势反转"
+            #     elif side == "SHORT" and fma > sma:
+            #         exit_price, reason = close, "趋势反转"
 
             if exit_price is not None:
                 ret = (exit_price - entry) / entry if side == "LONG" else (entry - exit_price) / entry

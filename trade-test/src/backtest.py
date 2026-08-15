@@ -123,12 +123,12 @@ def backtest(symbol: str, params: Params, bars: List[KlineBar]) -> List[Dict[str
                     if pos["max_profit"] - pnl >= params.trailing_callback_pct:
                         exit_price, reason = close, "移动止盈"
 
-            # 4. 趋势反转
-            if exit_price is None:
-                if side == "LONG" and fast_ma < slow_ma:
-                    exit_price, reason = close, "趋势反转"
-                elif side == "SHORT" and fast_ma > slow_ma:
-                    exit_price, reason = close, "趋势反转"
+            # 4. 趋势反转 — 已禁用（生产系统无此逻辑）
+            # if exit_price is None:
+            #     if side == "LONG" and fast_ma < slow_ma:
+            #         exit_price, reason = close, "趋势反转"
+            #     elif side == "SHORT" and fast_ma > slow_ma:
+            #         exit_price, reason = close, "趋势反转"
 
             if exit_price is not None:
                 ret = (exit_price - entry) / entry if side == "LONG" else (entry - exit_price) / entry
