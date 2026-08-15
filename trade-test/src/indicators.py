@@ -26,7 +26,7 @@ from typing import List, Optional
 from ma_trend_pullback import KlineBar
 
 FAST = 288
-SLOW = 488
+SLOW = 480  # 对齐生产配置（原 488）
 
 # MA288 与 MA488 视为"交织/贴合"的相对分离阈值（%）。震荡时两均线反复交叉、间距极小。
 INTERWEAVE_THRESH = 0.5

@@ -77,12 +77,12 @@ def run_backtest(symbol: str, params: strat.Params, bars, ind: IndicatorSet) -> 
                     if pos["max_profit"] - pnl >= params.trailing_callback_pct:
                         exit_price, reason = close, "移动止盈"
 
-            # 趋势反转出场 — 已禁用（生产系统无此逻辑）
-            # if exit_price is None:
-            #     if side == "LONG" and fma < sma:
-            #         exit_price, reason = close, "趋势反转"
-            #     elif side == "SHORT" and fma > sma:
-            #         exit_price, reason = close, "趋势反转"
+            # 趋势反转出场（MA288 与 MA480 交叉，对齐生产 check_exit_conditions step 6）
+            if exit_price is None:
+                if side == "LONG" and fma < sma:
+                    exit_price, reason = close, "趋势反转"
+                elif side == "SHORT" and fma > sma:
+                    exit_price, reason = close, "趋势反转"
 
             if exit_price is not None:
                 ret = (exit_price - entry) / entry if side == "LONG" else (entry - exit_price) / entry
@@ -96,6 +96,10 @@ def run_backtest(symbol: str, params: strat.Params, bars, ind: IndicatorSet) -> 
 
         # ---- 无持仓：入场 ----
         if pos is None and fma is not None and sma is not None and prev_fma is not None:
+            # vol 过滤（对齐生产 realized_vol_threshold）：高波动跳过入场
+            if params.realized_vol_threshold > 0.0 and ind.realized_vol_48[i] is not None \
+                    and ind.realized_vol_48[i] >= params.realized_vol_threshold:
+                continue
             if fma > sma:
                 if prev_close < prev_fma and close > fma:
                     hard_stop = close * (1.0 - params.hard_stop_pct / 100.0) if params.hard_stop_pct > 0.0 else fma * 0.98

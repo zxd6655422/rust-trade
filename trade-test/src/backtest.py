@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import csv
+import math
 import os
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any, Optional
@@ -61,12 +62,37 @@ def fmt_time(ms: int) -> str:
     return datetime.fromtimestamp(ms / 1000, tz=BJ).strftime("%Y-%m-%d %H:%M")
 
 
+def realized_vol_48_series(closes: List[float]) -> List[Optional[float]]:
+    """48 周期收益率 population std * 100（对齐 Rust calculate_realized_vol_48）。"""
+    n = len(closes)
+    rets = [0.0] * n
+    for i in range(1, n):
+        if closes[i - 1] != 0.0:
+            rets[i] = closes[i] / closes[i - 1] - 1.0
+    p = [0.0] * (n + 1)
+    p2 = [0.0] * (n + 1)
+    for i in range(n):
+        p[i + 1] = p[i] + rets[i]
+        p2[i + 1] = p2[i] + rets[i] * rets[i]
+    W = 48
+    out: List[Optional[float]] = [None] * n
+    for i in range(W, n):
+        mean = (p[i + 1] - p[i + 1 - W]) / W
+        msq = (p2[i + 1] - p2[i + 1 - W]) / W
+        var = msq - mean * mean
+        if var < 0.0:
+            var = 0.0
+        out[i] = math.sqrt(var) * 100.0
+    return out
+
+
 def backtest(symbol: str, params: Params, bars: List[KlineBar]) -> List[Dict[str, Any]]:
     """回测单币种，返回交易列表。"""
     fast = params.fast_ma_period
     slow = params.slow_ma_period
     n = len(bars)
     closes = [b.close for b in bars]
+    vol48 = realized_vol_48_series(closes) if params.realized_vol_threshold > 0.0 else None
 
     # 前缀和，O(1) 算 SMA
     prefix = [0.0] * (n + 1)
@@ -123,12 +149,12 @@ def backtest(symbol: str, params: Params, bars: List[KlineBar]) -> List[Dict[str
                     if pos["max_profit"] - pnl >= params.trailing_callback_pct:
                         exit_price, reason = close, "移动止盈"
 
-            # 4. 趋势反转 — 已禁用（生产系统无此逻辑）
-            # if exit_price is None:
-            #     if side == "LONG" and fast_ma < slow_ma:
-            #         exit_price, reason = close, "趋势反转"
-            #     elif side == "SHORT" and fast_ma > slow_ma:
-            #         exit_price, reason = close, "趋势反转"
+            # 4. 趋势反转（MA288 与 MA480 交叉，对齐生产 check_exit_conditions step 6）
+            if exit_price is None:
+                if side == "LONG" and fast_ma < slow_ma:
+                    exit_price, reason = close, "趋势反转"
+                elif side == "SHORT" and fast_ma > slow_ma:
+                    exit_price, reason = close, "趋势反转"
 
             if exit_price is not None:
                 ret = (exit_price - entry) / entry if side == "LONG" else (entry - exit_price) / entry
@@ -149,6 +175,9 @@ def backtest(symbol: str, params: Params, bars: List[KlineBar]) -> List[Dict[str
 
         # ---- 无持仓：检查入场 ----
         if pos is None and fast_ma is not None and slow_ma is not None and prev_fast_ma is not None:
+            # vol 过滤（对齐生产 realized_vol_threshold）：高波动跳过入场
+            if vol48 is not None and vol48[i] is not None and vol48[i] >= params.realized_vol_threshold:
+                continue
             if fast_ma > slow_ma:  # 多头趋势：收盘上穿 MA288
                 if prev_close < prev_fast_ma and close > fast_ma:
                     hard_stop = close * (1.0 - params.hard_stop_pct / 100.0) if params.hard_stop_pct > 0.0 else fast_ma * 0.98

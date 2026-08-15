@@ -263,6 +263,11 @@ pub struct MATrendPullbackParams {
     /// BTC: 0.426, ETH: 0.445, SOL: 0.790, BNB: 0.488, SUI: 0.788, HYPE: 0.646
     #[serde(default)]
     pub realized_vol_threshold: f64,
+    /// Whether to enable trend reversal exit (MA288 crosses slow MA, default: true).
+    /// Set false per-coin to hold through transient MA crossovers
+    /// (backtest: SOL/BNB/HYPE benefit from disabling; ETH must keep enabled).
+    #[serde(default = "default_true")]
+    pub use_trend_reversal: bool,
     /// 30m diffusion filter: only enter when 30m dual MA is expanding (default: false)
     #[serde(default)]
     pub use_30m_expanding: bool,
@@ -282,6 +287,7 @@ fn default_entry_timeframe() -> String { "30m".to_string() }
 fn default_fixed_stop_pct() -> f64 { 2.0 }
 fn default_trailing_activate() -> f64 { 5.0 }
 fn default_trailing_callback() -> f64 { 5.0 }
+fn default_true() -> bool { true }
 
 impl Default for MATrendPullbackParams {
     fn default() -> Self {
@@ -298,6 +304,7 @@ impl Default for MATrendPullbackParams {
             bbw_threshold: 0.0,
             vol_threshold: 0.0,
             realized_vol_threshold: 0.0,
+            use_trend_reversal: true,
             use_30m_expanding: false,
             use_5m_expanding: false,
             min_angle_5m: 0.0,
@@ -825,6 +832,7 @@ impl MATrendPullbackStrategy {
             "use_30m_expanding": self.params.use_30m_expanding,
             "use_5m_expanding": self.params.use_5m_expanding,
             "min_angle_5m": self.params.min_angle_5m,
+            "use_trend_reversal": self.params.use_trend_reversal,
         });
 
         Some(Signal {

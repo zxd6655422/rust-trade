@@ -901,6 +901,9 @@ fn check_exit_conditions(
     let ma48_tp_bars = params.get("ma48_tp_bars")
         .and_then(|v| v.as_u64())
         .unwrap_or(3) as usize;
+    let use_trend_reversal = params.get("use_trend_reversal")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
 
     // 1. 硬止损（优先级最高）
     if hard_stop_pct > 0.0 {
@@ -956,7 +959,7 @@ fn check_exit_conditions(
     }
 
     // 6. 趋势反转
-    if check_trend_reversal(side, klines_30m, fast_ma_period, slow_ma_period) {
+    if use_trend_reversal && check_trend_reversal(side, klines_30m, fast_ma_period, slow_ma_period) {
         debug!(
             "[退出] 趋势反转触发: {} entry={:.4} current={:.4}",
             side, entry_price, current_price

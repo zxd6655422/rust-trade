@@ -56,6 +56,7 @@ class Params:
     slope_threshold: float = 0.0
     bbw_threshold: float = 0.0
     vol_threshold: float = 0.0
+    realized_vol_threshold: float = 0.0  # 48周期已实现波动率过滤（>=阈值跳过入场），对齐生产
     use_30m_expanding: bool = False
     use_5m_expanding: bool = False
     min_angle_5m: float = 0.0
@@ -349,26 +350,26 @@ def analyze(
 # 生产信号表 market_context 是权威数据，据此以 symbol 建立映射：
 SYMBOL_PARAMS: Dict[str, Params] = {
     "BTCUSDT": Params(
-        fast_ma_period=288, slow_ma_period=488,
+        fast_ma_period=288, slow_ma_period=480,
         stop_mode="ma288", hard_stop_pct=1.5,
         take_profit_mode="trailing", trailing_activate_pct=4.0, trailing_callback_pct=1.0,
-        slope_threshold=0.0, bbw_threshold=0.0, vol_threshold=0.0,
+        slope_threshold=0.0, bbw_threshold=0.0, vol_threshold=0.0, realized_vol_threshold=0.426,
         use_30m_expanding=False, use_5m_expanding=False, min_angle_5m=0.0,
         entry_timeframe="30m",
     ),
     "ETHUSDT": Params(
-        fast_ma_period=288, slow_ma_period=488,
+        fast_ma_period=288, slow_ma_period=480,
         stop_mode="ma288", hard_stop_pct=1.5,
         take_profit_mode="trailing", trailing_activate_pct=5.0, trailing_callback_pct=1.0,
-        slope_threshold=0.0, bbw_threshold=0.0, vol_threshold=0.0,
+        slope_threshold=0.0, bbw_threshold=0.0, vol_threshold=0.0, realized_vol_threshold=0.445,
         use_30m_expanding=False, use_5m_expanding=False, min_angle_5m=0.0,
         entry_timeframe="30m",
     ),
     "SOLUSDT": Params(
-        fast_ma_period=288, slow_ma_period=488,
+        fast_ma_period=288, slow_ma_period=480,
         stop_mode="ma288", hard_stop_pct=2.0,
         take_profit_mode="trailing", trailing_activate_pct=4.0, trailing_callback_pct=1.0,
-        slope_threshold=0.0, bbw_threshold=0.0, vol_threshold=0.0,
+        slope_threshold=0.0, bbw_threshold=0.0, vol_threshold=0.0, realized_vol_threshold=0.790,
         use_30m_expanding=False, use_5m_expanding=False, min_angle_5m=0.0,
         entry_timeframe="30m",
     ),
