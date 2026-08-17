@@ -28,7 +28,7 @@ function loadCSV(path, timeCol) {
 
 // 加载30m数据
 console.log("加载数据...");
-const df = loadCSV('../data_2026-08-13/kline_30m_202608141537_HYPE.csv', 'open_time');
+const df = loadCSV('../../../data_2026-08-13/kline_30m_202608141537_HYPE.csv', 'open_time');
 console.log(`30m: ${df.length} bars, ${df[0].open_time.toISOString().slice(0,16)} ~ ${df[df.length-1].open_time.toISOString().slice(0,16)}`);
 
 // realized_vol_48: 基于收盘价的48周期波动率 (百分比)

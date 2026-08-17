@@ -21,7 +21,8 @@ from typing import List, Dict, Any, Optional
 from ma_trend_pullback import KlineBar, Params
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA = os.path.join(BASE, "data_2026-08-13")
+# 数据已移到仓库外：rust-projects/data_2026-08-13
+DATA = os.path.join(os.path.dirname(os.path.dirname(BASE)), "data_2026-08-13")
 
 CSV_5M = {
     "BTCUSDT": "kline_5m_202608131243_BTC.csv",

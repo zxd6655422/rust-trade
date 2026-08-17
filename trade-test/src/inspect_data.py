@@ -4,7 +4,8 @@ import os
 from datetime import datetime
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA = os.path.join(BASE, "data_2026-08-13")
+# 数据已移到仓库外：rust-projects/data_2026-08-13
+DATA = os.path.join(os.path.dirname(os.path.dirname(BASE)), "data_2026-08-13")
 
 files = sorted(f for f in os.listdir(DATA) if f.startswith("kline_30m_"))
 print(f"{'file':45} {'rows':>7}  {'min_open_time':24}  {'max_open_time':24}  order")

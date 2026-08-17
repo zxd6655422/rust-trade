@@ -26,7 +26,8 @@ import ma_trend_pullback as strat
 from ma_trend_pullback import KlineBar, Params
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_DIR = os.path.join(BASE_DIR, "data_2026-08-13")
+# 数据已移到仓库外：rust-projects/data_2026-08-13
+DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(BASE_DIR)), "data_2026-08-13")
 SRC_DIR = os.path.join(BASE_DIR, "src")
 
 CSV_30M = {

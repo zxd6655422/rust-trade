@@ -142,12 +142,12 @@ function runBacktest(df, params) {
 // 测试: 用Python相同的参数
 // ============================================================
 const coins = [
-  { name: 'BTC', file: '../data_2026-08-13/kline_30m_202608141617_BTC.csv', hs: 1.5, act: 4.0, cb: 1.0 },
-  { name: 'ETH', file: '../data_2026-08-13/kline_30m_202608141605_ETH.csv', hs: 1.5, act: 5.0, cb: 1.0 },
-  { name: 'SOL', file: '../data_2026-08-13/kline_30m_202608131247_SOL.csv', hs: 2.0, act: 4.0, cb: 1.0 },
-  { name: 'BNB', file: '../data_2026-08-13/kline_30m_202608141530_BNB.csv', hs: 1.0, act: 6.0, cb: 2.0 },
-  { name: 'SUI', file: '../data_2026-08-13/kline_30m_202608141533_SUI.csv', hs: 1.0, act: 6.0, cb: 2.0 },
-  { name: 'HYPE', file: '../data_2026-08-13/kline_30m_202608141537_HYPE.csv', hs: 1.0, act: 6.0, cb: 0.5 },
+  { name: 'BTC', file: '../../../data_2026-08-13/kline_30m_202608141617_BTC.csv', hs: 1.5, act: 4.0, cb: 1.0 },
+  { name: 'ETH', file: '../../../data_2026-08-13/kline_30m_202608141605_ETH.csv', hs: 1.5, act: 5.0, cb: 1.0 },
+  { name: 'SOL', file: '../../../data_2026-08-13/kline_30m_202608131247_SOL.csv', hs: 2.0, act: 4.0, cb: 1.0 },
+  { name: 'BNB', file: '../../../data_2026-08-13/kline_30m_202608141530_BNB.csv', hs: 1.0, act: 6.0, cb: 2.0 },
+  { name: 'SUI', file: '../../../data_2026-08-13/kline_30m_202608141533_SUI.csv', hs: 1.0, act: 6.0, cb: 2.0 },
+  { name: 'HYPE', file: '../../../data_2026-08-13/kline_30m_202608141537_HYPE.csv', hs: 1.0, act: 6.0, cb: 0.5 },
 ];
 
 // Python baseline results for comparison

@@ -12,7 +12,8 @@ from typing import List
 from ma_trend_pullback import KlineBar
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_DIR = os.path.join(BASE_DIR, "data_2026-08-13")
+# 数据已移到仓库外：rust-projects/data_2026-08-13
+DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(BASE_DIR)), "data_2026-08-13")
 
 # 30m K 线（BTC/ETH 用 2017-09 起的扩展数据）
 CSV_30M = {

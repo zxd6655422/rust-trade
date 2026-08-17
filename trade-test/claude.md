@@ -3,16 +3,16 @@
 - 策略区分：30m 双均线回踩（生产已部署）、5m 双均线回踩（后续新测试，尚未开始）。
 
 # 数据
-- 目录 F:\rust-projects\trade-test\data_2026-08-13
+- 目录 F:\rust-projects\data_2026-08-13
 - BTC数据： 
-- F:\rust-projects\trade-test/data_2026-08-13/kline_30m_202608131242_BTC.csv
-- F:\rust-projects\trade-test/data_2026-08-13/kline_5m_202608131243_BTC.csv
+- F:\rust-projects\data_2026-08-13/kline_30m_202608131242_BTC.csv
+- F:\rust-projects\data_2026-08-13/kline_5m_202608131243_BTC.csv
 - ETH数据：
-- F:\rust-projects\trade-test/data_2026-08-13/kline_30m_202608131245_ETH.csv
-- F:\rust-projects\trade-test/data_2026-08-13/kline_5m_202608131246_ETH.csv
+- F:\rust-projects\data_2026-08-13/kline_30m_202608131245_ETH.csv
+- F:\rust-projects\data_2026-08-13/kline_5m_202608131246_ETH.csv
 - SOL数据
-- F:\rust-projects\trade-test/data_2026-08-13/kline_30m_202608131247_SOL.csv
-- F:\rust-projects\trade-test/data_2026-08-13/kline_5m_202608131248_SOL.csv
+- F:\rust-projects\data_2026-08-13/kline_30m_202608131247_SOL.csv
+- F:\rust-projects\data_2026-08-13/kline_5m_202608131248_SOL.csv
 
 # 策略参数
 - BTC:
