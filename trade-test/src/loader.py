@@ -25,6 +25,27 @@ CSV_30M = {
     "HYPEUSDT": "kline_30m_202608141537_HYPE.csv",
 }
 
+# 1h / 4h K 线（多时间框架分析用，BTC/ETH/SOL）
+CSV_1H = {
+    "BTCUSDT": "kline_1h_202608190050_BTC.csv",
+    "ETHUSDT": "kline_1h_202608190050_ETH.csv",
+    "SOLUSDT": "kline_1h_202608190051_SOL.csv",
+}
+CSV_4H = {
+    "BTCUSDT": "kline_4h_202608190050_BTC.csv",
+    "ETHUSDT": "kline_4h_202608190051_ETH.csv",
+    "SOLUSDT": "kline_4h_202608190052_SOL.csv",
+}
+# 5m K 线（短周期支撑压力位分析用）
+CSV_5M = {
+    "BTCUSDT": "kline_5m_202608131243_BTC.csv",
+    "ETHUSDT": "kline_5m_202608131246_ETH.csv",
+    "SOLUSDT": "kline_5m_202608131248_SOL.csv",
+    "BNBUSDT": "kline_5m_202608141531_BNB.csv",
+    "SUIUSDT": "kline_5m_202608141535_SUI.csv",
+    "HYPEUSDT": "kline_5m_202608141538_HYPE.csv",
+}
+
 BJ = timezone(timedelta(hours=8))
 
 
@@ -45,6 +66,37 @@ def load_klines_30m(symbol: str) -> List[KlineBar]:
             ))
     bars.sort(key=lambda b: b.open_time)  # 统一升序
     return bars
+
+
+def _load_csv(filename: str) -> List[KlineBar]:
+    path = os.path.join(DATA_DIR, filename)
+    bars: List[KlineBar] = []
+    with open(path, "r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            dt = datetime.strptime(row["open_time"], "%Y-%m-%d %H:%M:%S.%f %z")
+            bars.append(KlineBar(
+                open_time=int(dt.timestamp() * 1000),
+                open=float(row["open"]),
+                high=float(row["high"]),
+                low=float(row["low"]),
+                close=float(row["close"]),
+                volume=float(row["volume"]),
+            ))
+    bars.sort(key=lambda b: b.open_time)
+    return bars
+
+
+def load_klines_1h(symbol: str) -> List[KlineBar]:
+    return _load_csv(CSV_1H[symbol])
+
+
+def load_klines_4h(symbol: str) -> List[KlineBar]:
+    return _load_csv(CSV_4H[symbol])
+
+
+def load_klines_5m(symbol: str) -> List[KlineBar]:
+    return _load_csv(CSV_5M[symbol])
 
 
 def fmt_time(ms: int) -> str:
