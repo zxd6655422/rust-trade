@@ -7,6 +7,7 @@
 
 | 编号 | 日期 | 主题 | 关键结论 | 报告 |
 |---|---|---|---|---|
+| 003 | 2026-08-18 | A9 分级+衰竭降级 完整验证（6币种） | BTC/ETH/SOL 适用（时间切分通过），BNB/HYPE 不适用，SUI 边缘 | [report](../src/feature_report/a9_full_validation.md) |
 | 002 | 2026-08-14 | 过滤的收益稳定性（风险调整视角） | 过滤核心价值是抗灾：6币种回撤砍半、灾年消除；**修正001：BNB应启用过滤** | [report](002-filter-risk-adjust/report.md) |
 | 001 | 2026-08-14 | 逐币种 vol 阈值标定 + 样本外验证 | 高波动过滤不是跨币种通用阈值；SUI/HYPE 需单独标定（BNB 结论已被002修正） | [report](001-per-coin-vol-threshold/report.md) |
 

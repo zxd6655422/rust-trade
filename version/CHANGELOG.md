@@ -1,5 +1,34 @@
 # Changelog
 
+## [2026-08-14] 多交易所支持方案（待开发）
+
+### 需求
+- 支持按 symbol 粒度配置数据来源交易所
+- 支持 Binance / Kraken / Coinbase 等多交易所
+- 某些币种从 Binance 获取，某些从 Kraken 获取，某些从 Coinbase 获取
+
+### 核心设计
+- **ExchangeRouter 路由层**：实现 `Exchange` trait，按 symbol 路由到不同交易所
+- 现有服务（MarketDataService、BackfillService、MarketSentimentCollector）**零改动**
+
+### 改动清单
+| 类型 | 文件 | 说明 |
+|------|------|------|
+| 新增 | `exchange/router.rs` | ExchangeRouter 路由实现 |
+| 新增 | `exchange/kraken.rs` | Kraken 交易所实现 |
+| 新增 | `exchange/coinbase.rs` | Coinbase 交易所实现 |
+| 修改 | `config.rs` + `production.toml` | 交易所路由配置 |
+| 修改 | `main.rs` | 工厂逻辑构建 ExchangeRouter |
+| 修改 | `symbol_mapping.sql` | 插入 Kraken/Coinbase 符号映射 |
+
+### 预估工作量
+7-10 天
+
+### 详细方案
+→ `version/MULTI_EXCHANGE_PLAN.md`
+
+---
+
 ## [2026-07-27] Strategy Service 数据层重构计划
 
 ### 背景
