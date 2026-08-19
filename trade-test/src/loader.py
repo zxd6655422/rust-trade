@@ -25,16 +25,22 @@ CSV_30M = {
     "HYPEUSDT": "kline_30m_202608141537_HYPE.csv",
 }
 
-# 1h / 4h K 线（多时间框架分析用，BTC/ETH/SOL）
+# 1h / 4h K 线（多时间框架分析用，6币种全覆盖）
 CSV_1H = {
-    "BTCUSDT": "kline_1h_202608190050_BTC.csv",
-    "ETHUSDT": "kline_1h_202608190050_ETH.csv",
-    "SOLUSDT": "kline_1h_202608190051_SOL.csv",
+    "BTCUSDT": "kline_1h_202608191706_BTC.csv",
+    "ETHUSDT": "kline_1h_202608191707_ETH.csv",
+    "SOLUSDT": "kline_1h_202608191708_SOL.csv",
+    "BNBUSDT": "kline_1h_202608191704_BNB.csv",
+    "SUIUSDT": "kline_1h_202608191704_SUI.csv",
+    "HYPEUSDT": "kline_1h_202608191705_HYPE.csv",
 }
 CSV_4H = {
-    "BTCUSDT": "kline_4h_202608190050_BTC.csv",
-    "ETHUSDT": "kline_4h_202608190051_ETH.csv",
-    "SOLUSDT": "kline_4h_202608190052_SOL.csv",
+    "BTCUSDT": "kline_4h_202608191706_BTC.csv",
+    "ETHUSDT": "kline_4h_202608191708_ETH.csv",
+    "SOLUSDT": "kline_4h_202608191709_SOL.csv",
+    "BNBUSDT": "kline_4h_202608191702_BNB.csv",
+    "SUIUSDT": "kline_4h_202608191705_SUI.csv",
+    "HYPEUSDT": "kline_4h_202608191705_HYPE.csv",
 }
 # 5m K 线（短周期支撑压力位分析用）
 CSV_5M = {
