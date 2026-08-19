@@ -20,12 +20,12 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(os.path.dirname(os.path.dirname(BASE)), "data_2026-08-13")
 
 CSV_5M = {
-    "BTCUSDT": "kline_5m_202608131243_BTC.csv",
-    "ETHUSDT": "kline_5m_202608131246_ETH.csv",
-    "SOLUSDT": "kline_5m_202608131248_SOL.csv",
-    "BNBUSDT": "kline_5m_202608141531_BNB.csv",
-    "SUIUSDT": "kline_5m_202608141535_SUI.csv",
-    "HYPEUSDT": "kline_5m_202608141538_HYPE.csv",
+    "BTCUSDT": "kline_5m_BTC.csv",
+    "ETHUSDT": "kline_5m_ETH.csv",
+    "SOLUSDT": "kline_5m_SOL.csv",
+    "BNBUSDT": "kline_5m_BNB.csv",
+    "SUIUSDT": "kline_5m_SUI.csv",
+    "HYPEUSDT": "kline_5m_HYPE.csv",
 }
 
 # 5m 最优参数（任务2 Top1）：{symbol: (hard_stop, activate, callback)}

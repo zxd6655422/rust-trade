@@ -13,7 +13,7 @@
 from __future__ import annotations
 
 import os
-from bisect import bisect_left
+from bisect import bisect_right
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any
 
@@ -23,6 +23,8 @@ from study_adaptive_ma_trailing import precompute, comp
 
 
 BJ = timezone(timedelta(hours=8))
+BAR_30M_MS = 30 * 60 * 1000
+BAR_4H_MS = 4 * 60 * 60 * 1000
 
 
 def sma_series(closes: List[float], period: int) -> List[float | None]:
@@ -64,8 +66,13 @@ def backtest_mtf_hold(
     ts4 = [b.open_time for b in bars4]
 
     def fourh_bearish(et: int) -> bool:
-        """当前 30m bar 之前，最近一根【已收盘】4h bar 是否 close < MA（趋势转空）。"""
-        j = bisect_left(ts4, et) - 1
+        """当前 30m bar 收盘前，最近一根【已收盘】4h bar 是否 close < MA（趋势转空）。
+
+        无 lookahead：4h bar open_time=t 的收盘时刻为 t+4h；本策略在 30m bar 收盘(et+30m)
+        时刻评估离场，此时已收盘的 4h bar 满足 t+4h <= et+30m，即 t <= et+30m-4h。
+        故用 bisect_right 定位（而非 bisect_left-1，后者会取到仍在形成、close 尚未出现的 4h bar）。
+        """
+        j = bisect_right(ts4, et + BAR_30M_MS - BAR_4H_MS) - 1
         if j < 0 or ma4[j] is None:
             return False
         return closes4[j] < ma4[j]

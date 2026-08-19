@@ -31,9 +31,12 @@ DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(BASE_DIR)), "data_2026-0
 SRC_DIR = os.path.join(BASE_DIR, "src")
 
 CSV_30M = {
-    "BTCUSDT": os.path.join(DATA_DIR, "kline_30m_202608131242_BTC.csv"),
-    "ETHUSDT": os.path.join(DATA_DIR, "kline_30m_202608131245_ETH.csv"),
-    "SOLUSDT": os.path.join(DATA_DIR, "kline_30m_202608131247_SOL.csv"),
+    "BTCUSDT": os.path.join(DATA_DIR, "kline_30m_BTC.csv"),
+    "ETHUSDT": os.path.join(DATA_DIR, "kline_30m_ETH.csv"),
+    "SOLUSDT": os.path.join(DATA_DIR, "kline_30m_SOL.csv"),
+    "BNBUSDT": os.path.join(DATA_DIR, "kline_30m_BNB.csv"),
+    "SUIUSDT": os.path.join(DATA_DIR, "kline_30m_SUI.csv"),
+    "HYPEUSDT": os.path.join(DATA_DIR, "kline_30m_HYPE.csv"),
 }
 
 BJ = timezone(timedelta(hours=8))  # 北京时间
@@ -55,7 +58,7 @@ def load_klines_30m(symbol: str) -> List[KlineBar]:
                 close=float(row["close"]),
                 volume=float(row["volume"]),
             ))
-    bars.reverse()  # CSV 最新在前 → 升序
+    bars.sort(key=lambda b: b.open_time)  # 统一升序（不假设 CSV 内部顺序）
     return bars
 
 

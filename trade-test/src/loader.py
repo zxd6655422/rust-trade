@@ -17,39 +17,39 @@ DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(BASE_DIR)), "data_2026-0
 
 # 30m K 线（BTC/ETH 用 2017-09 起的扩展数据）
 CSV_30M = {
-    "BTCUSDT": "kline_30m_202608141617_BTC.csv",   # 扩展 2017-09-01 起（统一降序）
-    "ETHUSDT": "kline_30m_202608141605_ETH.csv",   # 扩展 2017-09-01 起
-    "SOLUSDT": "kline_30m_202608131247_SOL.csv",
-    "BNBUSDT": "kline_30m_202608141530_BNB.csv",
-    "SUIUSDT": "kline_30m_202608141533_SUI.csv",
-    "HYPEUSDT": "kline_30m_202608141537_HYPE.csv",
+    "BTCUSDT": "kline_30m_BTC.csv",
+    "ETHUSDT": "kline_30m_ETH.csv",
+    "SOLUSDT": "kline_30m_SOL.csv",
+    "BNBUSDT": "kline_30m_BNB.csv",
+    "SUIUSDT": "kline_30m_SUI.csv",
+    "HYPEUSDT": "kline_30m_HYPE.csv",
 }
 
 # 1h / 4h K 线（多时间框架分析用，6币种全覆盖）
 CSV_1H = {
-    "BTCUSDT": "kline_1h_202608191706_BTC.csv",
-    "ETHUSDT": "kline_1h_202608191707_ETH.csv",
-    "SOLUSDT": "kline_1h_202608191708_SOL.csv",
-    "BNBUSDT": "kline_1h_202608191704_BNB.csv",
-    "SUIUSDT": "kline_1h_202608191704_SUI.csv",
-    "HYPEUSDT": "kline_1h_202608191705_HYPE.csv",
+    "BTCUSDT": "kline_1h_BTC.csv",
+    "ETHUSDT": "kline_1h_ETH.csv",
+    "SOLUSDT": "kline_1h_SOL.csv",
+    "BNBUSDT": "kline_1h_BNB.csv",
+    "SUIUSDT": "kline_1h_SUI.csv",
+    "HYPEUSDT": "kline_1h_HYPE.csv",
 }
 CSV_4H = {
-    "BTCUSDT": "kline_4h_202608191706_BTC.csv",
-    "ETHUSDT": "kline_4h_202608191708_ETH.csv",
-    "SOLUSDT": "kline_4h_202608191709_SOL.csv",
-    "BNBUSDT": "kline_4h_202608191702_BNB.csv",
-    "SUIUSDT": "kline_4h_202608191705_SUI.csv",
-    "HYPEUSDT": "kline_4h_202608191705_HYPE.csv",
+    "BTCUSDT": "kline_4h_BTC.csv",
+    "ETHUSDT": "kline_4h_ETH.csv",
+    "SOLUSDT": "kline_4h_SOL.csv",
+    "BNBUSDT": "kline_4h_BNB.csv",
+    "SUIUSDT": "kline_4h_SUI.csv",
+    "HYPEUSDT": "kline_4h_HYPE.csv",
 }
 # 5m K 线（短周期支撑压力位分析用）
 CSV_5M = {
-    "BTCUSDT": "kline_5m_202608131243_BTC.csv",
-    "ETHUSDT": "kline_5m_202608131246_ETH.csv",
-    "SOLUSDT": "kline_5m_202608131248_SOL.csv",
-    "BNBUSDT": "kline_5m_202608141531_BNB.csv",
-    "SUIUSDT": "kline_5m_202608141535_SUI.csv",
-    "HYPEUSDT": "kline_5m_202608141538_HYPE.csv",
+    "BTCUSDT": "kline_5m_BTC.csv",
+    "ETHUSDT": "kline_5m_ETH.csv",
+    "SOLUSDT": "kline_5m_SOL.csv",
+    "BNBUSDT": "kline_5m_BNB.csv",
+    "SUIUSDT": "kline_5m_SUI.csv",
+    "HYPEUSDT": "kline_5m_HYPE.csv",
 }
 
 BJ = timezone(timedelta(hours=8))

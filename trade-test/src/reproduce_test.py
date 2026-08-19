@@ -58,9 +58,9 @@ SIGNALS_FILE = os.path.join(BASE_DIR, "rust-trade-prod-strategy_signals")
 SRC_DIR = os.path.join(BASE_DIR, "src")
 
 CSV_30M = {
-    "BTCUSDT": os.path.join(DATA_DIR, "kline_30m_202608131242_BTC.csv"),
-    "ETHUSDT": os.path.join(DATA_DIR, "kline_30m_202608131245_ETH.csv"),
-    "SOLUSDT": os.path.join(DATA_DIR, "kline_30m_202608131247_SOL.csv"),
+    "BTCUSDT": os.path.join(DATA_DIR, "kline_30m_BTC.csv"),
+    "ETHUSDT": os.path.join(DATA_DIR, "kline_30m_ETH.csv"),
+    "SOLUSDT": os.path.join(DATA_DIR, "kline_30m_SOL.csv"),
 }
 
 KLINE_COUNT = 500          # 生产策略服务传入的 K 线数量（market_context.kline_count）
@@ -100,7 +100,7 @@ def load_klines_30m(symbol: str) -> List[KlineBar]:
                 close=float(row["close"]),
                 volume=float(row["volume"]),
             ))
-    bars.reverse()  # CSV 最新在前，反转为升序（最旧→最新）
+    bars.sort(key=lambda b: b.open_time)  # 统一升序（不假设 CSV 内部顺序）
     return bars
 
 

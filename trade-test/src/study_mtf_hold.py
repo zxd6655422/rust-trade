@@ -14,12 +14,16 @@
 from __future__ import annotations
 
 import os
-from bisect import bisect_left
+from bisect import bisect_right
 from datetime import datetime
 
 import data_config as dc
 from loader import load_klines_30m, load_klines_4h
 from study_adaptive_ma_trailing import precompute, comp
+
+
+BAR_30M_MS = 30 * 60 * 1000
+BAR_4H_MS = 4 * 60 * 60 * 1000
 
 
 def sma_series(closes, period):
@@ -49,8 +53,12 @@ def backtest_mtf_hold(symbol, params, bars30, bars4, ma4_period, activate, callb
     ts4 = [b.open_time for b in bars4]
 
     def fourh_bearish(et):
-        """当前 30m bar 之前，最近一根【已收盘】4h bar 是否 close < MA（趋势转空）。"""
-        j = bisect_left(ts4, et) - 1  # 严格小于 et，避免用未收盘 4h bar（未来数据）
+        """当前 30m bar 收盘前，最近一根【已收盘】4h bar 是否 close < MA（趋势转空）。
+
+        无 lookahead：4h bar open_time=t 的收盘时刻为 t+4h；在 30m bar 收盘(et+30m) 时
+        已收盘 ⟺ t+4h <= et+30m ⟺ t <= et+30m-4h。用 bisect_right 定位已收盘 bar。
+        """
+        j = bisect_right(ts4, et + BAR_30M_MS - BAR_4H_MS) - 1
         if j < 0 or ma4[j] is None:
             return False
         return closes4[j] < ma4[j]

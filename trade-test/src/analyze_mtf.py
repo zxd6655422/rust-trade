@@ -19,6 +19,10 @@ from loader import load_klines_30m, load_klines_4h
 from study_adaptive_ma_trailing import backtest_trades, precompute
 
 
+BAR_30M_MS = 30 * 60 * 1000
+BAR_4H_MS = 4 * 60 * 60 * 1000
+
+
 def sma_series(closes, period):
     n = len(closes)
     p = [0.0] * (n + 1)
@@ -78,7 +82,7 @@ def main() -> int:
             bucket = []
             for t in trades:
                 et = bars30[t["entry_idx"]].open_time
-                j = bisect_right(ts4, et) - 1  # 最近一根 <= et 的 4h bar
+                j = bisect_right(ts4, et + BAR_30M_MS - BAR_4H_MS) - 1  # 入场时(et+30m)最近一根已收盘 4h bar
                 if j < 0:
                     continue
                 if states4[j] == state:
@@ -103,7 +107,7 @@ def main() -> int:
                 if t["side"] != side:
                     continue
                 et = bars30[t["entry_idx"]].open_time
-                j = bisect_right(ts4, et) - 1
+                j = bisect_right(ts4, et + BAR_30M_MS - BAR_4H_MS) - 1
                 if j >= 0 and states4[j] == 1:
                     bucket.append(t)
             if not bucket:
