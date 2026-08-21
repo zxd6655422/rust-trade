@@ -1,0 +1,806 @@
+{
+  "BTC": {
+    "analysis": {
+      "total_trades": 1103,
+      "winning_trades": 257,
+      "losing_trades": 846,
+      "win_rate": 23.30009066183137,
+      "avg_pnl": 0.1102424241659807,
+      "avg_win": 3.6406720169573026,
+      "avg_loss": -0.962240324471572,
+      "feature_comparison": {
+        "entry_boll_width_pct": {
+          "win_mean": 0.4445019036320978,
+          "lose_mean": 0.13830584553576536,
+          "win_median": 0.4267540529226273,
+          "lose_median": 0.08182808780220674,
+          "win_std": 0.30911016996699225,
+          "lose_std": 0.17851092714485678,
+          "difference": 0.30619605809633244,
+          "difference_pct": 221.39053986489046
+        },
+        "entry_compression_bars": {
+          "win_mean": 19.82101167315175,
+          "lose_mean": 90.40543735224587,
+          "win_median": 0.0,
+          "lose_median": 88.0,
+          "win_std": 46.78273279784989,
+          "lose_std": 64.75874147649218,
+          "difference": -70.58442567909412,
+          "difference_pct": -78.0754208445192
+        },
+        "entry_rsi": {
+          "win_mean": 50.67254544406693,
+          "lose_mean": 50.03075373051223,
+          "win_median": 50.30216659160136,
+          "lose_median": 49.73143357055956,
+          "win_std": 14.572300431678093,
+          "lose_std": 12.685999182061119,
+          "difference": 0.6417917135546958,
+          "difference_pct": 1.2827944128358926
+        },
+        "entry_atr_pct": {
+          "win_mean": 0.6291270832315896,
+          "lose_mean": 0.5293144992885819,
+          "win_median": 0.4889150856622275,
+          "lose_median": 0.44020474826083106,
+          "win_std": 0.49304853142825555,
+          "lose_std": 0.3683135074674916,
+          "difference": 0.09981258394300774,
+          "difference_pct": 18.856952544689314
+        },
+        "entry_volume_ratio": {
+          "win_mean": 1.2389559821189666,
+          "lose_mean": 1.102099001275618,
+          "win_median": 1.032281652090864,
+          "lose_median": 0.9224657819706841,
+          "win_std": 0.6808362672351099,
+          "lose_std": 0.7122127616933163,
+          "difference": 0.13685698084334863,
+          "difference_pct": 12.41784818650088
+        },
+        "entry_momentum_5": {
+          "win_mean": 0.056103399987570156,
+          "lose_mean": 0.004862139489019386,
+          "win_median": 0.030927421980253555,
+          "lose_median": 0.0015234399792563025,
+          "win_std": 1.7177587160718975,
+          "lose_std": 0.9072038688995824,
+          "difference": 0.05124126049855077,
+          "difference_pct": 1053.8829791755993
+        },
+        "entry_momentum_10": {
+          "win_mean": 0.08729487657736384,
+          "lose_mean": 0.03034153293393113,
+          "win_median": 0.04632839804172839,
+          "lose_median": 0.005022817662014845,
+          "win_std": 1.597610127499501,
+          "lose_std": 1.0914813219183925,
+          "difference": 0.05695334364343271,
+          "difference_pct": 187.70753530300846
+        },
+        "entry_momentum_20": {
+          "win_mean": 0.09539085597656383,
+          "lose_mean": 0.025283595076024016,
+          "win_median": 0.04084444933032394,
+          "lose_median": -0.0018563257616566187,
+          "win_std": 1.660890024327015,
+          "lose_std": 1.260275238213624,
+          "difference": 0.07010726090053981,
+          "difference_pct": 277.2835931351443
+        },
+        "entry_price_position": {
+          "win_mean": 0.49759016866210803,
+          "lose_mean": 0.5023683209261381,
+          "win_median": 0.4953966597306894,
+          "lose_median": 0.49305147920324516,
+          "win_std": 0.10819473656712418,
+          "lose_std": 0.17725753368521074,
+          "difference": -0.004778152264030111,
+          "difference_pct": -0.9511253128424533
+        },
+        "entry_ma192_slope": {
+          "win_mean": -0.013189846577744833,
+          "lose_mean": 0.006283038527249756,
+          "win_median": -0.01355578531556656,
+          "lose_median": 0.0013627582978736896,
+          "win_std": 0.1921396085066438,
+          "lose_std": 0.08824894733086315,
+          "difference": -0.019472885104994588,
+          "difference_pct": -309.92783221907695
+        },
+        "entry_boll_mid_slope": {
+          "win_mean": -0.011789874488043769,
+          "lose_mean": 0.0035615165496159073,
+          "win_median": -0.032400888870465216,
+          "lose_median": 0.0030807658426557083,
+          "win_std": 0.2421066455613327,
+          "lose_std": 0.0936667375252101,
+          "difference": -0.015351391037659676,
+          "difference_pct": -431.03522962192187
+        },
+        "entry_boll_width": {
+          "win_mean": 0.06592016728314863,
+          "lose_mean": 0.036605187787504566,
+          "win_median": 0.0550050810829043,
+          "lose_median": 0.028595702261380276,
+          "win_std": 0.05009830716966086,
+          "lose_std": 0.028940777031795668,
+          "difference": 0.029314979495644065,
+          "difference_pct": 80.08422102850388
+        }
+      }
+    },
+    "trades_count": 1103
+  },
+  "ETH": {
+    "analysis": {
+      "total_trades": 1137,
+      "winning_trades": 279,
+      "losing_trades": 858,
+      "win_rate": 24.538258575197887,
+      "avg_pnl": 0.1510522013705747,
+      "avg_win": 4.229294973438778,
+      "avg_loss": -1.1750896790571974,
+      "feature_comparison": {
+        "entry_boll_width_pct": {
+          "win_mean": 0.451788793538536,
+          "lose_mean": 0.13766147666982012,
+          "win_median": 0.43606159047337306,
+          "lose_median": 0.07213570669980973,
+          "win_std": 0.30155127909043317,
+          "lose_std": 0.18960371445495827,
+          "difference": 0.31412731686871587,
+          "difference_pct": 228.18825169378906
+        },
+        "entry_compression_bars": {
+          "win_mean": 17.763440860215052,
+          "lose_mean": 84.01981351981352,
+          "win_median": 0.0,
+          "lose_median": 82.0,
+          "win_std": 40.512915921508494,
+          "lose_std": 58.467741987989015,
+          "difference": -66.25637265959847,
+          "difference_pct": -78.85803346132624
+        },
+        "entry_rsi": {
+          "win_mean": 51.00554388524989,
+          "lose_mean": 49.68692910933181,
+          "win_median": 51.79738562091504,
+          "lose_median": 49.699171689018414,
+          "win_std": 15.269115874983086,
+          "lose_std": 13.447203004297123,
+          "difference": 1.3186147759180855,
+          "difference_pct": 2.6538463929146987
+        },
+        "entry_atr_pct": {
+          "win_mean": 0.8115470223254659,
+          "lose_mean": 0.6584597205180581,
+          "win_median": 0.6740278679885809,
+          "lose_median": 0.5732936591430156,
+          "win_std": 0.5998690024938209,
+          "lose_std": 0.405659808607935,
+          "difference": 0.15308730180740782,
+          "difference_pct": 23.249303949368823
+        },
+        "entry_volume_ratio": {
+          "win_mean": 1.1654192849190825,
+          "lose_mean": 1.1003531994830207,
+          "win_median": 0.983749659185635,
+          "lose_median": 0.8894896354207529,
+          "win_std": 0.739391398596626,
+          "lose_std": 0.7811861305863306,
+          "difference": 0.06506608543606185,
+          "difference_pct": 5.913200004019789
+        },
+        "entry_momentum_5": {
+          "win_mean": 0.2081647611317779,
+          "lose_mean": 0.03438427498706401,
+          "win_median": 0.0903080996720762,
+          "lose_median": 0.011415325876573679,
+          "win_std": 2.146441484615481,
+          "lose_std": 1.110317352033196,
+          "difference": 0.1737804861447139,
+          "difference_pct": 505.40686464988215
+        },
+        "entry_momentum_10": {
+          "win_mean": 0.2099209593046207,
+          "lose_mean": -0.061747136769741355,
+          "win_median": 0.15868293166716452,
+          "lose_median": -0.01614950970776352,
+          "win_std": 1.9977811090685231,
+          "lose_std": 1.3279983104484399,
+          "difference": 0.27166809607436204,
+          "difference_pct": -439.96873423852526
+        },
+        "entry_momentum_20": {
+          "win_mean": 0.25691536281397914,
+          "lose_mean": -0.06101296505576743,
+          "win_median": 0.19919955344276374,
+          "lose_median": -0.020178460434028267,
+          "win_std": 2.191455657878209,
+          "lose_std": 1.550396787091773,
+          "difference": 0.31792832786974656,
+          "difference_pct": -521.0832280961134
+        },
+        "entry_price_position": {
+          "win_mean": 0.5081353130530643,
+          "lose_mean": 0.4842752811283274,
+          "win_median": 0.4977060779517933,
+          "lose_median": 0.4876371777761006,
+          "win_std": 0.10298637189646817,
+          "lose_std": 0.162732226505528,
+          "difference": 0.023860031924736846,
+          "difference_pct": 4.92695639330272
+        },
+        "entry_ma192_slope": {
+          "win_mean": -0.00944078238061663,
+          "lose_mean": 0.010042875836881928,
+          "win_median": -0.008401382553380188,
+          "lose_median": 0.0030499941117145823,
+          "win_std": 0.22946786998314672,
+          "lose_std": 0.10156648572156489,
+          "difference": -0.01948365821749856,
+          "difference_pct": -194.00477048561987
+        },
+        "entry_boll_mid_slope": {
+          "win_mean": -0.016343566416970618,
+          "lose_mean": -0.0019507610041024233,
+          "win_median": -0.061549531762672416,
+          "lose_median": -0.0017529550534300942,
+          "win_std": 0.3212994455642349,
+          "lose_std": 0.10606864671742267,
+          "difference": -0.014392805412868194,
+          "difference_pct": 737.8046507286297
+        },
+        "entry_boll_width": {
+          "win_mean": 0.09020862647922105,
+          "lose_mean": 0.046925257285872185,
+          "win_median": 0.07321619237332894,
+          "lose_median": 0.038948598674394694,
+          "win_std": 0.0646488479737489,
+          "lose_std": 0.03009205839046539,
+          "difference": 0.04328336919334887,
+          "difference_pct": 92.23895977738243
+        }
+      }
+    },
+    "trades_count": 1137
+  },
+  "SOL": {
+    "analysis": {
+      "total_trades": 740,
+      "winning_trades": 195,
+      "losing_trades": 545,
+      "win_rate": 26.351351351351347,
+      "avg_pnl": 0.23758529071318693,
+      "avg_win": 5.40033471800114,
+      "avg_loss": -1.609636981435714,
+      "feature_comparison": {
+        "entry_boll_width_pct": {
+          "win_mean": 0.42987558055172703,
+          "lose_mean": 0.15164282015687075,
+          "win_median": 0.3802980308674092,
+          "lose_median": 0.0958243122635293,
+          "win_std": 0.3151445702826545,
+          "lose_std": 0.18964887876578546,
+          "difference": 0.2782327603948563,
+          "difference_pct": 183.4790200466012
+        },
+        "entry_compression_bars": {
+          "win_mean": 18.871794871794872,
+          "lose_mean": 76.86422018348624,
+          "win_median": 0.0,
+          "lose_median": 70.0,
+          "win_std": 40.60177455822951,
+          "lose_std": 60.98547247895061,
+          "difference": -57.99242531169136,
+          "difference_pct": -75.44788091683606
+        },
+        "entry_rsi": {
+          "win_mean": 50.58524048102216,
+          "lose_mean": 51.001396539006855,
+          "win_median": 50.13736263736252,
+          "lose_median": 51.2158054711246,
+          "win_std": 15.362814658080337,
+          "lose_std": 13.554844036434753,
+          "difference": -0.41615605798469346,
+          "difference_pct": -0.8159699267576118
+        },
+        "entry_atr_pct": {
+          "win_mean": 1.0703919563289033,
+          "lose_mean": 1.090887179859611,
+          "win_median": 0.8823298993301769,
+          "lose_median": 0.9145718373186168,
+          "win_std": 0.6412460253454989,
+          "lose_std": 0.6754932451278906,
+          "difference": -0.02049522353070765,
+          "difference_pct": -1.8787665589163158
+        },
+        "entry_volume_ratio": {
+          "win_mean": 1.241524021799571,
+          "lose_mean": 1.1350850826136052,
+          "win_median": 1.0811961476966245,
+          "lose_median": 0.9250703765976517,
+          "win_std": 0.775043204901607,
+          "lose_std": 0.8435178015411617,
+          "difference": 0.10643893918596592,
+          "difference_pct": 9.377177166392102
+        },
+        "entry_momentum_5": {
+          "win_mean": -0.13145128971723075,
+          "lose_mean": 0.13450906849079292,
+          "win_median": -0.021083702298119178,
+          "lose_median": 0.08212826563815945,
+          "win_std": 1.9890990012063918,
+          "lose_std": 1.724632431622151,
+          "difference": -0.26596035820802366,
+          "difference_pct": -197.72671180622183
+        },
+        "entry_momentum_10": {
+          "win_mean": -0.12541289343207487,
+          "lose_mean": 0.17601451785212763,
+          "win_median": -0.14647887323943065,
+          "lose_median": 0.0684462696783017,
+          "win_std": 2.320010988670977,
+          "lose_std": 2.4418808338826774,
+          "difference": -0.3014274112842025,
+          "difference_pct": -171.25144843872258
+        },
+        "entry_momentum_20": {
+          "win_mean": 0.06557050065429493,
+          "lose_mean": 0.15373048796867422,
+          "win_median": 0.12354152367879401,
+          "lose_median": 0.057764007771887727,
+          "win_std": 2.7019176613496767,
+          "lose_std": 2.567582907557783,
+          "difference": -0.0881599873143793,
+          "difference_pct": -57.34710692672993
+        },
+        "entry_price_position": {
+          "win_mean": 0.5030056912197254,
+          "lose_mean": 0.49953738597387015,
+          "win_median": 0.49888496509912167,
+          "lose_median": 0.5039181973404736,
+          "win_std": 0.08675590387115335,
+          "lose_std": 0.18072049899199147,
+          "difference": 0.00346830524585523,
+          "difference_pct": 0.6943034381888387
+        },
+        "entry_ma192_slope": {
+          "win_mean": 0.013694199059456945,
+          "lose_mean": -0.0023317165024665334,
+          "win_median": -0.025144769141149936,
+          "lose_median": -0.006769543209683704,
+          "win_std": 0.2671991924829338,
+          "lose_std": 0.17503692717463518,
+          "difference": 0.016025915561923478,
+          "difference_pct": -687.3012025677634
+        },
+        "entry_boll_mid_slope": {
+          "win_mean": 0.032660293560628766,
+          "lose_mean": -0.015460695997952629,
+          "win_median": -0.03323928647643859,
+          "lose_median": 0.003809918408204105,
+          "win_std": 0.3736196480472334,
+          "lose_std": 0.1905388957245621,
+          "difference": 0.04812098955858139,
+          "difference_pct": -311.2472398716965
+        },
+        "entry_boll_width": {
+          "win_mean": 0.1088025076308584,
+          "lose_mean": 0.07790192219902405,
+          "win_median": 0.09017517177442105,
+          "lose_median": 0.06491276408532196,
+          "win_std": 0.07356501660122725,
+          "lose_std": 0.04860685650165712,
+          "difference": 0.030900585431834354,
+          "difference_pct": 39.66601151752001
+        }
+      }
+    },
+    "trades_count": 740
+  },
+  "BNB": {
+    "analysis": {
+      "total_trades": 838,
+      "winning_trades": 216,
+      "losing_trades": 622,
+      "win_rate": 25.775656324582343,
+      "avg_pnl": 0.14331868085393576,
+      "avg_win": 3.5186274235789083,
+      "avg_loss": -1.0288142587418745,
+      "feature_comparison": {
+        "entry_boll_width_pct": {
+          "win_mean": 0.4700573760278039,
+          "lose_mean": 0.12756992883817705,
+          "win_median": 0.45863903741416023,
+          "lose_median": 0.06945049516528817,
+          "win_std": 0.3078028652490955,
+          "lose_std": 0.17000876794426606,
+          "difference": 0.34248744718962687,
+          "difference_pct": 268.47035998904846
+        },
+        "entry_compression_bars": {
+          "win_mean": 19.550925925925927,
+          "lose_mean": 86.67363344051446,
+          "win_median": 0.0,
+          "lose_median": 82.5,
+          "win_std": 44.514300801909265,
+          "lose_std": 60.66603954111846,
+          "difference": -67.12270751458854,
+          "difference_pct": -77.44305257567858
+        },
+        "entry_rsi": {
+          "win_mean": 50.85272139047053,
+          "lose_mean": 50.217785620825076,
+          "win_median": 51.401689708141255,
+          "lose_median": 50.0,
+          "win_std": 14.930738856232244,
+          "lose_std": 12.842443521980933,
+          "difference": 0.6349357696454518,
+          "difference_pct": 1.264364331871589
+        },
+        "entry_atr_pct": {
+          "win_mean": 0.6488883586171764,
+          "lose_mean": 0.6238670722987412,
+          "win_median": 0.5461910227223982,
+          "lose_median": 0.4987697940449277,
+          "win_std": 0.43788817739996144,
+          "lose_std": 0.5232525813436669,
+          "difference": 0.025021286318435254,
+          "difference_pct": 4.010675900274749
+        },
+        "entry_volume_ratio": {
+          "win_mean": 1.1660137651260705,
+          "lose_mean": 1.087120989024332,
+          "win_median": 1.0134952638911017,
+          "lose_median": 0.9205076422602856,
+          "win_std": 0.7487505921286343,
+          "lose_std": 0.7526373908873139,
+          "difference": 0.0788927761017384,
+          "difference_pct": 7.257037339748447
+        },
+        "entry_momentum_5": {
+          "win_mean": -0.018820401784455033,
+          "lose_mean": 0.041001605784297866,
+          "win_median": -0.023308274733846446,
+          "lose_median": 0.046374092741763295,
+          "win_std": 1.1201661042034474,
+          "lose_std": 1.0526170517310847,
+          "difference": -0.0598220075687529,
+          "difference_pct": -145.90162122787535
+        },
+        "entry_momentum_10": {
+          "win_mean": 0.06455266411870965,
+          "lose_mean": 0.02924329554459747,
+          "win_median": -0.02261465121806694,
+          "lose_median": 0.0,
+          "win_std": 1.4151322909228148,
+          "lose_std": 1.3383172572843032,
+          "difference": 0.03530936857411218,
+          "difference_pct": 120.74346586643647
+        },
+        "entry_momentum_20": {
+          "win_mean": 0.2782009348271875,
+          "lose_mean": 0.06662041345349719,
+          "win_median": 0.1269932309782118,
+          "lose_median": 0.00959880148638792,
+          "win_std": 1.7589158714899882,
+          "lose_std": 1.989064318791427,
+          "difference": 0.21158052137369032,
+          "difference_pct": 317.5911262114564
+        },
+        "entry_price_position": {
+          "win_mean": 0.5105150498134499,
+          "lose_mean": 0.49513416449937564,
+          "win_median": 0.4973157466613304,
+          "lose_median": 0.49225928802867175,
+          "win_std": 0.11064078615007156,
+          "lose_std": 0.15684002158202554,
+          "difference": 0.015380885314074222,
+          "difference_pct": 3.1064075995696347
+        },
+        "entry_ma192_slope": {
+          "win_mean": -0.006374357423546767,
+          "lose_mean": 0.004281918088750464,
+          "win_median": -0.0004958534891685851,
+          "lose_median": 0.0034306379234516626,
+          "win_std": 0.2112650902405698,
+          "lose_std": 0.10913874485511182,
+          "difference": -0.01065627551229723,
+          "difference_pct": -248.86686973983925
+        },
+        "entry_boll_mid_slope": {
+          "win_mean": -0.019120033608105897,
+          "lose_mean": -0.0024467228875486415,
+          "win_median": -0.013227848159264033,
+          "lose_median": 0.0015680246556737387,
+          "win_std": 0.2598971705506882,
+          "lose_std": 0.10328981758971637,
+          "difference": -0.016673310720557256,
+          "difference_pct": 681.4548065662702
+        },
+        "entry_boll_width": {
+          "win_mean": 0.07138732571560194,
+          "lose_mean": 0.04250904245810297,
+          "win_median": 0.0592078691265704,
+          "lose_median": 0.03184198064095069,
+          "win_std": 0.05799137516799447,
+          "lose_std": 0.037072140467021356,
+          "difference": 0.02887828325749897,
+          "difference_pct": 67.93444779651644
+        }
+      }
+    },
+    "trades_count": 838
+  },
+  "SUI": {
+    "analysis": {
+      "total_trades": 447,
+      "winning_trades": 99,
+      "losing_trades": 348,
+      "win_rate": 22.14765100671141,
+      "avg_pnl": -0.018968767937360024,
+      "avg_win": 5.029548090276209,
+      "avg_loss": -1.4551847707050134,
+      "feature_comparison": {
+        "entry_boll_width_pct": {
+          "win_mean": 0.5144718340283108,
+          "lose_mean": 0.13363083456040165,
+          "win_median": 0.5712131946810081,
+          "lose_median": 0.0975771692445924,
+          "win_std": 0.29575420396803553,
+          "lose_std": 0.1638009386561352,
+          "difference": 0.3808409994679091,
+          "difference_pct": 284.99485221411794
+        },
+        "entry_compression_bars": {
+          "win_mean": 18.616161616161616,
+          "lose_mean": 97.0,
+          "win_median": 0.0,
+          "lose_median": 86.0,
+          "win_std": 45.895335023869315,
+          "lose_std": 76.81772279899381,
+          "difference": -78.38383838383838,
+          "difference_pct": -80.8080808080808
+        },
+        "entry_rsi": {
+          "win_mean": 53.43074587233291,
+          "lose_mean": 49.77061142578763,
+          "win_median": 55.063291139240704,
+          "lose_median": 50.0,
+          "win_std": 16.90351765404166,
+          "lose_std": 12.621748465448373,
+          "difference": 3.6601344465452854,
+          "difference_pct": 7.354007398528485
+        },
+        "entry_atr_pct": {
+          "win_mean": 1.0393043429473146,
+          "lose_mean": 0.961555696548884,
+          "win_median": 1.017977873386604,
+          "lose_median": 0.8708794924409143,
+          "win_std": 0.4564054430355118,
+          "lose_std": 0.44908499746392966,
+          "difference": 0.0777486463984306,
+          "difference_pct": 8.085714293771852
+        },
+        "entry_volume_ratio": {
+          "win_mean": 1.103144880567169,
+          "lose_mean": 1.0672771757912403,
+          "win_median": 0.9583119998995129,
+          "lose_median": 0.8769539190905998,
+          "win_std": 0.675314237648347,
+          "lose_std": 0.6543106233160049,
+          "difference": 0.03586770477592882,
+          "difference_pct": 3.3606738333308606
+        },
+        "entry_momentum_5": {
+          "win_mean": 0.40590449895793024,
+          "lose_mean": -0.019716732214370744,
+          "win_median": 0.48652694610780145,
+          "lose_median": 0.010787722725136284,
+          "win_std": 1.4997848804079084,
+          "lose_std": 1.3947425231417891,
+          "difference": 0.425621231172301,
+          "difference_pct": -2158.680386509903
+        },
+        "entry_momentum_10": {
+          "win_mean": 0.5699853172501682,
+          "lose_mean": -0.008828411497668609,
+          "win_median": 0.523510823940021,
+          "lose_median": -0.031192032067312025,
+          "win_std": 2.2606103743360833,
+          "lose_std": 1.7188927360613433,
+          "difference": 0.5788137287478368,
+          "difference_pct": -6556.261326295096
+        },
+        "entry_momentum_20": {
+          "win_mean": 0.8142940938242049,
+          "lose_mean": -0.027850344412563677,
+          "win_median": 0.407260879683502,
+          "lose_median": 0.05922244370023533,
+          "win_std": 3.0238785938451636,
+          "lose_std": 1.9061245214645588,
+          "difference": 0.8421444382367687,
+          "difference_pct": -3023.820552311969
+        },
+        "entry_price_position": {
+          "win_mean": 0.4840465366786543,
+          "lose_mean": 0.4998896475020608,
+          "win_median": 0.47501489700143507,
+          "lose_median": 0.5025112151520525,
+          "win_std": 0.07829084769531403,
+          "lose_std": 0.16474054066881086,
+          "difference": -0.015843110823406448,
+          "difference_pct": -3.1693216498029466
+        },
+        "entry_ma192_slope": {
+          "win_mean": -0.025130968739376626,
+          "lose_mean": -0.004337248921129473,
+          "win_median": -0.058726486461191385,
+          "lose_median": -0.006207407988412239,
+          "win_std": 0.25793407967976845,
+          "lose_std": 0.13198031230087043,
+          "difference": -0.020793719818247153,
+          "difference_pct": 479.4218684786072
+        },
+        "entry_boll_mid_slope": {
+          "win_mean": -0.04097937530824702,
+          "lose_mean": 0.005473370804439096,
+          "win_median": -0.17216940245490253,
+          "lose_median": 0.006659302677947121,
+          "win_std": 0.38767714226454486,
+          "lose_std": 0.14353027752747238,
+          "difference": -0.046452746112686114,
+          "difference_pct": -848.704532771858
+        },
+        "entry_boll_width": {
+          "win_mean": 0.11997946195219784,
+          "lose_mean": 0.06480563779853718,
+          "win_median": 0.11908748961930628,
+          "lose_median": 0.05819572308395535,
+          "win_std": 0.058698582310686497,
+          "lose_std": 0.03371764006599069,
+          "difference": 0.055173824153660664,
+          "difference_pct": 85.13738314740584
+        }
+      }
+    },
+    "trades_count": 447
+  },
+  "HYPE": {
+    "analysis": {
+      "total_trades": 192,
+      "winning_trades": 38,
+      "losing_trades": 154,
+      "win_rate": 19.791666666666664,
+      "avg_pnl": -0.32898907426810925,
+      "avg_win": 4.541665623178439,
+      "avg_loss": -1.530838934676998,
+      "feature_comparison": {
+        "entry_boll_width_pct": {
+          "win_mean": 0.48817053410819733,
+          "lose_mean": 0.1185095940149287,
+          "win_median": 0.5102007676643867,
+          "lose_median": 0.06135682415789741,
+          "win_std": 0.31771087557329053,
+          "lose_std": 0.14308216479956007,
+          "difference": 0.3696609400932686,
+          "difference_pct": 311.92490630480285
+        },
+        "entry_compression_bars": {
+          "win_mean": 18.473684210526315,
+          "lose_mean": 82.23376623376623,
+          "win_median": 0.0,
+          "lose_median": 77.5,
+          "win_std": 39.715023260048966,
+          "lose_std": 56.10818124584184,
+          "difference": -63.76008202323992,
+          "difference_pct": -77.53515975662467
+        },
+        "entry_rsi": {
+          "win_mean": 46.63454105301863,
+          "lose_mean": 49.54716774226309,
+          "win_median": 47.601382895500564,
+          "lose_median": 49.35392355605124,
+          "win_std": 16.64525497502937,
+          "lose_std": 11.253057157838686,
+          "difference": -2.912626689244462,
+          "difference_pct": -5.87849280183987
+        },
+        "entry_atr_pct": {
+          "win_mean": 1.0423671850441465,
+          "lose_mean": 1.1128662627768395,
+          "win_median": 0.9459587248068156,
+          "lose_median": 0.9518519949381985,
+          "win_std": 0.5058484725784511,
+          "lose_std": 0.6013379190359972,
+          "difference": -0.07049907773269304,
+          "difference_pct": -6.334910140665308
+        },
+        "entry_volume_ratio": {
+          "win_mean": 0.926598107427358,
+          "lose_mean": 1.1622735003761175,
+          "win_median": 0.8230994612784801,
+          "lose_median": 0.9624781001535082,
+          "win_std": 0.5122604519536655,
+          "lose_std": 0.6939436211628347,
+          "difference": -0.2356753929487595,
+          "difference_pct": -20.277102839606492
+        },
+        "entry_momentum_5": {
+          "win_mean": -0.10105886324085665,
+          "lose_mean": -0.08873246326368162,
+          "win_median": -0.12634085346731605,
+          "lose_median": -0.13634285614524955,
+          "win_std": 1.6521250911888532,
+          "lose_std": 1.3533974978223142,
+          "difference": -0.012326399977175037,
+          "difference_pct": 13.891646330774476
+        },
+        "entry_momentum_10": {
+          "win_mean": 0.003770319238088588,
+          "lose_mean": -0.20010693487477665,
+          "win_median": 0.09395858521026312,
+          "lose_median": -0.22312895752462092,
+          "win_std": 2.59677023870928,
+          "lose_std": 1.8829061876568662,
+          "difference": 0.20387725411286525,
+          "difference_pct": -101.88415221114052
+        },
+        "entry_momentum_20": {
+          "win_mean": -0.16892956902406156,
+          "lose_mean": 0.08790978923005031,
+          "win_median": -0.23081608940671017,
+          "lose_median": -0.00684663990992429,
+          "win_std": 3.0846571815557224,
+          "lose_std": 2.5862549032739146,
+          "difference": -0.25683935825411186,
+          "difference_pct": -292.1624093330395
+        },
+        "entry_price_position": {
+          "win_mean": 0.499853827293617,
+          "lose_mean": 0.47601145413637147,
+          "win_median": 0.4990295335531547,
+          "lose_median": 0.47626838626367995,
+          "win_std": 0.08356600229204887,
+          "lose_std": 0.16907261872423243,
+          "difference": 0.023842373157245522,
+          "difference_pct": 5.008781395923085
+        },
+        "entry_ma192_slope": {
+          "win_mean": -0.0030433176139581753,
+          "lose_mean": 0.019082160207003786,
+          "win_median": 0.02820018790856693,
+          "lose_median": 0.006176897337650811,
+          "win_std": 0.22908444966317487,
+          "lose_std": 0.15150444977838434,
+          "difference": -0.022125477820961963,
+          "difference_pct": -115.94849629677239
+        },
+        "entry_boll_mid_slope": {
+          "win_mean": 0.007372721968127029,
+          "lose_mean": -0.014123254617844786,
+          "win_median": 0.024875072050378755,
+          "lose_median": -0.011163563244531716,
+          "win_std": 0.33064285166938195,
+          "lose_std": 0.1480705078385933,
+          "difference": 0.021495976585971813,
+          "difference_pct": -152.20271224744164
+        },
+        "entry_boll_width": {
+          "win_mean": 0.1074682980707628,
+          "lose_mean": 0.07327466901205656,
+          "win_median": 0.10041694151193768,
+          "lose_median": 0.06446692854833586,
+          "win_std": 0.05238282467509007,
+          "lose_std": 0.03733401328167142,
+          "difference": 0.03419362905870624,
+          "difference_pct": 46.66500650187862
+        }
+      }
+    },
+    "trades_count": 192
+  }
+}

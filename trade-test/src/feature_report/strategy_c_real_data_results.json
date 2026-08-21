@@ -1,0 +1,21 @@
+{
+  "BTC": {
+    "overall_stats": {
+      "total_trades": 1103,
+      "winning_trades": 257,
+      "losing_trades": 846,
+      "win_rate": 23.30009066183137,
+      "total_pnl_pct": 121.59739385507672,
+      "compound_return_pct": 119.16880056294457,
+      "final_capital": 21916.880056294456,
+      "max_drawdown_pct": -46.84897377316567,
+      "avg_win_pct": 3.6406720169573026,
+      "avg_loss_pct": 0.962240324471572,
+      "avg_trade_pnl_pct": 0.1102424241659807,
+      "profit_factor": 3.783537152173112,
+      "avg_hold_bars": 39.76065276518586,
+      "avg_compression_bars": 73.95920217588396,
+      "avg_boll_width_pct": 0.20964980467516467
+    },
+    "yearly_stats": {
+      

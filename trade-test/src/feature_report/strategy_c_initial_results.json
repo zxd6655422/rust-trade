@@ -1,0 +1,20 @@
+{
+  "BTC": {
+    "error": "complex() first argument must be a string or a number, not 'Series'"
+  },
+  "ETH": {
+    "error": "complex() first argument must be a string or a number, not 'Series'"
+  },
+  "SOL": {
+    "error": "complex() first argument must be a string or a number, not 'Series'"
+  },
+  "BNB": {
+    "error": "complex() first argument must be a string or a number, not 'Series'"
+  },
+  "SUI": {
+    "error": "complex() first argument must be a string or a number, not 'Series'"
+  },
+  "HYPE": {
+    "error": "complex() first argument must be a string or a number, not 'Series'"
+  }
+}
